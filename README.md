@@ -187,6 +187,18 @@ runs AppKit's own event loop -- `-[NSApplication runModalForWindow:]` -- and
 closing the window hands the REPL back. `(objc/examples:stop-running)` ends it
 from elsewhere if you would rather not reach for the mouse.
 
+If closing the window does not hand the REPL back on your machine, pass a
+watchdog and you cannot get stuck:
+
+```lisp
+(objc/examples:run-until-closed (objc/examples:test-area-calculator) :timeout 60)
+```
+
+and `(objc/examples:diagnose-close)` logs every step of closing to
+`/tmp/objc-close.log` -- whether `-windowShouldClose:` and `-windowWillClose:`
+reached Lisp, whether `-stopModal` was sent, and whether `-runModalForWindow:`
+returned. Whichever of those is missing says where the fault is.
+
 Do not be tempted to pump by hand instead. A `nextEventMatchingMask:` /
 `sendEvent:` loop never gets to block, because AppKit keeps a supply of
 `AppKitDefined` events coming: it spins at **100% CPU** re-dispatching them,

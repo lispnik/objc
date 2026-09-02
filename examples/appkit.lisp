@@ -102,7 +102,7 @@ the thread the REPL is on."
   ;; this is what makes closing the window hand the REPL back.
   (objc:invoke (objc:invoke "NSApplication" "sharedApplication") "stopModal"))
 
-(defun run-until-closed (window)
+(defun run-until-closed (window &key timeout)
   "Keep WINDOW live and responsive until someone closes it.
 
 This is what makes a demo behave like an application from a REPL, and it uses
@@ -114,25 +114,68 @@ nextEventMatchingMask:/sendEvent: loop never gets to block: AppKit keeps a
 supply of AppKitDefined events coming, so the loop spins at 100% CPU
 re-dispatching them, which makes the window sluggish and the fans loud without
 ever quite freezing.  -runModalForWindow: idles at a few percent and wakes on
-real input.  Measured on this machine: 100.9% CPU pumping, 5.1% modal.
+real input.  Measured on this machine: 100.9% CPU pumping, 0.4% modal.
+
+TIMEOUT, in seconds, arranges for the loop to be stopped whatever happens --
+including if -windowWillClose: never reaches us.  It costs a watchdog thread
+and it means a stuck window cannot hold the REPL indefinitely, so it is worth
+passing when you are not sure:
+
+    (run-until-closed (test-area-calculator) :timeout 60)
 
 The window is modal for the duration, which for a demo is what you want.  Any
 existing window delegate is restored afterwards.  Returns T."
   (let* ((app (objc.runloop:shared-application))
          (previous (objc:invoke window "delegate"))
-         (stopper (make-instance 'modal-stopper)))
+         (stopper (make-instance 'modal-stopper))
+         (finished nil))
     ;; Retained across the loop as well as MAKE-WINDOW's -setReleasedWhenClosed:
     ;; NO, because a window that reaches here from somewhere else may well still
     ;; be set to release itself on close -- and then the delegate restore below
     ;; would be a use-after-free.
     (objc:retain window)
+    (when timeout
+      (bt:make-thread
+       (lambda ()
+         (loop repeat (ceiling (* 10 timeout))
+               until finished
+               do (sleep 0.1))
+         (unless finished
+           ;; -stopModal has to run on the main thread, so ask for it there
+           ;; rather than calling it from here.
+           (ignore-errors
+            (objc:invoke app "performSelectorOnMainThread:withObject:waitUntilDone:"
+                         (objc:coerce-to-selector "stopModal") nil nil))))
+       :name "objc run-until-closed watchdog"))
     (unwind-protect
          (progn
            (objc:invoke window "setDelegate:" (objc:objc-object-pointer stopper))
            (objc:invoke app "runModalForWindow:" window))
+      (setf finished t)
       (ignore-errors (objc:invoke window "setDelegate:" previous))
       (objc:release window))
     t))
+
+(objc:define-objc-class logging-stopper ()
+  ((note :initform nil :accessor logging-stopper-note))
+  (:objc-class-name "ObjcLoggingStopper"))
+
+(objc:define-objc-method ("windowShouldClose:" objc:objc-bool)
+    ((self logging-stopper) (sender objc:objc-object-pointer))
+  (declare (ignore sender))
+  (let ((note (logging-stopper-note self)))
+    (when note (funcall note "windowShouldClose: reached Lisp")))
+  t)
+
+(objc:define-objc-method ("windowWillClose:" :void)
+    ((self logging-stopper) (notification objc:objc-object-pointer))
+  (declare (ignore notification))
+  (let ((note (logging-stopper-note self))
+        (app (objc:invoke "NSApplication" "sharedApplication")))
+    (when note (funcall note "windowWillClose: reached Lisp; modalWindow=~A"
+                        (not (cffi:null-pointer-p (objc:invoke app "modalWindow")))))
+    (objc:invoke app "stopModal")
+    (when note (funcall note "stopModal sent"))))
 
 (defun stop-running ()
   "End the modal loop RUN-UNTIL-CLOSED is in, from anywhere.
@@ -140,3 +183,41 @@ The escape hatch when a window has no close button, or you would rather not
 reach for the mouse."
   (objc:invoke (objc.runloop:shared-application) "stopModal")
   t)
+
+(defun diagnose-close (&key (log "/tmp/objc-close.log"))
+  "Run the area calculator with every step of closing logged, to LOG and to
+*ERROR-OUTPUT*.
+
+For working out why closing a window does not hand the REPL back.  Run it,
+click the close button, and send the log: it records whether -windowWillClose:
+reached Lisp, whether -stopModal was sent, and whether -runModalForWindow:
+returned.  Whichever of those three is missing says where the fault is."
+  (with-open-file (stream log :direction :output :if-exists :supersede)
+    (flet ((note (control &rest args)
+             (let ((line (apply #'format nil control args)))
+               (format stream "~&~A~%" line)
+               (format *error-output* "~&[objc] ~A~%" line)
+               (finish-output stream)
+               (finish-output *error-output*))))
+      (note "window server: ~A" (objc.runloop:window-server-p))
+      (let* ((window (test-area-calculator))
+             (app (objc.runloop:shared-application))
+             (previous (objc:invoke window "delegate"))
+             (stopper (make-instance 'logging-stopper)))
+        (setf (logging-stopper-note stopper) #'note)
+        (note "window built, isReleasedWhenClosed=~A visible=~A"
+              (objc:invoke-bool window "isReleasedWhenClosed")
+              (objc:invoke-bool window "isVisible"))
+        (objc:retain window)
+        (objc:invoke window "setDelegate:" (objc:objc-object-pointer stopper))
+        (note "delegate installed; entering runModalForWindow: -- click close now")
+        (let ((start (get-internal-real-time)))
+          (unwind-protect
+               (objc:invoke app "runModalForWindow:" window)
+            (note "runModalForWindow: RETURNED after ~,1fs"
+                  (/ (float (- (get-internal-real-time) start))
+                     internal-time-units-per-second))
+            (ignore-errors (objc:invoke window "setDelegate:" previous))
+            (objc:release window)))
+        (note "done; log written to ~A" log))))
+  (values))

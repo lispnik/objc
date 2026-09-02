@@ -304,3 +304,20 @@ duration; this checks both by messaging the window afterwards."
         ;; If the window had been freed this would hang or return rubbish.
         (is (string= "close cycle" (objc:invoke-into 'string window "title"))
             "the window survived its own close")))))
+
+(test run-until-closed-timeout-returns-control
+  "The watchdog.  Whatever goes wrong -- including -windowWillClose: never
+reaching Lisp -- a caller who passed :TIMEOUT gets the REPL back."
+  (with-gui
+    (let ((window (objc/examples::make-window :title "watchdog"
+                                              :rect #(600d0 600d0 220d0 140d0))))
+      (unwind-protect
+           (progn
+             (objc/examples::show-window window :seconds 0.1d0)
+             (let ((start (get-internal-real-time)))
+               (is-true (objc/examples:run-until-closed window :timeout 2))
+               (let ((elapsed (/ (float (- (get-internal-real-time) start))
+                                 internal-time-units-per-second)))
+                 (is (< 1.5 elapsed 12d0)
+                     "returned on the watchdog with nobody closing the window"))))
+        (objc:invoke window "close")))))

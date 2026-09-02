@@ -1,5 +1,15 @@
 # macOS is the only platform workflow here, because this library is macOS-only
-# by construction: it binds /usr/lib/libobjc.A.dylib and Cocoa.
+# by construction: it binds /usr/lib/libobjc.A.dylib and Cocoa.  It runs on both
+# architectures, in one workflow so that the single badge means "both pass".
+#
+# The Intel leg is not box-ticking.  The two architectures genuinely differ in
+# the Objective-C ABI: BOOL encodes as 'c' (a signed char) on x86-64 and 'B'
+# (C99 _Bool) on arm64, and -- the one most likely to break -- a large struct
+# return goes through objc_msgSend_stret on x86-64, a function that does not
+# exist on arm64, where the same call comes back through x8 from plain
+# objc_msgSend.  Nothing here is conditionalised on architecture and BOOL's
+# encoding is measured from the runtime rather than assumed, but "should work"
+# and "does work" are different claims and only this makes the second one.
 #
 # What a CI run can and cannot prove.  GitHub's macOS runners have no window
 # server, so [NSScreen mainScreen] is nil and the gui suite skips itself --
@@ -22,8 +32,16 @@ on:
 
 jobs:
   test:
-    name: sbcl · macos-latest
-    runs-on: macos-latest
+    name: sbcl · ${{ matrix.os }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+          - os: macos-13
+            arch: x86-64
 
     steps:
       - uses: actions/checkout@v5

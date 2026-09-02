@@ -38,13 +38,52 @@ Defining an Objective-C class in Lisp, from section 1.4 of the manual, unchanged
 ;; => 42
 ```
 
+## Status
+
+The whole documented interface is implemented: all 42 symbols of the `OBJC`
+package and all 11 of `COCOA`, with the LispWorks names and lambda lists. That
+includes the parts that are easy to leave out — `define-objc-class`,
+`define-objc-method` and `define-objc-class-method` with real IMPs, structures
+passed and returned by value in both directions, `define-objc-struct`,
+`define-objc-typedef`, `define-objc-protocol`, the `standard-objc-object` CLOS
+integration with `objc-object-copied` and `objc-object-destroyed`, and
+`invoke-into`'s full set of result dispositions.
+
+643 checks, green on a clean GitHub runner as well as locally. Behaviour the
+manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
+recording what it actually did; those answers are committed and asserted
+against, so the differential tests run without LispWorks installed.
+
+### What will bite you
+
+- **An Objective-C exception terminates the process.** There is no `@try`/`@catch`
+  here — and none in LispWorks either, which its own image confirms. The common
+  case is prevented rather than caught: dispatch resolves the `Method` first, so
+  a selector the class does not implement is a Lisp error raised before anything
+  is sent. A genuine `NSException` from inside a method that *does* exist will
+  take the image down.
+- **Variadic methods need `:variadic-num-of-fixed`.** On Apple silicon a variadic
+  call passes its variable arguments on the stack and a fixed-arity call passes
+  them in registers, so `+stringWithFormat:` without it reads garbage. LispWorks
+  fails silently here; this warns once, naming the fix.
+- **Only tested on arm64.** `BOOL`'s encoding is measured from the runtime rather
+  than chosen by a read-time conditional, and nothing is conditionalised on
+  architecture, so Intel *should* work. It has never been run there.
+- **SBCL only.** Dynamic dispatch is built on `sb-alien`, for reasons set out in
+  `src/abi.lisp`. It is confined to that one file, which a test enforces, so
+  porting is one file's work — but it is not portable today.
+- **AppKit from a REPL needs care.** The event loop helpers in `OBJC.RUNLOOP` are
+  additions, not LispWorks API; driving the event loop is CAPI's job there and
+  there is no CAPI here. See the notes under Examples.
+
 ## Requirements
 
 SBCL on macOS. Dependencies come from [ocicl](https://github.com/ocicl/ocicl):
 
 ```
 ocicl install
-make test
+make test         # the suite
+make test-clean   # the suite with no ~/.sbclrc and no site init, as CI sees it
 ```
 
 There is no C toolchain in the build: no `cffi-grovel`, no `cffi-libffi`, and no
@@ -227,7 +266,7 @@ process exits as soon as the form returns.
 make test
 ```
 
-The suite runs about 620 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 643 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

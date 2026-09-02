@@ -255,6 +255,13 @@ Each of these is a bug that actually happened here.
   writes an explicit `initialize-source-registry` into the child program. Run it
   with `--no-userinit --no-sysinit` to check this kind of thing locally.
 
+- **One helper knows how to stop a modal loop, and everything goes through it.**
+  `stop-modal-soon` defers `-stopModal` and names `NSModalPanelRunLoopMode`. A
+  sweep for the pattern found the same bug in three more places after the first
+  fix — including, pointedly, in `diagnose-close`, the diagnostic written to
+  investigate the hang, which still contained the hang. If a rule is subtle
+  enough to get wrong once, grep for it.
+
 ## Conventions specific to this codebase
 
 - **`OBJC` exports exactly the 42 symbols the LispWorks manual documents, and

@@ -91,6 +91,31 @@ the thread the REPL is on."
       (objc:invoke button "setAction:" (objc:coerce-to-selector action)))
     button))
 
+(defparameter +modal-run-loop-modes+
+  #("NSModalPanelRunLoopMode" "kCFRunLoopDefaultMode")
+  "The run loop modes a modal session may be running in.
+
+Anything scheduled for delivery during -runModalForWindow: has to name
+NSModalPanelRunLoopMode: a modal session runs in that mode, so work queued for
+the default mode alone is queued for a mode that is not running and never
+arrives.  The vector becomes an NSArray of NSStrings on the way through INVOKE.")
+
+(defun stop-modal-soon ()
+  "Ask for -stopModal on the next pass of the run loop.
+
+Never send -stopModal synchronously from inside an AppKit callback.  A real
+click on a control runs inside that control's mouse tracking loop, nested
+inside the modal loop, and a delegate method fires down there; ending the
+session on the spot returns control to the caller while AppKit is still
+unwinding, leaving the window drawn but dead with nothing pumping events.
+Deferring lets the current event, and everything nested in it, finish first."
+  (objc:invoke (objc:invoke "NSApplication" "sharedApplication")
+               "performSelector:withObject:afterDelay:inModes:"
+               (objc:coerce-to-selector "stopModal")
+               nil
+               0d0
+               +modal-run-loop-modes+))
+
 (objc:define-objc-class modal-stopper ()
   ()
   (:objc-class-name "ObjcModalStopper"))
@@ -118,12 +143,7 @@ the thread the REPL is on."
   ;; running and never fires at all -- which hangs outright rather than late.
   ;; The mode list is a Lisp vector; INVOKE converts it to an NSArray of
   ;; NSStrings on the way in.
-  (objc:invoke (objc:invoke "NSApplication" "sharedApplication")
-               "performSelector:withObject:afterDelay:inModes:"
-               (objc:coerce-to-selector "stopModal")
-               nil
-               0d0
-               #("NSModalPanelRunLoopMode" "kCFRunLoopDefaultMode")))
+  (stop-modal-soon))
 
 (defun run-until-closed (window &key timeout)
   "Keep WINDOW live and responsive until someone closes it.
@@ -167,8 +187,9 @@ existing window delegate is restored afterwards.  Returns T."
            ;; -stopModal has to run on the main thread, so ask for it there
            ;; rather than calling it from here.
            (ignore-errors
-            (objc:invoke app "performSelectorOnMainThread:withObject:waitUntilDone:"
-                         (objc:coerce-to-selector "stopModal") nil nil))))
+            (objc:invoke app "performSelectorOnMainThread:withObject:waitUntilDone:modes:"
+                         (objc:coerce-to-selector "stopModal") nil nil
+                         +modal-run-loop-modes+))))
        :name "objc run-until-closed watchdog"))
     (unwind-protect
          (progn
@@ -211,14 +232,20 @@ existing window delegate is restored afterwards.  Returns T."
         (app (objc:invoke "NSApplication" "sharedApplication")))
     (when note (funcall note "windowWillClose: reached Lisp; modalWindow=~A"
                         (not (cffi:null-pointer-p (objc:invoke app "modalWindow")))))
-    (objc:invoke app "stopModal")
-    (when note (funcall note "stopModal sent"))))
+    ;; Deferred, exactly as MODAL-STOPPER does it.  This carried the
+    ;; synchronous version until a sweep for the pattern found it: the
+    ;; diagnostic written to investigate the hang still contained the hang.
+    (stop-modal-soon)
+    (when note (funcall note "stopModal scheduled"))))
 
 (defun stop-running ()
-  "End the modal loop RUN-UNTIL-CLOSED is in, from anywhere.
+  "End the modal loop RUN-UNTIL-CLOSED is in.
+
 The escape hatch when a window has no close button, or you would rather not
-reach for the mouse."
-  (objc:invoke (objc.runloop:shared-application) "stopModal")
+reach for the mouse.  Scheduled rather than sent, so it is also safe from
+inside an AppKit callback, where a synchronous -stopModal would hand control
+back while AppKit was still unwinding."
+  (stop-modal-soon)
   t)
 
 (defun diagnose-close (&key (log "/tmp/objc-close.log"))

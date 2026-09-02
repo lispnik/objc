@@ -51,3 +51,43 @@
     (let ((center (cocoa::default-notification-center)))
       (is (cffi:pointerp center))
       (is (not (cffi:null-pointer-p center))))))
+
+;;; Notifications -------------------------------------------------------------
+
+(objc:define-objc-class notification-observer ()
+  ((seen :initform nil :accessor notification-observer-seen))
+  (:objc-class-name "ObjcNotificationObserver"))
+
+(objc:define-objc-method ("noted:" :void)
+    ((self notification-observer) (notification objc:objc-object-pointer))
+  (declare (ignore notification))
+  (setf (notification-observer-seen self) t))
+
+(defun post-audit-notification ()
+  (objc:invoke (objc:invoke "NSNotificationCenter" "defaultCenter")
+               "postNotificationName:object:" "ObjcAuditNote" nil))
+
+(test add-observer-delivers-a-notification-to-a-lisp-method
+  "The full round trip: Foundation posts, and a Lisp closure installed as an
+IMP receives it."
+  (with-runtime
+    (let* ((observer (make-instance 'notification-observer))
+           (pointer (objc:objc-object-pointer observer)))
+      (unwind-protect
+           (progn
+             (cocoa:add-observer pointer "noted:" :name "ObjcAuditNote")
+             (post-audit-notification)
+             (is-true (notification-observer-seen observer)))
+        (cocoa:remove-observer pointer :name "ObjcAuditNote")))))
+
+(test remove-observer-stops-delivery
+  (with-runtime
+    (let* ((observer (make-instance 'notification-observer))
+           (pointer (objc:objc-object-pointer observer)))
+      (cocoa:add-observer pointer "noted:" :name "ObjcAuditNote")
+      (post-audit-notification)
+      (is-true (notification-observer-seen observer))
+      (cocoa:remove-observer pointer :name "ObjcAuditNote")
+      (setf (notification-observer-seen observer) nil)
+      (post-audit-notification)
+      (is-false (notification-observer-seen observer)))))

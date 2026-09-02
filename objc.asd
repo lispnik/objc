@@ -116,6 +116,7 @@ Lisp method can take and return C structs by value like any other."
                  (:file "gui-tests")
                  (:file "seam-tests")
                  (:file "oracle-tests")
+                 (:file "thread-tests")
                  (:file "dump-tests"))))
   ;; FIVEAM:RUN! prints its report and returns NIL when anything failed, and
   ;; ASDF discards what a TEST-OP returns.  Reporting by return value is how a

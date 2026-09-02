@@ -322,3 +322,28 @@ this disposition exists to avoid."
 (test invoke-into-pointer-with-an-element-type
   (with-runtime
     (is (cffi:pointerp (objc:invoke-into '(:pointer :char) (ns "hello") "UTF8String")))))
+
+;;; Tracing and odds and ends -------------------------------------------------
+
+(test trace-invoke-actually-reports-calls
+  "Not CL:TRACE on INVOKE, which would fire on every send in the image and
+print receivers as opaque pointers."
+  (with-runtime
+    (objc:trace-invoke "length")
+    (unwind-protect
+         (let ((output (with-output-to-string (stream)
+                         (let ((*trace-output* stream))
+                           (objc:invoke (ns "hi") "length")))))
+           (is (search "length" output))
+           ;; and an untraced selector stays quiet
+           (let ((output (with-output-to-string (stream)
+                           (let ((*trace-output* stream))
+                             (objc:invoke (ns "hi") "hash")))))
+             (is (zerop (length output)))))
+      (objc:untrace-invoke "length"))))
+
+(test alloc-init-object-accepts-a-class-pointer-as-well-as-a-name
+  (with-runtime
+    (is (cffi:pointerp (objc:alloc-init-object "NSObject")))
+    (is (cffi:pointerp (objc:alloc-init-object
+                        (objc:coerce-to-objc-class "NSObject"))))))

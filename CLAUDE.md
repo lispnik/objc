@@ -191,6 +191,12 @@ Each of these is a bug that actually happened here.
   `:objc-protocols` resolves names with `objc_getProtocol` at class definition
   time, and a protocol from a framework nobody has opened is simply not there.
 
+- **A test that needs the runtime must call `ensure-objc-initialized`, not just
+  open Foundation.** The defining macros are documented to work before
+  initialization, so they queue their foreign work; a helper that only opened
+  libobjc left every class defined at load time unrealized, and whether a test
+  saw one depended on which suite happened to run first.
+
 ## Conventions specific to this codebase
 
 - **`OBJC` exports exactly the 42 symbols the LispWorks manual documents, and

@@ -8,8 +8,9 @@
 (in-suite classes)
 
 (defun ensure-initialized ()
-  (handler-case (progn (objc:ensure-objc-initialized) t)
-    (error () nil)))
+  "Alias for RUNTIME-AVAILABLE-P, kept because WITH-GUI and WITH-OBJC read
+better with it."
+  (runtime-available-p))
 
 (defmacro with-objc (&body body)
   `(if (not (ensure-initialized))
@@ -195,3 +196,72 @@ the original's, per the manual."
       (is (not (null copy)))
       (is (not (eq object copy)))
       (is (eq :original (test-point-tag copy))))))
+
+;;; The lifecycle generic functions ------------------------------------------
+;;;
+;;; The manual documents both as the way to do what -dealloc and -copyWithZone:
+;;; do in Objective-C, with the built-in primary method doing the boring part
+;;; and an :AFTER method doing the class-specific part.
+
+(objc:define-objc-class lifecycle-copy ()
+  ((n :initarg :n :initform 0 :accessor lifecycle-copy-n)
+   (marked :initform nil :accessor lifecycle-copy-marked))
+  (:objc-class-name "ObjcLifecycleCopy"))
+
+(defmethod objc:objc-object-copied :after ((old lifecycle-copy) (new lifecycle-copy))
+  (setf (lifecycle-copy-marked new) :copied))
+
+(defvar *lifecycle-destroyed* '())
+
+(objc:define-objc-class lifecycle-dealloc ()
+  ((tag :initarg :tag :initform nil :accessor lifecycle-dealloc-tag))
+  (:objc-class-name "ObjcLifecycleDealloc"))
+
+(defmethod objc:objc-object-destroyed :after ((object lifecycle-dealloc))
+  (push (lifecycle-dealloc-tag object) *lifecycle-destroyed*))
+
+(test objc-object-copied-runs-the-built-in-and-then-the-after-method
+  (with-objc
+    (let* ((original (make-instance 'lifecycle-copy :n 7))
+           (copy (objc:objc-object-from-pointer
+                  (objc:invoke (objc:objc-object-pointer original) "copy"))))
+      (is (typep copy 'lifecycle-copy) "the copy has its own Lisp object")
+      (is (not (eq original copy)))
+      (is (= 7 (lifecycle-copy-n copy)) "the built-in primary method copied the slots")
+      (is (eq :copied (lifecycle-copy-marked copy)) "the :AFTER method ran"))))
+
+(test objc-object-destroyed-runs-when-the-reference-count-reaches-zero
+  (with-objc
+    (let ((*lifecycle-destroyed* '()))
+      (objc:release (make-instance 'lifecycle-dealloc :tag :gone))
+      (is (equal '(:gone) *lifecycle-destroyed*)))))
+
+;;; Protocols -----------------------------------------------------------------
+
+(objc:define-objc-protocol "ObjcAuditProtocol"
+  :instance-methods (("auditPing" :int)))
+
+(objc:define-objc-class conforming ()
+  ()
+  (:objc-class-name "ObjcConforming")
+  (:objc-protocols "NSCopying"))
+
+(test define-objc-protocol-records-a-declaration
+  "It declares, it does not create: the runtime has not allowed creating
+protocols since macOS 10.5, and the manual says so."
+  (is (not (null (gethash "ObjcAuditProtocol" objc::*declared-protocols*)))))
+
+(test objc-protocols-makes-the-class-conform
+  (with-objc
+    (is-true (objc:invoke-bool
+              (objc:objc-object-pointer (make-instance 'conforming))
+              "conformsToProtocol:" (objc::%objc-get-protocol "NSCopying")))))
+
+(test naming-an-unknown-protocol-warns-rather-than-failing
+  "class_addProtocol with a NULL protocol is a silent no-op, so this is the
+only place the mistake can be reported."
+  (signals warning
+    (eval '(objc:define-objc-class unknown-protocol-class ()
+            ()
+            (:objc-class-name "ObjcUnknownProtocolClass")
+            (:objc-protocols "NoSuchProtocolAnywhere")))))

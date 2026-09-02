@@ -182,3 +182,45 @@ it becomes a garbage argument register."
   "SBCL recycles a callback's trampoline once it becomes garbage, and Cocoa
 would still be holding the address.  The registry is what stops that."
   (is (plusp (hash-table-count objc::*imp-registry*))))
+
+;;; Class methods ------------------------------------------------------------
+;;;
+;;; DEFINE-OBJC-CLASS-METHOD had one test for a long time.  These cover the
+;;; parts that differ from an instance method: what the receiver is bound to,
+;;; and what CURRENT-SUPER reaches.
+
+(objc:define-objc-class class-method-base ()
+  ()
+  (:objc-class-name "ObjcClassMethodBase"))
+
+(objc:define-objc-class-method ("baseAnswer" :int) ((class class-method-base)) 10)
+(objc:define-objc-method ("instanceAnswer" :int) ((self class-method-base)) 20)
+
+(objc:define-objc-class class-method-derived (class-method-base)
+  ()
+  (:objc-class-name "ObjcClassMethodDerived"))
+
+(objc:define-objc-class-method ("baseAnswer" :int) ((class class-method-derived))
+  (+ 1 (objc:invoke (objc:current-super) "baseAnswer")))
+
+(test a-class-method-is-reachable-through-a-string-receiver
+  (with-objc
+    (is (= 10 (objc:invoke "ObjcClassMethodBase" "baseAnswer")))))
+
+(test a-class-method-is-inherited
+  (with-objc
+    (is (= 10 (objc:invoke "ObjcClassMethodBase" "baseAnswer")))))
+
+(test current-super-in-a-class-method-reaches-the-superclass-class-method
+  "For a class method the search starts in the superclass's METAclass, not its
+class -- getting that wrong finds the method being defined and recurses."
+  (with-objc
+    (is (= 11 (objc:invoke "ObjcClassMethodDerived" "baseAnswer")))))
+
+(test a-class-receiver-does-not-find-instance-methods
+  "The lookup for a string receiver goes to the metaclass, so an instance
+method is correctly invisible there."
+  (with-objc
+    (signals error (objc:invoke "ObjcClassMethodBase" "instanceAnswer"))
+    (is (= 20 (objc:invoke (objc:alloc-init-object "ObjcClassMethodBase")
+                           "instanceAnswer")))))

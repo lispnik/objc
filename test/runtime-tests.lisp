@@ -8,7 +8,14 @@
 (in-suite runtime)
 
 (defun runtime-available-p ()
-  (handler-case (progn (objc::ensure-libobjc) (objc::ensure-foundation) t)
+  "True when the Objective-C runtime is up and this library is initialized.
+
+ENSURE-OBJC-INITIALIZED, not merely opening libobjc: the defining macros are
+documented to work before initialization, so they queue their foreign work and
+this is what drains the queue.  A helper that only opened Foundation left every
+class defined at load time unrealized, and whether a test saw one depended on
+which suite happened to run first."
+  (handler-case (progn (objc:ensure-objc-initialized) t)
     (error () nil)))
 
 (defmacro with-runtime (&body body)

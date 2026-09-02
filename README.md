@@ -196,7 +196,7 @@ process exits as soon as the form returns.
 make test
 ```
 
-The suite runs about 575 checks. Behaviour that the manual leaves ambiguous was
+The suite runs about 620 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

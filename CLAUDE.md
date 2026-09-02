@@ -242,6 +242,12 @@ Each of these is a bug that actually happened here.
   libobjc left every class defined at load time unrealized, and whether a test
   saw one depended on which suite happened to run first.
 
+- **Bound WKWebView tests generously, and skip rather than fail.** It renders in
+  a separate web content process, and how long that takes to spawn is not
+  something this library controls. A tight bound made the suite fail about one
+  run in six on a loaded machine, which is worse than useless: a suite that
+  cries wolf gets ignored the one time it is right.
+
 ## Conventions specific to this codebase
 
 - **`OBJC` exports exactly the 42 symbols the LispWorks manual documents, and

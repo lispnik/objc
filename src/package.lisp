@@ -112,4 +112,7 @@
    #:*events-dispatched*
    #:run-cocoa-application
    ;; Is there anything to draw on? --------------------------------------------
-   #:window-server-p))
+   #:window-server-p
+   ;; Handing the keyboard back --------------------------------------------
+   #:remember-frontmost
+   #:restore-frontmost))

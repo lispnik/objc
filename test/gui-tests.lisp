@@ -321,3 +321,35 @@ reaching Lisp -- a caller who passed :TIMEOUT gets the REPL back."
                  (is (< 1.5 elapsed 12d0)
                      "returned on the watchdog with nobody closing the window"))))
         (objc:invoke window "close")))))
+
+(test closing-a-window-hands-the-keyboard-back
+  "THE one that presented as a hang and was not one.
+
+Showing a window makes this process the frontmost macOS application, and it
+stays frontmost after the window closes -- activation policy Regular, no
+windows.  The REPL is then sitting at its prompt while the window server sends
+every keystroke here, so the terminal looks frozen and is not.  No automated
+test could see it, because no test types; it took the frontmostApplication read
+to find.  RUN-UNTIL-CLOSED restores whoever had the keyboard."
+  (with-gui
+    (let ((previous (objc.runloop:remember-frontmost)))
+      (if (null previous)
+          (skip "nothing else was frontmost to hand the keyboard back to")
+          (let ((window (objc/examples::make-window
+                         :title "focus" :rect #(620d0 620d0 200d0 120d0)))
+                (app (objc.runloop:shared-application)))
+            (unwind-protect
+                 (progn
+                   (objc/examples::show-window window :seconds 0.2d0)
+                   (bt:make-thread
+                    (lambda ()
+                      (sleep 0.5)
+                      (objc:invoke app "performSelectorOnMainThread:withObject:waitUntilDone:"
+                                   (objc:coerce-to-selector "stopModal") nil nil)))
+                   (objc/examples:run-until-closed window)
+                   (let* ((workspace (objc:invoke "NSWorkspace" "sharedWorkspace"))
+                          (front (objc:invoke workspace "frontmostApplication"))
+                          (self (objc:invoke "NSRunningApplication" "currentApplication")))
+                     (is-false (objc:invoke-bool front "isEqual:" self)
+                               "we are no longer holding the keyboard")))
+              (objc:invoke window "close")))))))

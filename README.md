@@ -187,6 +187,11 @@ runs AppKit's own event loop -- `-[NSApplication runModalForWindow:]` -- and
 closing the window hands the REPL back. `(objc/examples:stop-running)` ends it
 from elsewhere if you would rather not reach for the mouse.
 
+Closing the window also hands the keyboard back to whatever had it -- your
+terminal or editor. Without that, the process stays the frontmost macOS
+application with no windows left, and the terminal *looks* frozen while sitting
+at its prompt, because the window server is delivering your keystrokes here.
+
 If closing the window does not hand the REPL back on your machine, pass a
 watchdog and you cannot get stuck:
 

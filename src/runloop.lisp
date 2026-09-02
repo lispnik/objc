@@ -70,6 +70,43 @@ session with no window server -- which is what the GUI tests gate on."
           (and (cffi:pointerp screen) (not (cffi:null-pointer-p screen)))))
     (error () nil)))
 
+(defvar *previous-frontmost* nil
+  "The macOS application that was frontmost before we first activated.
+
+Showing a window makes this process the frontmost application and it STAYS
+frontmost after the window closes -- activation policy Regular, no windows.
+The REPL is then at its prompt while every keystroke goes to an app with
+nothing to type into, which reads exactly like a hang.  Remembering who had the
+keyboard is what lets RESTORE-FRONTMOST give it back.
+
+Captured once, before the first activation, and never overwritten with
+ourselves.")
+
+(defun remember-frontmost ()
+  "Record who had the keyboard, if we have not already and it is not us."
+  (unless *previous-frontmost*
+    (ignore-errors
+     (let* ((workspace (invoke "NSWorkspace" "sharedWorkspace"))
+            (front (invoke workspace "frontmostApplication"))
+            (self (invoke "NSRunningApplication" "currentApplication")))
+       (when (and (not (cffi:null-pointer-p front))
+                  (not (invoke-bool front "isEqual:" self)))
+         (setf *previous-frontmost* (objc:retain front))))))
+  *previous-frontmost*)
+
+(defun restore-frontmost ()
+  "Hand the keyboard back to whoever had it before we activated.
+
+Call this after a window closes, or the terminal you launched from will look
+frozen: it is still at its prompt, but the window server is sending keystrokes
+here."
+  (ignore-errors
+   (let ((previous *previous-frontmost*))
+     (when (and previous (not (cffi:null-pointer-p previous)))
+       (invoke previous "activateWithOptions:" 0))
+     (invoke (invoke "NSApplication" "sharedApplication") "deactivate")))
+  t)
+
 (defun shared-application (&key (activation-policy 0))
   "Return the NSApplication, creating it and setting its activation policy.
 
@@ -79,6 +116,9 @@ the front."
   (check-main-thread "NSApplication")
   (objc::with-fp-traps-masked
     (objc::ensure-appkit)
+    ;; Before the activation policy changes, while the answer is still someone
+    ;; else.
+    (remember-frontmost)
     (let ((app (invoke "NSApplication" "sharedApplication")))
       (when activation-policy
         (invoke app "setActivationPolicy:" activation-policy))

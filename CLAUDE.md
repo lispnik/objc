@@ -203,6 +203,19 @@ Each of these is a bug that actually happened here.
   the flag off so Lisp owns the window, and `run-until-closed` retains it across
   the loop for windows that arrived from somewhere else.
 
+- **Showing a window steals the keyboard, and closing it does not give it
+  back.** `setActivationPolicy: NSApplicationActivationPolicyRegular` plus
+  `activateIgnoringOtherApps:` makes this process the frontmost macOS
+  application; when the window closes, the process is *still* frontmost, with no
+  windows. The REPL is then at its prompt while the window server delivers every
+  keystroke here, so the terminal looks frozen and is not. This was reported as
+  a hang and cost four wrong diagnoses — a spinning event loop, a use-after-free
+  on the window, an unresponsive close button, an uninterruptible pump — none of
+  which were it. No automated test can catch this, because no test types;
+  `[[NSWorkspace sharedWorkspace] frontmostApplication]` is what finally showed
+  it. `objc.runloop:remember-frontmost` records who had the keyboard before the
+  first activation, and `restore-frontmost` hands it back.
+
 - **A method body may open with declarations.** The manual's own
   area-calculator example starts `(declare (ignore sender))`, and they have to
   land inside the `let*` that binds the arguments.

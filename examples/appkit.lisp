@@ -153,7 +153,14 @@ existing window delegate is restored afterwards.  Returns T."
            (objc:invoke app "runModalForWindow:" window))
       (setf finished t)
       (ignore-errors (objc:invoke window "setDelegate:" previous))
-      (objc:release window))
+      (objc:release window)
+      ;; Give the keyboard back.  Showing a window makes this process the
+      ;; frontmost macOS application, and it STAYS frontmost after the window
+      ;; closes -- activation policy Regular, no windows left.  The REPL is
+      ;; then at its prompt while every keystroke goes to an app with nothing
+      ;; to type into, which reads exactly like a hang, and which no automated
+      ;; test can see because no test types.
+      (objc.runloop:restore-frontmost))
     t))
 
 (objc:define-objc-class logging-stopper ()

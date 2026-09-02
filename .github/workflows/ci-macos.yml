@@ -23,6 +23,21 @@
 # The skip count is printed by the suite.  A green headless run is a green run
 # of fewer checks, not a green run of the GUI tests.
 
+# The Intel leg is not box-ticking.  The two architectures genuinely differ in
+# the Objective-C ABI: BOOL encodes as 'c' (a signed char) on x86-64 and 'B'
+# (C99 _Bool) on arm64, and -- the one most likely to break -- a structure
+# result over 16 bytes goes through objc_msgSend_stret on x86-64, a function
+# that does not exist on arm64, where the same result comes back through x8.
+# Nothing here is conditionalised on architecture: BOOL's encoding is read from
+# the runtime, and the _stret decision is made by whether that symbol resolves
+# in libobjc.  Those are reasons to expect Intel to work, not evidence that it
+# does, and only this leg makes the second claim.
+#
+# The label matters.  macos-13, the old free Intel image, has been retired, and
+# a job labelled with it is never assigned a runner -- it queues indefinitely
+# rather than failing, so the workflow never reports at all.  Intel is now
+# macos-15-intel / macos-26-intel (also spelled macos-*-large).
+#
 name: macOS
 
 on:
@@ -40,7 +55,7 @@ jobs:
         include:
           - os: macos-latest
             arch: arm64
-          - os: macos-13
+          - os: macos-26-intel
             arch: x86-64
 
     steps:

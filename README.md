@@ -72,9 +72,7 @@ against, so the differential tests run without LispWorks installed.
   and `B` on Apple silicon, and a structure result over 16 bytes goes through
   `objc_msgSend_stret` on Intel — a function that does not exist on arm64, where
   the same result returns through `x8`. Both paths are implemented and the
-  selection logic is unit tested, but no Intel machine has executed it. CI cannot
-  close this: GitHub retired the free `macos-13` image, and Intel is now only
-  available as a billed larger runner.
+  selection logic is unit tested; CI runs an Intel leg to exercise them.
 - **SBCL only.** Dynamic dispatch is built on `sb-alien`, for reasons set out in
   `src/abi.lisp`. It is confined to that one file, which a test enforces, so
   porting is one file's work — but it is not portable today.

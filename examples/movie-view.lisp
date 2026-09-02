@@ -29,8 +29,8 @@
 
 (defun test-movie-view (&optional path)
   "Show a movie view, playing PATH if given."
-  (let* ((window (make-window :title "Movie View" :rect #(240d0 240d0 640d0 400d0)))
-         (view (make-movie-view #(0d0 0d0 640d0 400d0))))
+  (let* ((window (make-window :title "Movie View" :rect #(240 240 640 400)))
+         (view (make-movie-view #(0 0 640 400))))
     (add-subview window view)
     (when path
       (movie-view-test-set-movie view path))

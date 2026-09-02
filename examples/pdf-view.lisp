@@ -44,8 +44,8 @@
 
 (defun test-pdf-kit (&optional filename)
   "Show a PDF view, loading FILENAME if given."
-  (let* ((window (make-window :title "PDF View" :rect #(240d0 240d0 700d0 560d0)))
-         (view (make-pdf-view #(0d0 0d0 700d0 560d0))))
+  (let* ((window (make-window :title "PDF View" :rect #(240 240 700 560)))
+         (view (make-pdf-view #(0 0 700 560))))
     (add-subview window view)
     (when filename
       (set-pdf-kit-test-file view filename))

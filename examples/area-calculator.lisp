@@ -49,13 +49,13 @@ The nib's job, done in code: make the fields, store them in the controller's
 instance variables, and wire the button to -compute:."
   (let* ((controller (make-instance 'area-controller))
          (window (make-window :title "Area Calculator"
-                              :rect #(300d0 300d0 320d0 160d0)))
-         (width (make-text-field #(110d0 110d0 180d0 24d0) :text "6"))
-         (height (make-text-field #(110d0 78d0 180d0 24d0) :text "7"))
-         (area (make-text-field #(110d0 46d0 180d0 24d0) :text "0")))
-    (add-subview window (make-label "Width:" #(20d0 112d0 80d0 20d0)))
-    (add-subview window (make-label "Height:" #(20d0 80d0 80d0 20d0)))
-    (add-subview window (make-label "Area:" #(20d0 48d0 80d0 20d0)))
+                              :rect #(300 300 320 160)))
+         (width (make-text-field #(110 110 180 24) :text "6"))
+         (height (make-text-field #(110 78 180 24) :text "7"))
+         (area (make-text-field #(110 46 180 24) :text "0")))
+    (add-subview window (make-label "Width:" #(20 112 80 20)))
+    (add-subview window (make-label "Height:" #(20 80 80 20)))
+    (add-subview window (make-label "Area:" #(20 48 80 20)))
     (add-subview window width)
     (add-subview window height)
     (add-subview window area)
@@ -63,7 +63,7 @@ instance variables, and wire the button to -compute:."
           (objc:objc-object-var-value controller "heightField") height
           (objc:objc-object-var-value controller "areaField") area)
     (add-subview window
-                 (make-button "Compute" #(110d0 10d0 100d0 28d0)
+                 (make-button "Compute" #(110 10 100 28)
                               :target (objc:objc-object-pointer controller)
                               :action "compute:"))
     (values controller window)))

@@ -23,7 +23,7 @@
   (logior +ns-window-style-titled+ +ns-window-style-closable+
           +ns-window-style-miniaturizable+ +ns-window-style-resizable+))
 
-(defun make-window (&key (title "objc") (rect #(200d0 200d0 640d0 480d0)))
+(defun make-window (&key (title "objc") (rect #(200 200 640 480)))
   "Create a titled window.  The CAPI original's equivalent is CAPI:CONTAIN."
   (objc.runloop:shared-application)
   (let ((window (objc:invoke (objc:invoke "NSWindow" "alloc")

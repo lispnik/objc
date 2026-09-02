@@ -78,8 +78,8 @@
 (defun test-web-kit (&optional (url "https://www.lispworks.com/"))
   "Show a web view loading URL, with a Lisp delegate watching it.
 Returns (VALUES WINDOW DELEGATE VIEW)."
-  (let* ((window (make-window :title "Web Kit Test" :rect #(200d0 200d0 800d0 600d0)))
-         (view (make-web-view #(0d0 0d0 800d0 600d0)))
+  (let* ((window (make-window :title "Web Kit Test" :rect #(200 200 800 600)))
+         (view (make-web-view #(0 0 800 600)))
          (delegate (make-instance 'web-kit-test-delegate)))
     (objc:invoke view "setNavigationDelegate:" (objc:objc-object-pointer delegate))
     (add-subview window view)

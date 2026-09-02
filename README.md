@@ -73,6 +73,14 @@ against, so the differential tests run without LispWorks installed.
   `objc_msgSend_stret` on Intel — a function that does not exist on arm64, where
   the same result returns through `x8`. Both paths are implemented and the
   selection logic is unit tested; CI runs an Intel leg to exercise them.
+- **There is no FLI, and there will not be one.** The type descriptor symbols
+  work everywhere the Objective-C manual uses them — method argument and result
+  types, `objc-class-method-signature`, `define-objc-struct` slots — but the
+  wider LispWorks FLI does not exist here. Ported code that only uses `objc:`
+  and `cocoa:` runs unchanged; code that also reaches for `fli:define-c-struct`
+  or `fli:allocate-foreign-object` needs rewriting against CFFI. The examples
+  carry a six-function `fli` shim for the handful of operators the manual's own
+  examples use, and that is deliberately as far as it goes.
 - **SBCL only.** Dynamic dispatch is built on `sb-alien`, for reasons set out in
   `src/abi.lisp`. It is confined to that one file, which a test enforces, so
   porting is one file's work — but it is not portable today.

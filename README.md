@@ -66,9 +66,12 @@ against, so the differential tests run without LispWorks installed.
   call passes its variable arguments on the stack and a fixed-arity call passes
   them in registers, so `+stringWithFormat:` without it reads garbage. LispWorks
   fails silently here; this warns once, naming the fix.
-- **Only tested on arm64.** `BOOL`'s encoding is measured from the runtime rather
-  than chosen by a read-time conditional, and nothing is conditionalised on
-  architecture, so Intel *should* work. It has never been run there.
+- **arm64 is the architecture this is developed on.** x86-64 is exercised by CI.
+  The two differ in the Objective-C ABI in two ways that matter, and both are
+  handled by measuring the runtime rather than by read-time conditionals:
+  `BOOL` encodes as `c` on Intel and `B` on Apple silicon, and a structure result
+  over 16 bytes goes through `objc_msgSend_stret` on Intel — a function that does
+  not exist on arm64, where the same result returns through `x8`.
 - **SBCL only.** Dynamic dispatch is built on `sb-alien`, for reasons set out in
   `src/abi.lisp`. It is confined to that one file, which a test enforces, so
   porting is one file's work — but it is not portable today.

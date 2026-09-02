@@ -124,21 +124,60 @@ know an alien type at all."
 
 (defvar *msgsend-address* nil)
 (defvar *msgsend-super-address* nil)
+(defvar *msgsend-stret-address* nil
+  "objc_msgSend_stret, or NIL where it does not exist.
+
+Its presence is the signal for whether this architecture returns large
+structures through a separate entry point, and it is measured rather than
+assumed: the symbol is simply absent from libobjc on arm64.  See
+STRET-REQUIRED-P.")
+(defvar *msgsend-super-stret-address* nil)
 
 (defun ensure-dispatch-addresses ()
-  "Resolve objc_msgSend and objc_msgSendSuper once, as integers.
+  "Resolve the objc_msgSend family once, as integers.
+
 Integers rather than SAPs so they inline into a compiled trampoline as
-immediates instead of being fetched through a closure cell on every call."
+immediates instead of being fetched through a closure cell on every call.  The
+_stret pair is optional and stays NIL where the architecture has no such
+function."
   (unless *msgsend-address*
     (let ((send (cffi:foreign-symbol-pointer "objc_msgSend"))
-          (super (cffi:foreign-symbol-pointer "objc_msgSendSuper")))
+          (super (cffi:foreign-symbol-pointer "objc_msgSendSuper"))
+          (stret (cffi:foreign-symbol-pointer "objc_msgSend_stret"))
+          (super-stret (cffi:foreign-symbol-pointer "objc_msgSendSuper_stret")))
       (when (or (null send) (null super))
         (error 'library-not-found
                :name "objc_msgSend"
                :candidates +libobjc-candidates+))
       (setf *msgsend-address* (cffi:pointer-address send)
-            *msgsend-super-address* (cffi:pointer-address super))))
+            *msgsend-super-address* (cffi:pointer-address super)
+            *msgsend-stret-address* (and stret (cffi:pointer-address stret))
+            *msgsend-super-stret-address* (and super-stret
+                                               (cffi:pointer-address super-stret)))))
   (values *msgsend-address* *msgsend-super-address*))
+
+(defparameter +max-register-returned-struct+ 16
+  "Largest structure the x86-64 SysV ABI returns in registers.
+
+Anything bigger is classified MEMORY and comes back through a hidden pointer,
+which is what objc_msgSend_stret exists to arrange.  CGRect is 32 bytes, so
+-[NSView frame] is on the wrong side of this line.")
+
+(defun stret-required-p (node)
+  "True when a structure result must go through the separate _stret entry.
+
+Two conditions, both necessary.  The architecture has to have such an entry at
+all -- on arm64 it does not, because a large structure comes back through x8
+from plain objc_msgSend and objc_msgSend_stret is not even a symbol there.  And
+the structure has to be one the ABI returns in memory rather than in registers.
+
+Getting this wrong is not a graceful failure.  objc_msgSend cannot perform an
+sret call: the hidden result pointer displaces the receiver into the wrong
+register, so the receiver is read as garbage."
+  (and *msgsend-stret-address*
+       (struct-node-p node)
+       (> (node-size-and-alignment (resolve-struct-layout node))
+          +max-register-returned-struct+)))
 
 ;;; Trampolines --------------------------------------------------------------
 
@@ -164,10 +203,13 @@ variadic call: with it, snprintf(\"%d\", 42) prints \"The integer 42\"; without
 it, \"The integer 1232\", because arm64 passes variadic arguments on the stack
 while a fixed signature passes them in registers."
   (ensure-dispatch-addresses)
-  (let* ((entry (ecase kind
-                  (:send *msgsend-address*)
-                  (:super *msgsend-super-address*)))
-         (structp (struct-node-p result-node))
+  (let* ((structp (struct-node-p result-node))
+         (stretp (stret-required-p result-node))
+         (entry (ecase kind
+                  (:send (if stretp *msgsend-stret-address* *msgsend-address*))
+                  (:super (if stretp
+                              *msgsend-super-stret-address*
+                              *msgsend-super-address*))))
          (result-node (if structp (resolve-struct-layout result-node) result-node))
          (rtype (alien-type result-node))
          (out (gensym "OUT"))
@@ -344,6 +386,8 @@ its message is \"Capturing attempt to throw out of Cocoa handler\"."
 (defun clear-abi-caches ()
   (clrhash *alien-struct-types*)
   (setf *msgsend-address* nil
-        *msgsend-super-address* nil))
+        *msgsend-super-address* nil
+        *msgsend-stret-address* nil
+        *msgsend-super-stret-address* nil))
 
 (add-image-restore-thunk 'clear-abi-caches)

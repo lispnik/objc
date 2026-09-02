@@ -228,6 +228,16 @@ Each of these is a bug that actually happened here.
   `afterDelay:` variant queues the selector for a mode that is not running and
   it never fires at all — an outright hang rather than a late one.
 
+- **A large structure result needs `objc_msgSend_stret` on x86-64 and must not
+  use it on arm64.** Over 16 bytes, the x86-64 SysV ABI returns through a hidden
+  pointer, and plain `objc_msgSend` cannot perform that call — the hidden result
+  pointer displaces the receiver into the wrong register, so the receiver is read
+  as garbage. arm64 has no such function at all; the same result comes back
+  through `x8`. Which applies is decided by whether `objc_msgSend_stret`
+  *resolves in libobjc*, which is measured at initialization rather than chosen
+  by a read-time conditional — the symbol is genuinely absent on arm64. `CGRect`
+  is 32 bytes, so `-[NSView frame]` is on the `_stret` side of the line.
+
 - **A method body may open with declarations.** The manual's own
   area-calculator example starts `(declare (ignore sender))`, and they have to
   land inside the `let*` that binds the arguments.

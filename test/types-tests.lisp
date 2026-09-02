@@ -153,3 +153,45 @@ unknown."
                                     (:c-type :double))
           :int))
   (is (eq :double (objc::node-for-fli-type 'typedef-test-alias))))
+
+;;; Struct return ABI -------------------------------------------------------
+
+(test stret-policy-is-measured-not-assumed
+  "Whether a large structure result needs objc_msgSend_stret is decided by
+whether that function exists, which differs by architecture and is read from
+libobjc rather than chosen by a read-time conditional.
+
+On arm64 the symbol is absent -- a large structure comes back through x8 from
+plain objc_msgSend -- so nothing should ever select the _stret path.  On x86-64
+the symbol is present and anything over 16 bytes must take it, because
+objc_msgSend cannot perform an sret call: the hidden result pointer displaces
+the receiver into the wrong register."
+  (if (not (runtime-available-p))
+      (skip "Objective-C runtime not available")
+      (let ((cgrect (objc::parse-type "{CGRect={CGPoint=dd}{CGSize=dd}}"))
+            (nsrange (objc::parse-type "{_NSRange=QQ}")))
+        (is (= 32 (objc::node-size-and-alignment cgrect)))
+        (is (= 16 (objc::node-size-and-alignment nsrange)))
+        (cond
+          ((null objc::*msgsend-stret-address*)
+           ;; arm64: no such entry point, so nothing may ask for it.
+           (is-false (objc::stret-required-p cgrect))
+           (is-false (objc::stret-required-p nsrange))
+           (is-false (objc::stret-required-p :id)))
+          (t
+           ;; x86-64: over sixteen bytes goes through _stret, at or under does not.
+           (is-true (objc::stret-required-p cgrect))
+           (is-false (objc::stret-required-p nsrange))
+           (is-false (objc::stret-required-p :id)))))))
+
+(test struct-returns-work-whichever-entry-point-is-used
+  "The point of the policy, exercised end to end.  CGRect is 32 bytes and is on
+the _stret side of the line on x86-64; NSRange is 16 and is not."
+  (if (not (runtime-available-p))
+      (skip "Objective-C runtime not available")
+      (let ((value (objc:invoke "NSValue" "valueWithRect:" #(1d0 2d0 30d0 40d0)))
+            (string (objc:invoke "NSString" "stringWithUTF8String:" "hello world")))
+        (is (equalp #(1d0 2d0 30d0 40d0) (objc:invoke value "rectValue"))
+            "a 32-byte structure result")
+        (is (equal '(6 . 5) (objc:invoke string "rangeOfString:" "world"))
+            "a 16-byte structure result"))))

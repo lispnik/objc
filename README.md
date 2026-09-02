@@ -1,5 +1,7 @@
 # objc
 
+[![macOS](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml)
+
 The LispWorks Objective-C interface, reimplemented for SBCL on macOS.
 
 The packages are literally named `OBJC` and `COCOA`, the exported symbols have

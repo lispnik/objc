@@ -1,0 +1,80 @@
+# macOS is the only platform workflow here, because this library is macOS-only
+# by construction: it binds /usr/lib/libobjc.A.dylib and Cocoa.
+#
+# What a CI run can and cannot prove.  GitHub's macOS runners have no window
+# server, so [NSScreen mainScreen] is nil and the gui suite skips itself --
+# roughly 30 of the checks.  Everything else runs, including the suites that
+# matter most for portability of the dispatch machinery: the encoding parser,
+# the struct layout table checked against Foundation's own
+# NSGetSizeAndAlignment, the differential tests against the recorded LispWorks
+# answers, and the dump suite, which saves an executable in a subprocess and
+# sends a message to a Lisp-defined class after the restart.
+#
+# The skip count is printed by the suite.  A green headless run is a green run
+# of fewer checks, not a green run of the GUI tests.
+
+name: macOS
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    name: sbcl · macos-latest
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install SBCL
+        run: brew install sbcl
+
+      - name: Install and configure ocicl
+        run: |
+          # Clone the ocicl *tool* outside the repo so it does not collide with
+          # this project's gitignored ocicl/ dependency directory.
+          git clone --depth 1 https://github.com/ocicl/ocicl.git "$HOME/ocicl-src"
+          ( cd "$HOME/ocicl-src" && sbcl --non-interactive --load setup.lisp )
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Restore dependencies
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          ocicl setup
+          ocicl install
+
+      - name: Report the environment the tests will see
+        # Worth its own step: BOOL's encoding is measured from the runtime
+        # rather than chosen by a read-time conditional, and whether the gui
+        # suite runs at all depends on there being a window server.  When
+        # checks are skipped, this is what says why.
+        run: |
+          sbcl --non-interactive \
+            --load "$HOME/.local/share/ocicl/ocicl-runtime.lisp" \
+            --eval '(asdf:initialize-source-registry (list :source-registry (list :directory (uiop:getcwd)) :inherit-configuration))' \
+            --eval '(asdf:load-system :objc)' \
+            --eval '(objc:ensure-objc-initialized)' \
+            --eval '(format t "~&machine: ~A~%BOOL encodes as: ~C~%window server: ~A~%" (machine-type) objc::*bool-encoding-char* (objc.runloop:window-server-p))'
+
+      - name: Check the manual's examples still run
+        # examples/manual.lisp is a near-verbatim port of the file LispWorks
+        # ships; every objc: form in it is unchanged from the original.  It
+        # needs no window server, so it runs here.
+        run: |
+          sbcl --non-interactive \
+            --load "$HOME/.local/share/ocicl/ocicl-runtime.lisp" \
+            --eval '(asdf:initialize-source-registry (list :source-registry (list :directory (uiop:getcwd)) :inherit-configuration))' \
+            --eval '(asdf:load-system :objc/examples)' \
+            --eval '(uiop:quit (if (objc/examples:run-manual-examples) 0 1))'
+
+      - name: Run tests
+        # RUN-TESTS returns the status; FIVEAM:RUN! alone would exit 0 on a
+        # failing suite, which is how a CI run goes green on red tests.
+        run: |
+          sbcl --non-interactive \
+            --load "$HOME/.local/share/ocicl/ocicl-runtime.lisp" \
+            --eval '(asdf:initialize-source-registry (list :source-registry (list :directory (uiop:getcwd)) :inherit-configuration))' \
+            --eval '(asdf:load-system :objc/test)' \
+            --eval '(uiop:quit (if (objc/test:run-tests) 0 1))'

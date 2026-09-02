@@ -83,3 +83,25 @@ the thread the REPL is on."
       (objc:invoke button "setTarget:" target)
       (objc:invoke button "setAction:" (objc:coerce-to-selector action)))
     button))
+
+(defun run-until-closed (window &key (timeout 600))
+  "Keep WINDOW live and responsive until someone closes it.
+
+This is what makes a demo behave like an application from a REPL.  A Cocoa
+window only responds while something is dispatching events, and PUMP-EVENTS
+returns as soon as its bound is reached -- so a plain (pump-events :max-seconds
+5) leaves the window frozen five seconds later.  Pumping until the window goes
+away is almost always what you actually meant.
+
+TIMEOUT is a backstop in seconds, so a forgotten window cannot wedge the REPL
+forever.  Returns T if the window was closed, NIL if the timeout ran out.
+
+\"Closed\" here means -isVisible answering NO, so this expects a window that has
+already been ordered front -- every demo shows its window before returning one.
+A window that was never shown is not visible either, and this returns
+immediately rather than waiting for something that cannot happen."
+  (objc.runloop:pump-events
+   :seconds 0.02d0
+   :max-seconds timeout
+   :until (lambda () (not (objc:invoke-bool window "isVisible"))))
+  (not (objc:invoke-bool window "isVisible")))

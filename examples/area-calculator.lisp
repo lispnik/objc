@@ -69,7 +69,10 @@ instance variables, and wire the button to -compute:."
     (values controller window)))
 
 (defun test-area-calculator ()
-  "Show the area calculator."
+  "Show the area calculator.  Returns (VALUES WINDOW CONTROLLER).
+
+The window comes first in every demo here so that RUN-UNTIL-CLOSED can be
+wrapped straight around the call."
   (multiple-value-bind (controller window) (build-area-calculator)
     (show-window window)
-    (values controller window)))
+    (values window controller)))

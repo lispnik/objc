@@ -169,23 +169,33 @@ needs thread 1, and that is the thread the REPL is on:
 (asdf:load-system :objc/examples)
 (objc:ensure-objc-initialized)
 
-(objc/examples:test-area-calculator)   ; returns (values controller window)
-(objc/examples:test-pdf-kit "/path/to/some.pdf")
-(objc/examples:test-movie-view "/path/to/some.mov")
-(objc/examples:test-web-kit "https://www.lispworks.com/")
+;; Each demo returns its window first, so this wrapper works around any of
+;; them.  It keeps the window live until you close it.
+(objc/examples:run-until-closed (objc/examples:test-area-calculator))
+
+(objc/examples:run-until-closed
+ (objc/examples:test-pdf-kit
+  "/System/Library/ProductDocuments/ProductGuides/ENERGY STAR.pdf"))
+
+(objc/examples:run-until-closed (objc/examples:test-movie-view "/path/to/some.mov"))
+
+(objc/examples:run-until-closed (objc/examples:test-web-kit "https://www.lispworks.com/"))
 ```
 
-Each shows its window and returns. **A Cocoa window only responds while
-something is running the event loop**, so to actually click on one, pump:
+`run-until-closed` is the part that makes a demo behave like an application. **A
+Cocoa window only responds while something is dispatching events**, and
+`pump-events` returns as soon as its bound is reached, so a bare
+`(pump-events :max-seconds 5)` leaves the window frozen five seconds later.
+Closing the window ends the call and hands the REPL back; there is a ten-minute
+backstop so a forgotten window cannot wedge the session.
+
+To keep the objects and pump yourself:
 
 ```lisp
-(objc.runloop:pump-events :max-seconds 30d0)
+(multiple-value-bind (window controller) (objc/examples:test-area-calculator)
+  (objc.runloop:pump-events :max-seconds 30d0)   ; live for 30 seconds
+  (objc:invoke (objc:objc-object-var-value controller "areaField") "floatValue"))
 ```
-
-That is the REPL-friendly substitute for `[NSApp run]`, which is what the manual
-uses and what `objc.runloop:run-cocoa-application` calls -- it never returns, and
-in a REPL it takes the session with it. Neither is LispWorks API: driving the
-event loop is CAPI's job there, and there is no CAPI here.
 
 Do not run these under `--non-interactive` and expect to interact with them; the
 process exits as soon as the form returns.

@@ -76,7 +76,8 @@
   (make-view "WKWebView" rect))
 
 (defun test-web-kit (&optional (url "https://www.lispworks.com/"))
-  "Show a web view loading URL, with a Lisp delegate watching it."
+  "Show a web view loading URL, with a Lisp delegate watching it.
+Returns (VALUES WINDOW DELEGATE VIEW)."
   (let* ((window (make-window :title "Web Kit Test" :rect #(200d0 200d0 800d0 600d0)))
          (view (make-web-view #(0d0 0d0 800d0 600d0)))
          (delegate (make-instance 'web-kit-test-delegate)))
@@ -84,4 +85,4 @@
     (add-subview window view)
     (web-kit-test-go view url)
     (show-window window :seconds 2d0)
-    (values delegate window view)))
+    (values window delegate view)))

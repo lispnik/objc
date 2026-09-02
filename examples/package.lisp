@@ -23,6 +23,7 @@
 (defpackage #:objc/examples
   (:use #:cl #:objc)
   (:export #:run-manual-examples
+           #:run-until-closed
            #:test-area-calculator #:test-pdf-kit #:test-movie-view #:test-web-kit))
 
 (in-package #:fli)

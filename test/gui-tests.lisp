@@ -204,3 +204,51 @@ on a window beachballed the process.  It is bounded now."
              (is (= 42.0 (objc:invoke (objc:objc-object-var-value controller "areaField")
                                       "floatValue"))))
         (objc:invoke window "close")))))
+
+;;; The demo entry points -----------------------------------------------------
+
+(test every-demo-returns-its-window-first
+  "Uniform so that RUN-UNTIL-CLOSED wraps straight around any of them."
+  (with-gui
+    (dolist (thunk (list (lambda () (objc/examples:test-area-calculator))
+                         (lambda () (objc/examples:test-pdf-kit))
+                         (lambda () (objc/examples:test-movie-view))))
+      (let ((window (funcall thunk)))
+        (unwind-protect
+             (is (string= "NSWindow"
+                          (objc:objc-class-name (objc:invoke window "class"))))
+          (objc:invoke window "close"))))))
+
+(test run-until-closed-returns-once-the-window-is-gone
+  "The idiom that makes a demo behave like an application: pump until someone
+closes the window, rather than for a fixed number of seconds after which it
+silently freezes."
+  (with-gui
+    (let ((window (objc/examples::make-window :title "close me"
+                                              :rect #(500d0 500d0 200d0 120d0))))
+      (objc/examples::show-window window :seconds 0.1d0)
+      (objc:invoke window "close")
+      ;; Already closed, so this must come back immediately rather than sitting
+      ;; out its backstop.
+      (let ((start (get-internal-real-time)))
+        (is-true (objc/examples:run-until-closed window :timeout 5))
+        (is (< (/ (float (- (get-internal-real-time) start))
+                  internal-time-units-per-second)
+               2d0)
+            "returns promptly rather than waiting for the timeout")))))
+
+(test run-until-closed-gives-up-at-its-timeout
+  "The backstop, so a forgotten window cannot wedge a REPL for ever."
+  (with-gui
+    (let ((window (objc/examples::make-window :title "left open"
+                                              :rect #(520d0 520d0 200d0 120d0))))
+      (unwind-protect
+           (progn
+             ;; It has to be on screen first: "closed" means -isVisible
+             ;; answering NO, and a window that was never ordered front is not
+             ;; visible either.
+             (objc/examples::show-window window :seconds 0.1d0)
+             (is-true (objc:invoke-bool window "isVisible"))
+             (is-false (objc/examples:run-until-closed window :timeout 0.3)
+                       "returns NIL when the window outlived the timeout"))
+        (objc:invoke window "close")))))

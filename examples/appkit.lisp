@@ -99,8 +99,31 @@ the thread the REPL is on."
     ((self modal-stopper) (notification objc:objc-object-pointer))
   (declare (ignore notification))
   ;; AppKit does not end a modal session just because the window closed, so
-  ;; this is what makes closing the window hand the REPL back.
-  (objc:invoke (objc:invoke "NSApplication" "sharedApplication") "stopModal"))
+  ;; something has to send -stopModal.  But NOT synchronously from here.
+  ;;
+  ;; A real click on the close widget runs inside that button's mouse tracking
+  ;; loop, which is itself nested inside the modal loop.  -windowWillClose:
+  ;; fires down there, so stopping the modal session on the spot returns
+  ;; control to the REPL while AppKit is still unwinding the tracking loop and
+  ;; finishing the close -- and with nothing left pumping events, the window is
+  ;; stranded on screen, unresponsive.  Sending -performClose: programmatically
+  ;; skips the tracking loop entirely, which is why this never showed up in a
+  ;; test.
+  ;;
+  ;; Deferring by zero delay puts -stopModal on the next pass of the run loop,
+  ;; after the current event and everything nested in it has completed.
+  ;; ...and it has to be scheduled in the MODAL run loop mode as well as the
+  ;; default one.  A modal session runs in NSModalPanelRunLoopMode, so a plain
+  ;; -performSelector:withObject:afterDelay: is queued for a mode that is not
+  ;; running and never fires at all -- which hangs outright rather than late.
+  ;; The mode list is a Lisp vector; INVOKE converts it to an NSArray of
+  ;; NSStrings on the way in.
+  (objc:invoke (objc:invoke "NSApplication" "sharedApplication")
+               "performSelector:withObject:afterDelay:inModes:"
+               (objc:coerce-to-selector "stopModal")
+               nil
+               0d0
+               #("NSModalPanelRunLoopMode" "kCFRunLoopDefaultMode")))
 
 (defun run-until-closed (window &key timeout)
   "Keep WINDOW live and responsive until someone closes it.
@@ -153,6 +176,13 @@ existing window delegate is restored afterwards.  Returns T."
            (objc:invoke app "runModalForWindow:" window))
       (setf finished t)
       (ignore-errors (objc:invoke window "setDelegate:" previous))
+      ;; Let AppKit finish taking the window down before the REPL gets control
+      ;; back.  Without this the last of the teardown has nothing to run on and
+      ;; the window can sit there, drawn but dead, until something else happens
+      ;; to pump the loop.
+      (ignore-errors
+       (objc:invoke window "orderOut:" nil)
+       (objc.runloop:pump-events :seconds 0.02d0 :max-seconds 0.3d0))
       (objc:release window)
       ;; Give the keyboard back.  Showing a window makes this process the
       ;; frontmost macOS application, and it STAYS frontmost after the window

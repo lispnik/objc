@@ -216,6 +216,18 @@ Each of these is a bug that actually happened here.
   it. `objc.runloop:remember-frontmost` records who had the keyboard before the
   first activation, and `restore-frontmost` hands it back.
 
+- **Do not send `-stopModal` synchronously from `-windowWillClose:`.** A real
+  click on the close widget runs inside that button's mouse-tracking loop,
+  nested inside the modal loop, and `-windowWillClose:` fires down there.
+  Stopping the session on the spot returns control to the caller while AppKit is
+  still unwinding the tracking loop and finishing the close — leaving the window
+  drawn but dead on screen with nothing pumping events. Sending `-performClose:`
+  programmatically skips the tracking loop entirely, which is why no test caught
+  it. Defer with `-performSelector:withObject:afterDelay:inModes:`, **and note
+  the modes**: a modal session runs in `NSModalPanelRunLoopMode`, so the plain
+  `afterDelay:` variant queues the selector for a mode that is not running and
+  it never fires at all — an outright hang rather than a late one.
+
 - **A method body may open with declarations.** The manual's own
   area-calculator example starts `(declare (ignore sender))`, and they have to
   land inside the `let*` that binds the arguments.

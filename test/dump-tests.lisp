@@ -19,6 +19,18 @@
 
 (in-suite dump)
 
+(defun bootstrap-form ()
+  "A form the spawned image can use to find this system.
+
+The subprocess is a bare SBCL: it does not inherit the source registry, and on
+a developer machine ~/.sbclrc happens to set one up so this went unnoticed
+until CI ran, where it failed to find :OBJC and exited 1.  A :TREE over the
+project directory covers both the system and its ocicl-vendored dependencies."
+  (format nil "(require :asdf)~%~
+               (asdf:initialize-source-registry~%~
+                 '(:source-registry (:tree ~S) :inherit-configuration))~%"
+          (namestring (asdf:system-source-directory :objc))))
+
 (defparameter +dump-program+
   "(asdf:load-system :objc)
    (defpackage \"DUMPTEST\" (:use \"CL\" \"OBJC\"))
@@ -59,6 +71,7 @@
     (t
      (uiop:with-temporary-file (:pathname source :type "lisp" :keep nil)
        (with-open-file (out source :direction :output :if-exists :supersede)
+         (write-string (bootstrap-form) out)
          (write-string +dump-program+ out))
        (uiop:with-temporary-file (:pathname restart :type "lisp" :keep nil)
          (with-open-file (out restart :direction :output :if-exists :supersede)

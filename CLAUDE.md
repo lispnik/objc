@@ -248,6 +248,13 @@ Each of these is a bug that actually happened here.
   run in six on a loaded machine, which is worse than useless: a suite that
   cries wolf gets ignored the one time it is right.
 
+- **A subprocess spawned by a test does not inherit the source registry.** The
+  dump test runs a bare `sbcl`, and on a developer machine `~/.sbclrc` sets up
+  ocicl so it finds the system anyway. CI has no such file: the child could not
+  find `:objc`, exited 1, and the test failed there and only there. It now
+  writes an explicit `initialize-source-registry` into the child program. Run it
+  with `--no-userinit --no-sysinit` to check this kind of thing locally.
+
 ## Conventions specific to this codebase
 
 - **`OBJC` exports exactly the 42 symbols the LispWorks manual documents, and

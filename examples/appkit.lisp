@@ -31,6 +31,13 @@
                              rect (standard-window-style)
                              +ns-backing-store-buffered+ nil)))
     (objc:invoke window "setTitle:" title)
+    ;; NSWindow's -releasedWhenClosed defaults to YES for a window created this
+    ;; way, so clicking the close button DEALLOCATES it.  Anything still holding
+    ;; the pointer -- RUN-UNTIL-CLOSED restoring a delegate, a caller checking
+    ;; -isVisible, the REPL variable you kept -- is then messaging freed memory,
+    ;; which hangs or corrupts rather than erroring.  Lisp owns this window
+    ;; instead; it stays valid until it is released.
+    (objc:invoke window "setReleasedWhenClosed:" nil)
     window))
 
 (defun make-view (class-name rect &key init-function)
@@ -114,11 +121,17 @@ existing window delegate is restored afterwards.  Returns T."
   (let* ((app (objc.runloop:shared-application))
          (previous (objc:invoke window "delegate"))
          (stopper (make-instance 'modal-stopper)))
+    ;; Retained across the loop as well as MAKE-WINDOW's -setReleasedWhenClosed:
+    ;; NO, because a window that reaches here from somewhere else may well still
+    ;; be set to release itself on close -- and then the delegate restore below
+    ;; would be a use-after-free.
+    (objc:retain window)
     (unwind-protect
          (progn
            (objc:invoke window "setDelegate:" (objc:objc-object-pointer stopper))
            (objc:invoke app "runModalForWindow:" window))
-      (objc:invoke window "setDelegate:" previous))
+      (ignore-errors (objc:invoke window "setDelegate:" previous))
+      (objc:release window))
     t))
 
 (defun stop-running ()

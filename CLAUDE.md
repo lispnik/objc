@@ -194,6 +194,15 @@ Each of these is a bug that actually happened here.
   `pump-events` remains right for servicing pending events briefly; anything
   that waits for a user belongs in a modal loop.
 
+- **`NSWindow`'s `-releasedWhenClosed` defaults to YES.** Clicking the close
+  button on a window built with `-initWithContentRect:...` *deallocates* it, so
+  anything still holding the pointer — restoring a delegate, checking
+  `-isVisible`, the variable you kept in the REPL — is messaging freed memory.
+  That hangs or corrupts rather than erroring, and it is timing dependent, so it
+  shows up as "it worked, and then the close button hung". `make-window` turns
+  the flag off so Lisp owns the window, and `run-until-closed` retains it across
+  the loop for windows that arrived from somewhere else.
+
 - **A method body may open with declarations.** The manual's own
   area-calculator example starts `(declare (ignore sender))`, and they have to
   land inside the `let*` that binds the arguments.

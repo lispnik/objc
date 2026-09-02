@@ -276,3 +276,31 @@ idles instead."
              (is (cffi:null-pointer-p (objc:invoke window "delegate"))
                  "the stopper delegate was removed again"))
         (objc:invoke window "close")))))
+
+(test closing-the-window-ends-the-loop-and-leaves-it-valid
+  "The close-button path, which the stopModal-from-a-timer test never touched.
+
+NSWindow's -releasedWhenClosed defaults to YES, so clicking close DEALLOCATES
+the window -- and RUN-UNTIL-CLOSED then restores the previous delegate on freed
+memory.  That is a use-after-free, which hangs or corrupts rather than erroring,
+and it is timing dependent, so it presents as \"it worked, then the close button
+hung\".  MAKE-WINDOW turns the flag off and RUN-UNTIL-CLOSED retains for the
+duration; this checks both by messaging the window afterwards."
+  (with-gui
+    (dotimes (i 3)
+      (let* ((window (objc/examples::make-window
+                      :title "close cycle" :rect #(580d0 580d0 220d0 140d0)))
+             (app (objc.runloop:shared-application)))
+        (declare (ignorable app))
+        (objc/examples::show-window window :seconds 0.1d0)
+        (is-false (objc:invoke-bool window "isReleasedWhenClosed")
+                  "MAKE-WINDOW hands window ownership to Lisp")
+        (bt:make-thread
+         (lambda ()
+           (sleep 0.3)
+           (objc:invoke window "performSelectorOnMainThread:withObject:waitUntilDone:"
+                        (objc:coerce-to-selector "performClose:") nil nil)))
+        (is-true (objc/examples:run-until-closed window))
+        ;; If the window had been freed this would hang or return rubbish.
+        (is (string= "close cycle" (objc:invoke-into 'string window "title"))
+            "the window survived its own close")))))

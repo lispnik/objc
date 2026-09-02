@@ -11,6 +11,12 @@
 (defconstant +pdf-display-single-page-continuous+ 1)
 
 (defun init-pdf-kit-test-pane (view)
+  ;; Faithful to the original, including -setAutoScales:.  Note that on current
+  ;; PDFKit that setting does not stick: -autoScales reads back NO afterwards,
+  ;; whether it is sent before or after the document is assigned.  The document
+  ;; still displays, so this is cosmetic, and it is PDFKit's behaviour rather
+  ;; than anything the bridge is doing -- the message is sent and returns.  The
+  ;; gui test therefore asserts -displayMode, which does stick.
   (let ((view (objc:invoke view "init")))
     (objc:invoke view "setDisplayMode:" +pdf-display-single-page-continuous+)
     (objc:invoke view "setAutoScales:" t)

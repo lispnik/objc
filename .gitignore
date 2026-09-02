@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Build artifacts
+/bin/
+*.fasl
+*.fas
+*.lx64fsl
+*.dx64fsl
+
+# ocicl-vendored dependency sources -- restore with `ocicl install`.
+# The lockfile (ocicl.csv) is committed; the sources are not.
+/ocicl/

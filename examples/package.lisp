@@ -1,0 +1,57 @@
+;;;; examples/package.lisp
+;;;;
+;;;; The examples are ported from the ones LispWorks ships, and they are kept as
+;;;; close to the originals as the platform allows so that they double as
+;;;; evidence that LispWorks source really does run here unchanged.
+;;;;
+;;;; Two of those originals use LispWorks' FLI.  There is no FLI on SBCL, so a
+;;;; small #:fli package below provides exactly the handful of operators the
+;;;; examples touch.  It lives HERE and not in #:objc on purpose: the
+;;;; Objective-C manual documents these names as part of the FLI, not the OBJC
+;;;; package, and exporting them from the library would be inventing an API that
+;;;; nothing promises to keep.
+
+(defpackage #:fli
+  (:use #:cl)
+  (:export #:foreign-slot-value
+           #:pointer-eq
+           #:dereference
+           #:size-of
+           #:register-module
+           #:with-dynamic-foreign-objects))
+
+(defpackage #:objc/examples
+  (:use #:cl #:objc)
+  (:export #:run-manual-examples
+           #:test-area-calculator #:test-pdf-kit #:test-movie-view #:test-web-kit))
+
+(in-package #:fli)
+
+(defun foreign-slot-value (object slot-name)
+  "Read SLOT-NAME from a structure the Objective-C bridge handed us."
+  (objc::typed-pointer-slot object slot-name))
+
+(defun (setf foreign-slot-value) (value object slot-name)
+  (setf (objc::typed-pointer-slot object slot-name) value))
+
+(defun pointer-eq (a b)
+  (cffi:pointer-eq a b))
+
+(defun dereference (pointer &key (type :pointer) (index 0))
+  (cffi:mem-aref pointer type index))
+
+(defun size-of (type)
+  (objc::node-size-and-alignment (objc::node-for-fli-type type)))
+
+(defun register-module (path &rest args)
+  (declare (ignore args))
+  (objc::register-module path :errorp nil))
+
+(defmacro with-dynamic-foreign-objects (bindings &body body)
+  "Allocate foreign objects for the duration of BODY.
+Each binding is (var type), where TYPE is an Objective-C type descriptor."
+  `(cffi:with-foreign-objects
+       ,(loop for (var type) in bindings
+              collect `(,var :uint8 ,(objc::node-size-and-alignment
+                                      (objc::node-for-fli-type type))))
+     ,@body))

@@ -219,36 +219,60 @@ on a window beachballed the process.  It is bounded now."
                           (objc:objc-class-name (objc:invoke window "class"))))
           (objc:invoke window "close"))))))
 
-(test run-until-closed-returns-once-the-window-is-gone
-  "The idiom that makes a demo behave like an application: pump until someone
-closes the window, rather than for a fixed number of seconds after which it
-silently freezes."
-  (with-gui
-    (let ((window (objc/examples::make-window :title "close me"
-                                              :rect #(500d0 500d0 200d0 120d0))))
-      (objc/examples::show-window window :seconds 0.1d0)
-      (objc:invoke window "close")
-      ;; Already closed, so this must come back immediately rather than sitting
-      ;; out its backstop.
-      (let ((start (get-internal-real-time)))
-        (is-true (objc/examples:run-until-closed window :timeout 5))
-        (is (< (/ (float (- (get-internal-real-time) start))
-                  internal-time-units-per-second)
-               2d0)
-            "returns promptly rather than waiting for the timeout")))))
 
-(test run-until-closed-gives-up-at-its-timeout
-  "The backstop, so a forgotten window cannot wedge a REPL for ever."
+(test run-until-closed-uses-appkits-own-loop-and-returns-on-stop
+  "RUN-UNTIL-CLOSED runs -[NSApplication runModalForWindow:] rather than
+pumping by hand, and STOP-RUNNING ends it.
+
+The reason is measurable, not stylistic: a hand-rolled
+nextEventMatchingMask:/sendEvent: loop never gets to block, because AppKit
+keeps a supply of AppKitDefined events coming.  It spins at 100% CPU
+re-dispatching them, which makes a window sluggish rather than dead -- text
+still goes in, but the machine works flat out for it.  This asserts the loop
+idles instead."
   (with-gui
-    (let ((window (objc/examples::make-window :title "left open"
-                                              :rect #(520d0 520d0 200d0 120d0))))
+    (let ((window (objc/examples::make-window :title "modal test"
+                                              :rect #(540d0 540d0 240d0 140d0))))
       (unwind-protect
            (progn
-             ;; It has to be on screen first: "closed" means -isVisible
-             ;; answering NO, and a window that was never ordered front is not
-             ;; visible either.
              (objc/examples::show-window window :seconds 0.1d0)
-             (is-true (objc:invoke-bool window "isVisible"))
-             (is-false (objc/examples:run-until-closed window :timeout 0.3)
-                       "returns NIL when the window outlived the timeout"))
+             ;; End the modal loop from a timer, standing in for a click on the
+             ;; close button.
+             ;; Grab the application on THIS thread: SHARED-APPLICATION refuses
+             ;; to run off thread 1, which is the check working as intended.
+             (let ((app (objc.runloop:shared-application)))
+               (bt:make-thread
+                (lambda ()
+                  (sleep 1)
+                  (objc:invoke app "performSelectorOnMainThread:withObject:waitUntilDone:"
+                               (objc:coerce-to-selector "stopModal") nil nil))))
+             (let ((cpu-before (get-internal-run-time))
+                   (wall-before (get-internal-real-time)))
+               (is-true (objc/examples:run-until-closed window))
+               (let* ((cpu (/ (float (- (get-internal-run-time) cpu-before))
+                              internal-time-units-per-second))
+                      (wall (/ (float (- (get-internal-real-time) wall-before))
+                               internal-time-units-per-second)))
+                 (is (< wall 10d0) "returned when the loop was stopped")
+                 (is (< (/ cpu wall) 0.5)
+                     "idles rather than spinning: ~,1f% CPU" (* 100 (/ cpu wall))))))
+        (objc:invoke window "close")))))
+
+(test the-window-delegate-is-restored-afterwards
+  (with-gui
+    (let ((window (objc/examples::make-window :title "delegate test"
+                                              :rect #(560d0 560d0 200d0 120d0))))
+      (unwind-protect
+           (progn
+             (objc/examples::show-window window :seconds 0.1d0)
+             (is (cffi:null-pointer-p (objc:invoke window "delegate")))
+             (let ((app (objc.runloop:shared-application)))
+               (bt:make-thread
+                (lambda ()
+                  (sleep 0.5)
+                  (objc:invoke app "performSelectorOnMainThread:withObject:waitUntilDone:"
+                               (objc:coerce-to-selector "stopModal") nil nil))))
+             (objc/examples:run-until-closed window)
+             (is (cffi:null-pointer-p (objc:invoke window "delegate"))
+                 "the stopper delegate was removed again"))
         (objc:invoke window "close")))))

@@ -182,12 +182,16 @@ needs thread 1, and that is the thread the REPL is on:
 (objc/examples:run-until-closed (objc/examples:test-web-kit "https://www.lispworks.com/"))
 ```
 
-`run-until-closed` is the part that makes a demo behave like an application. **A
-Cocoa window only responds while something is dispatching events**, and
-`pump-events` returns as soon as its bound is reached, so a bare
-`(pump-events :max-seconds 5)` leaves the window frozen five seconds later.
-Closing the window ends the call and hands the REPL back; there is a ten-minute
-backstop so a forgotten window cannot wedge the session.
+`run-until-closed` is the part that makes a demo behave like an application. It
+runs AppKit's own event loop -- `-[NSApplication runModalForWindow:]` -- and
+closing the window hands the REPL back. `(objc/examples:stop-running)` ends it
+from elsewhere if you would rather not reach for the mouse.
+
+Do not be tempted to pump by hand instead. A `nextEventMatchingMask:` /
+`sendEvent:` loop never gets to block, because AppKit keeps a supply of
+`AppKitDefined` events coming: it spins at **100% CPU** re-dispatching them,
+which makes the window sluggish rather than dead. Measured on this machine,
+`runModalForWindow:` idles at **0.4%**.
 
 To keep the objects and pump yourself:
 

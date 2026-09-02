@@ -24,6 +24,7 @@
   (:use #:cl #:objc)
   (:export #:run-manual-examples
            #:run-until-closed
+           #:stop-running
            #:test-area-calculator #:test-pdf-kit #:test-movie-view #:test-web-kit))
 
 (in-package #:fli)

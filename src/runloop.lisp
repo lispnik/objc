@@ -93,6 +93,12 @@ the front."
 See the comment in PUMP-EVENTS: dispatching an event can enqueue more, so this
 bound is what makes the loop terminate at all.")
 
+(defvar *events-dispatched* 0
+  "How many events PUMP-EVENTS has sent since the counter was last reset.
+Exists so that \"the window is unresponsive\" can be told apart from \"the loop
+is not running\": if this climbs while you click, events are arriving and the
+fault is downstream of the pump.")
+
 (defvar *finished-launching* nil
   "Whether -[NSApplication finishLaunching] has been sent.")
 
@@ -171,7 +177,8 @@ So this dequeues and sends, which is what -run does internally."
                                       "kCFRunLoopDefaultMode"
                                       t)
                   until (cffi:null-pointer-p event)
-                  do (invoke app "sendEvent:" event)
+                  do (incf *events-dispatched*)
+                     (invoke app "sendEvent:" event)
                      (setf deadline (invoke "NSDate" "distantPast"))))
           (invoke app "updateWindows"))
         (let ((elapsed (/ (float (- (get-internal-real-time) start) 1d0)
@@ -193,3 +200,26 @@ PUMP-EVENTS instead."
     (let ((app (shared-application :activation-policy activation-policy)))
       (invoke app "activateIgnoringOtherApps:" t)
       (invoke app "run"))))
+
+(defun diagnose-pump (&key (seconds 15) (window nil))
+  "Pump for SECONDS, reporting each second how many events were dispatched.
+
+An instrument, not part of the API.  Run it, then click and drag on the window
+while it counts.  If the count climbs, the event loop is working and anything
+still wrong is downstream of it; if it stays at zero while you click, events
+are not reaching this process at all and the loop is not the problem either."
+  (check-main-thread "The Cocoa event loop")
+  (let ((app (shared-application))
+        (last 0))
+    (ensure-finished-launching app)
+    (setf *events-dispatched* 0)
+    (format t "~&Pumping for ~D seconds -- click and drag on the window now.~%" seconds)
+    (finish-output)
+    (dotimes (i seconds)
+      (pump-events :seconds 0.02d0 :max-seconds 1d0)
+      (format t "  ~2D s: ~4D events this second (~D total)~@[  window visible: ~A~]~%"
+              (1+ i) (- *events-dispatched* last) *events-dispatched*
+              (when window (invoke-bool window "isVisible")))
+      (finish-output)
+      (setf last *events-dispatched*))
+    *events-dispatched*))

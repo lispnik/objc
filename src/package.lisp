@@ -108,6 +108,8 @@
    #:shared-application
    #:pump-events
    #:pump-run-loop
+   #:diagnose-pump
+   #:*events-dispatched*
    #:run-cocoa-application
    ;; Is there anything to draw on? --------------------------------------------
    #:window-server-p))

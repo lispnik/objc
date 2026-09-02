@@ -183,6 +183,17 @@ Each of these is a bug that actually happened here.
   looked exactly like the bug it was written to fix.
   `+max-events-per-pass+` is what makes the loop finish.
 
+- **Do not pump AppKit by hand for anything long-running.** A
+  `nextEventMatchingMask:` / `sendEvent:` loop never gets to block: AppKit keeps
+  a supply of `NSEventTypeAppKitDefined` events coming, so the loop hits its
+  per-pass cap every pass and spins re-dispatching them. Measured: 100.9% CPU
+  and 9280 events in three idle seconds. The window stays usable — text goes in,
+  fields tab — but the machine works flat out for it, which reads as
+  sluggishness rather than a freeze and took three wrong diagnoses to pin down.
+  `-[NSApplication runModalForWindow:]` is AppKit's real loop and idles at 0.4%.
+  `pump-events` remains right for servicing pending events briefly; anything
+  that waits for a user belongs in a modal loop.
+
 - **A method body may open with declarations.** The manual's own
   area-calculator example starts `(declare (ignore sender))`, and they have to
   land inside the `let*` that binds the arguments.

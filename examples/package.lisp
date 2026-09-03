@@ -68,7 +68,17 @@
            ;; NSPredicate and variadic sends (examples/predicates.lisp).
            #:predicate #:format-string #:filter #:sort-by #:column
            #:ns-array #:ns-dictionary
-           #:test-predicates #:report-predicates))
+           #:test-predicates #:report-predicates
+           ;; PDFKit, headless (examples/pdf-document.lisp).
+           #:text-pdf #:pdf-document #:pdf-text #:pdf-page-count #:pdf-page-text
+           #:test-pdf-document #:report-pdf-document
+           ;; Quick Look thumbnails (examples/thumbnail.lisp).
+           #:thumbnail #:write-thumbnail #:png-dimensions
+           #:test-thumbnail #:report-thumbnail
+           ;; NSWorkspace (examples/workspace.lisp).
+           #:running-applications #:frontmost-application #:application-named
+           #:application-for-file #:open-url #:reveal-in-finder
+           #:test-workspace #:report-workspace))
 
 (in-package #:fli)
 

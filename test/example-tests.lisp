@@ -211,3 +211,47 @@ so NO arrived as T."
       (let ((object (objc:alloc-init-object "BoolArgumentTest")))
         (is (string= "T" (objc:invoke-into 'string object "sawFlag:" t)))
         (is (string= "NIL" (objc:invoke-into 'string object "sawFlag:" nil)))))))
+
+(test the-pdf-document-example-round-trips
+  "examples/pdf-document.lisp is the half of PDFKit with no window in it, and it
+writes the PDF it reads: an offscreen NSTextView rendered with
+-dataWithPDFInsideRect: is a PDF with real text, so -string gets the words back.
+
+:TEXT-FOUND is what distinguishes that from a picture of the same words, which
+would give a PDF of about the same size that reads as nothing."
+  (with-runtime
+    (let ((result (objc/examples:test-pdf-document)))
+      (is (= 1 (getf result :pages)))
+      (is-true (getf result :text-found) "the PDF has a text layer, not an image")
+      (is-true (getf result :page-text-matches) "and the page's text is exact")
+      (is-true (getf result :bytes-round-trip)
+               "reading from a byte vector works as well as from a file"))))
+
+(test the-thumbnail-example-renders-a-preview
+  "examples/thumbnail.lisp asks Quick Look -- the machinery Finder uses -- for a
+preview of a file, through a completion handler.
+
+The size assertion is deliberately the one that is true: SIZE is a bounding box,
+not a result size, so a portrait page fits 256 by coming back 185 by 256."
+  (with-runtime
+    (let ((result (objc/examples:test-thumbnail)))
+      (is-true (getf result :png) "a PNG came back")
+      (is-true (getf result :fits-the-box)
+               "the longer side is the size asked for and neither side exceeds it")
+      (is-true (getf result :from-text-file)
+               "a plain text file has a preview too"))))
+
+(test the-workspace-example-answers-questions-about-the-desktop
+  "examples/workspace.lisp queries launch services -- no window server needed,
+and nothing here changes anything.  Its side-effectful half, OPEN-URL and
+REVEAL-IN-FINDER, is deliberately not called: it would bring an application
+forward on whatever machine the suite is running on."
+  (with-runtime
+    (let ((result (objc/examples:test-workspace)))
+      (is (plusp (getf result :running)))
+      (is-true (getf result :has-finder))
+      (is-true (getf result :self-listed)
+               "this process is in the list, found by its own pid")
+      (is-true (getf result :finder-path))
+      (is-true (getf result :opens-text)
+               "something is registered to open a .txt"))))

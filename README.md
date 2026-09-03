@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-787 checks, green on a clean GitHub runner as well as locally. Behaviour the
+799 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -374,6 +374,12 @@ unchanged:
 - `examples/predicates.lisp` — querying and sorting Cocoa collections with
   `NSPredicate`, and the only worked example of a **variadic** send. See
   [Variadic sends](#variadic-sends).
+- `examples/pdf-document.lisp` — the half of PDFKit with no window in it: write
+  a PDF, read its text back. Self-contained, because it writes the PDF it reads.
+- `examples/thumbnail.lisp` — Quick Look previews of any file type, through a
+  completion handler.
+- `examples/workspace.lisp` — `NSWorkspace`: what is running, what opens what,
+  and the smallest example here.
 
 ### Running them
 
@@ -792,7 +798,7 @@ string is very often the better answer.
 make test
 ```
 
-The suite runs 787 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 799 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

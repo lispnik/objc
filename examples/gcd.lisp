@@ -118,7 +118,7 @@ when done, or let WITH-SERIAL-QUEUE do it."
 
 (defmacro with-serial-queue ((queue &optional (label "lisp.serial")) &body body)
   `(let ((,queue (serial-queue ,label)))
-     (unwind-protect (progn ,@body)
+     (unwind-protect (locally ,@body)
        (objc:release ,queue))))
 
 ;;; The block type ------------------------------------------------------------
@@ -241,7 +241,7 @@ of having them."
 Only the GCD objects need releasing here: the blocks look after themselves, so
 what is left is the ordinary Objective-C ownership this library has always had."
   `(let ((,group (make-dispatch-group)))
-     (unwind-protect (progn ,@body (group-wait ,group))
+     (unwind-protect (progn (locally ,@body) (group-wait ,group))
        (when (dispatch-group-queue ,group)
          (objc:release (dispatch-group-queue ,group))
          (setf (dispatch-group-queue ,group) nil))

@@ -32,7 +32,7 @@
 
 (defmacro with-call-temporaries (&body body)
   `(let ((*call-temporaries* '()))
-     (unwind-protect (progn ,@body)
+     (unwind-protect (locally ,@body)
        (dolist (thunk *call-temporaries*) (ignore-errors (funcall thunk))))))
 
 (defun register-temporary (thunk)

@@ -52,7 +52,7 @@ exists because the manual's lambda list has it."
     (error "WITH-AUTORELEASE-POOL takes no options, but was given ~S." options))
   (let ((pool (gensym "POOL")))
     `(let ((,pool (make-autorelease-pool)))
-       (unwind-protect (progn ,@body)
+       (unwind-protect (locally ,@body)
          ;; -drain rather than -release: identical without garbage collection,
          ;; and the spelling Apple documents.
          (ignore-errors (invoke ,pool "drain"))))))

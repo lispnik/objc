@@ -185,7 +185,7 @@ ARM-WATCHER."
 (defmacro with-watch ((watcher path function &rest options) &body body)
   "Watch PATH for the extent of BODY."
   `(let ((,watcher (watch ,path ,function ,@options)))
-     (unwind-protect (progn ,@body)
+     (unwind-protect (locally ,@body)
        (unwatch ,watcher))))
 
 ;;; Timers, the other source everyone wants ------------------------------------

@@ -57,7 +57,18 @@
            ;; Dispatch sources (examples/file-watcher.lisp).
            #:watch #:unwatch #:with-watch #:watcher #:watcher-live
            #:every-seconds #:stop-repeating
-           #:test-file-watcher #:report-file-watcher))
+           #:test-file-watcher #:report-file-watcher
+           ;; Key-value observing (examples/kvo.lisp).
+           #:observe #:stop-observing #:with-observation #:observation
+           #:observation-live #:foundation-string-constant
+           #:test-kvo #:report-kvo
+           ;; NSDataDetector (examples/data-detector.lisp).
+           #:detect #:links #:dates #:phone-numbers
+           #:test-data-detector #:report-data-detector
+           ;; NSPredicate and variadic sends (examples/predicates.lisp).
+           #:predicate #:format-string #:filter #:sort-by #:column
+           #:ns-array #:ns-dictionary
+           #:test-predicates #:report-predicates))
 
 (in-package #:fli)
 

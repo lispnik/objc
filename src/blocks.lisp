@@ -522,7 +522,7 @@ until libclosure disposes of it.  Reach for MAKE-OBJC-BLOCK and an explicit
 FREE-OBJC-BLOCK when the storage itself has to outlive the form -- when the same
 block is handed out repeatedly, say."
   `(let ((,var (make-objc-block ,type ,function)))
-     (unwind-protect (progn ,@body)
+     (unwind-protect (locally ,@body)
        (free-objc-block ,var))))
 
 (defun call-objc-block (type block &rest args)

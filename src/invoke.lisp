@@ -127,7 +127,10 @@ argument of INVOKE-INTO."
     ;; does exactly that on Apple silicon -- verified, and worth stating,
     ;; because BOOL encodes as 'B' there and a genuine Lisp boolean would have
     ;; been the natural guess.  INVOKE-BOOL is what returns T and NIL.
-    (:bool (if raw 1 0))
+    ;; RAW is already the byte, so this normalises rather than converts: any
+    ;; non-zero is YES, which is what the runtime promises and not quite what it
+    ;; always sends.
+    (:bool (if (eql raw 0) 0 1))
     ((:id :class :block) (pointer-of raw))
     (:sel (pointer-of raw))
     (:cstring (let ((pointer (pointer-of raw)))

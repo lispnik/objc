@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-767 checks, green on a clean GitHub runner as well as locally. Behaviour the
+787 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -366,6 +366,14 @@ unchanged:
 - `examples/file-watcher.lisp` — dispatch sources: watch a file or directory and
   run a Lisp closure when it changes, plus a periodic timer. The one here you
   might actually keep. See [Watching the filesystem](#watching-the-filesystem).
+- `examples/kvo.lisp` — key-value observing, the third of Cocoa's callback
+  mechanisms and the one most able to end the process. See
+  [Key-value observing](#key-value-observing).
+- `examples/data-detector.lisp` — the dates, links, addresses and phone numbers
+  in ordinary prose, via `NSDataDetector`.
+- `examples/predicates.lisp` — querying and sorting Cocoa collections with
+  `NSPredicate`, and the only worked example of a **variadic** send. See
+  [Variadic sends](#variadic-sends).
 
 ### Running them
 
@@ -724,13 +732,67 @@ whatever happens to the files inside it.
 Measured both ways: with `:rearm nil`, a write to the replacing file produces no
 event at all.
 
+### Key-value observing
+
+```lisp
+(with-observation (o progress "completedUnitCount"
+                     (lambda (path object change)
+                       (declare (ignore path object))
+                       (print change)))          ; (:KIND :SETTING :NEW 3.0 :OLD 0.0)
+  (objc:invoke progress "setCompletedUnitCount:" 3))
+```
+
+The third of Cocoa's callback mechanisms — notifications are in `COCOA`, target
+and action are in the menu-bar example — and the one that puts a Lisp class on
+the receiving end of a four-argument framework callback.
+
+It is also **the easiest way to end the image**, which is why the example is
+shaped the way it is. KVO reports misuse by raising an `NSException`, and an
+`NSException` here is not a condition you can handle. Removing an observer that
+isn't registered raises; letting an observed object deallocate with observers
+attached raises; observing a key path that doesn't exist raises. So
+`stop-observing` is idempotent, `with-observation` unregisters on unwind, and
+none of those three is asserted in the suite — asserting them would end the run,
+and the example says so rather than leaving the coverage looking thorough.
+
+The `context` pointer is load-bearing, not decoration: a superclass may observe
+the same key path on the same object, and only that pointer distinguishes your
+registration from its.
+
+### Variadic sends
+
+```lisp
+(format-string "%@ is %d years old" "Ada" 36)
+(filter people "age > %@" 50)
+```
+
+`+[NSPredicate predicateWithFormat:]` and `+[NSString stringWithFormat:]` are
+variadic, and on Apple silicon a variadic call passes its variable arguments on
+the **stack** while a fixed-arity call passes them in registers. Calling one
+without saying so doesn't fail — it reads whatever was in the registers. The
+send has to carry the signature:
+
+```lisp
+(objc:invoke "NSPredicate"
+             '("predicateWithFormat:" (objc:objc-object-pointer
+                                       objc:objc-object-pointer)
+               :result-type objc:objc-object-pointer
+               :variadic-num-of-fixed 1)
+             "name == %@" "Ada")
+```
+
+The example wraps that once in `predicate`, which is also the honest advice:
+wrap a variadic selector where you use it rather than spreading the declaration
+around. `format-string` notes the other honest thing — `cl:format` and a plain
+string is very often the better answer.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 767 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 787 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

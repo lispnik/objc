@@ -89,7 +89,7 @@ Release it with -finishTasksAndInvalidate, or use WITH-URL-SESSION."
 flight when BODY returns is allowed to complete, which is what you want after a
 FETCH-ALL that timed out waiting."
   `(let ((,session (serial-session :timeout ,timeout)))
-     (unwind-protect (progn ,@body)
+     (unwind-protect (locally ,@body)
        (objc:invoke ,session "finishTasksAndInvalidate"))))
 
 (defun coerce-url (url)

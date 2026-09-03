@@ -107,7 +107,20 @@ know an alien type at all."
        (:float 'sb-alien:single-float)
        (:double 'sb-alien:double-float)
        ;; C99 _Bool is one byte.  This is what BOOL is on Apple silicon.
-       (:bool '(sb-alien:boolean 8))
+       ;;
+       ;; (UNSIGNED 8) and deliberately not (BOOLEAN 8), which is the obvious
+       ;; spelling and is wrong here.  (BOOLEAN 8) converts on SBCL's side and
+       ;; wants a generalized boolean, while everything above this line speaks
+       ;; the manual's contract, in which a BOOL is the integer 1 or 0 --
+       ;; MARSHAL-ARGUMENT produces those, ARGUMENT-CONVERSION-FORM reads them,
+       ;; CONVERT-METHOD-RESULT returns them.  Mixing the two conventions is not
+       ;; a type error, it is a silent wrong answer in one direction only:
+       ;; measured, (BOOLEAN 8) given the integer 1 arrives at the callee as NO,
+       ;; so every BOOL ARGUMENT this library ever sent was NO -- setHidden:,
+       ;; setEnabled:, sortDescriptorWithKey:ascending: -- while BOOL results,
+       ;; which SBCL converted on the way back, were right the whole time.  One
+       ;; byte, 1 or 0, no conversion at either end.
+       (:bool '(sb-alien:unsigned 8))
        ((:id :class :sel :cstring :block) 'sb-alien:system-area-pointer)))
     (cons
      (ecase (first node)
@@ -363,7 +376,8 @@ that sends the reader to the wrong file."
         ((member node '(:float)) 0.0)
         ((member node '(:double)) 0d0)
         ((member node '(:void :unknown)) nil)
-        ((eq node :bool) nil)
+        ;; 0, not NIL: the alien type is (UNSIGNED 8) and NIL is not one.
+        ((eq node :bool) 0)
         ((or (member node '(:id :class :sel :cstring :block))
              (and (consp node) (member (first node) '(:pointer :array))))
          '(sb-sys:int-sap 0))

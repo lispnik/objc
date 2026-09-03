@@ -178,6 +178,19 @@ Each of these is a bug that actually happened here.
   `_Block_signature` call — which is the only check that proves flags and layout
   agree.
 
+- **`:bool` is `(unsigned 8)`, never `(boolean 8)`.** `(boolean 8)` converts on
+  SBCL's side and wants a generalized boolean; every conversion function in this
+  library speaks the manual's contract, in which a BOOL is the integer 1 or 0.
+  Mixing them is not a type error but a silent wrong answer in one direction:
+  `(boolean 8)` given the integer `1` arrives at the callee as **NO**. So every
+  BOOL *argument* the library sent was NO — `numberWithBool:`,
+  `sortDescriptorWithKey:ascending:`, `setHidden:` — while BOOL *results*, which
+  SBCL converted on the way back, were right the whole time. The mirror bug was
+  in `argument-conversion-form`: `(not (eql 0 raw))` on a value that was already
+  `T`/`NIL` made every BOOL a Lisp IMP received `T`. One byte, 1 or 0, no
+  conversion at either end. Found by an example, not by the suite, which had
+  covered only the two directions that worked.
+
 - **A structure result may only leave `unmarshal-result` as a value copied OUT
   of the buffer.** The buffer is `%invoke`'s own `with-foreign-object` and is
   gone the moment the call returns, so returning a pointer into it is a

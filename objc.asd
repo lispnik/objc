@@ -95,6 +95,9 @@ Lisp method can take and return C structs by value like any other."
                  (:file "natural-language")
                  (:file "core-image")
                  (:file "file-watcher")
+                 (:file "kvo")
+                 (:file "data-detector")
+                 (:file "predicates")
                  (:file "standalone")))))
 
 (asdf:defsystem #:objc/test
@@ -122,6 +125,7 @@ Lisp method can take and return C structs by value like any other."
                  (:file "class-tests")
                  (:file "method-tests")
                  (:file "block-tests")
+                 (:file "example-tests")
                  (:file "manual-tests")
                  (:file "gui-tests")
                  (:file "seam-tests")

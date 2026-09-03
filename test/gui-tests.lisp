@@ -360,3 +360,32 @@ to find.  RUN-UNTIL-CLOSED restores whoever had the keyboard."
                      (is-false (objc:invoke-bool front "isEqual:" self)
                                "we are no longer holding the keyboard")))
               (objc:invoke window "close")))))))
+
+;;; The live canvas ----------------------------------------------------------
+
+(test canvas-renders-its-lisp-drawing-offscreen
+  "-drawRect: on the Lisp canvas view fires and paints.
+
+Rendered offscreen into an NSBitmapImageRep -- no window -- so it exercises the
+struct-by-value -drawRect: path and the NSColor/NSBezierPath primitives without
+anyone having to look.  Two different draw functions must encode to different
+PNGs: a view that never really drew would hand back the same empty bitmap for
+both."
+  (with-gui
+    (flet ((render-length (draw)
+             (let ((objc/examples:*canvas-draw* draw))
+               (let* ((view (objc/examples::make-view "LispCanvasView" #(0d0 0d0 96d0 96d0)))
+                      (bounds (objc:invoke view "bounds"))
+                      (rep (objc:invoke view "bitmapImageRepForCachingDisplayInRect:" bounds)))
+                 (objc:invoke view "cacheDisplayInRect:toBitmapImageRep:" bounds rep)
+                 (objc:invoke
+                  (objc:invoke rep "representationUsingType:properties:"
+                               4 (objc:invoke "NSDictionary" "dictionary"))  ; 4 = PNG
+                  "length")))))
+      (let ((rings (render-length 'objc/examples:draw-default))
+            (solid (render-length (lambda (w h)
+                                    (objc/examples:set-color 0 0 0)
+                                    (objc/examples:fill-rect 0 0 w h)))))
+        (is (and (integerp rings) (plusp rings)) "the canvas produced a PNG")
+        (is (/= rings solid)
+            "the rings scene and a flat fill must not encode identically")))))

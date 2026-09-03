@@ -190,6 +190,14 @@ unchanged:
   `mp:initialize-multiprocessing` equivalent and none is needed: that call exists
   in LispWorks to hand thread 1 to Cocoa, and on SBCL the initial thread already
   is thread 1.
+- `examples/canvas.lisp` — the one example not ported from the manual, because
+  it is the thing the manual's interface is *for*. A real `NSView` subclass whose
+  `-drawRect:` calls a Lisp function you redefine at the REPL while the window is
+  open; the next repaint runs the new definition. It also leans on the hardest
+  thing the library does — `-drawRect:` receives its dirty rectangle as an
+  `NSRect` *by value*, and each shape passes `NSRect`/`NSPoint` by value to
+  `NSBezierPath` and `NSColor` — so a paint loop is where `src/abi.lisp` earns
+  its keep. See [The live canvas](#the-live-canvas).
 
 ### Running them
 
@@ -271,6 +279,50 @@ To keep the objects and pump yourself:
 
 Do not run these under `--non-interactive` and expect to interact with them; the
 process exits as soon as the form returns.
+
+### The live canvas
+
+From a **plain `sbcl` REPL** (thread 1), open the canvas and then reshape what it
+draws without closing it:
+
+```lisp
+(asdf:load-system :objc/examples)
+(in-package :objc/examples)
+
+(test-canvas)                     ; a window opens on the default scene
+
+;; Redefine the drawing and repaint -- the running window updates.
+(setf *canvas-draw*
+      (lambda (w h)
+        (set-color 0.05 0.05 0.08) (fill-rect 0 0 w h)
+        (dotimes (i 60)
+          (set-color (/ i 60.0) 0.5 (- 1.0 (/ i 60.0)))
+          (fill-oval (* w (/ i 60.0)) (+ (/ h 2) (* 80 (sin (/ i 6.0))))
+                     14 14))))
+(refresh)                         ; setNeedsDisplay: + a brief pump
+
+(animate-canvas :seconds 12)      ; a self-running clock, for comparison
+(run-canvas)                      ; or: block until the window is closed
+```
+
+`(refresh)` is the REPL half of the loop: it marks the view dirty and pumps the
+run loop briefly, so `-drawRect:` — and your new closure — has run before it
+returns. Redefine `draw-default`, or `setf *canvas-draw*`, and `(refresh)`
+again. `set-color`, `fill-rect`, `fill-oval`, `stroke-oval` and `draw-line` are
+the drawing primitives; each is a few lines of `NSColor`/`NSBezierPath` and only
+valid inside a draw function.
+
+Because a Lisp `-drawRect:` is a real Cocoa draw, the view also renders offscreen
+— no window, no focus stolen — which is how this example is tested:
+
+```lisp
+(setf *canvas-draw* 'draw-default)
+(let* ((view (make-view "LispCanvasView" #(0 0 240 240)))
+       (rep (invoke view "bitmapImageRepForCachingDisplayInRect:" (invoke view "bounds"))))
+  (invoke view "cacheDisplayInRect:toBitmapImageRep:" (invoke view "bounds") rep)
+  (invoke (invoke rep "representationUsingType:properties:" 4 (invoke "NSDictionary" "dictionary"))
+          "writeToFile:atomically:" "/tmp/canvas.png" nil))
+```
 
 ## Testing
 

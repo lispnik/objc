@@ -26,7 +26,12 @@
            #:run-until-closed
            #:stop-running
            #:diagnose-close
-           #:test-area-calculator #:test-pdf-kit #:test-movie-view #:test-web-kit))
+           #:test-area-calculator #:test-pdf-kit #:test-movie-view #:test-web-kit
+           ;; The live drawing canvas (examples/canvas.lisp).
+           #:test-canvas #:run-canvas #:animate-canvas #:make-canvas #:refresh
+           #:*canvas-draw* #:*current-canvas*
+           #:set-color #:fill-rect #:fill-oval #:stroke-oval #:draw-line
+           #:draw-default #:draw-clock))
 
 (in-package #:fli)
 

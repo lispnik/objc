@@ -33,7 +33,7 @@
            #:set-color #:fill-rect #:fill-oval #:stroke-oval #:draw-line
            #:draw-default #:draw-clock
            ;; Vision OCR (examples/vision.lisp).
-           #:ocr-image #:text-image #:test-ocr
+           #:ocr-image #:text-image #:test-ocr #:read-barcodes
            ;; A menu-bar item (examples/status-item.lisp).
            #:make-status-item #:run-status-item #:remove-status-item
            #:*status-count* #:*status-running*
@@ -45,7 +45,15 @@
            ;; NSURLSession (examples/url-session.lisp).
            #:fetch #:fetch-async #:fetch-all #:serial-session #:with-url-session
            #:ns-data-to-bytes #:ns-data-to-string #:response-status
-           #:test-url-session #:report-url-session))
+           #:test-url-session #:report-url-session
+           ;; NaturalLanguage (examples/natural-language.lisp).
+           #:language-of #:tokenize #:tag-text #:entities #:parts-of-speech #:lemmas
+           #:word-embedding #:word-distance #:neighbours #:class-selectors
+           #:test-natural-language #:report-natural-language
+           ;; Core Image (examples/core-image.lisp).
+           #:apply-filter #:filter-names #:crop #:scale #:render-png #:png-p
+           #:rgba #:objc-value #:ci-format #:checkerboard #:gradient #:qr-code
+           #:test-core-image #:report-core-image))
 
 (in-package #:fli)
 

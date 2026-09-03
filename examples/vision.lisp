@@ -112,6 +112,47 @@ carries its -results when it returns."
                               :confidence (objc:invoke candidate "confidence")
                               :bounding-box (objc:invoke observation "boundingBox")))))))
 
+(defun read-barcodes (source)
+  "Every barcode and QR code Vision can find in SOURCE, as payload strings.
+
+SOURCE is a pathname, or a vector of encoded image bytes -- PNG, JPEG, anything
+ImageIO reads.  The bytes case is what lets one example check another: Core
+Image generates a QR code and this reads it back, which turns \"those are
+plausible PNG bytes\" into \"that is a QR code, and it says what we asked for\".
+
+Synchronous, like the text recogniser, and for the same reason."
+  (objc:ensure-objc-initialized :modules (list +vision-framework+))
+  (objc:with-autorelease-pool ()
+    (let* ((handler
+             (etypecase source
+               ((or pathname string)
+                (let ((file (or (uiop:truename* source)
+                                (error "No such file to read: ~A" source))))
+                  (objc:invoke (objc:invoke "VNImageRequestHandler" "alloc")
+                               "initWithURL:options:"
+                               (objc:invoke "NSURL" "fileURLWithPath:" (namestring file))
+                               (objc:invoke "NSDictionary" "dictionary"))))
+               (vector
+                (cffi:with-foreign-object (bytes :uint8 (max 1 (length source)))
+                  (dotimes (i (length source))
+                    (setf (cffi:mem-aref bytes :uint8 i) (aref source i)))
+                  ;; -dataWithBytes:length: copies, so the buffer may go.
+                  (objc:invoke (objc:invoke "VNImageRequestHandler" "alloc")
+                               "initWithData:options:"
+                               (objc:invoke "NSData" "dataWithBytes:length:"
+                                            bytes (length source))
+                               (objc:invoke "NSDictionary" "dictionary"))))))
+           (request (objc:alloc-init-object "VNDetectBarcodesRequest")))
+      (unless (objc:invoke handler "performRequests:error:"
+                           (vector request) (cffi:null-pointer))
+        (error "Vision could not read barcodes from ~S." source))
+      (let ((results (objc:invoke request "results")))
+        (loop for i below (objc:invoke results "count")
+              for observation = (objc:invoke results "objectAtIndex:" i)
+              for payload = (objc:invoke observation "payloadStringValue")
+              unless (cffi:null-pointer-p (objc:objc-object-pointer payload))
+                collect (objc:ns-string-to-string payload))))))
+
 (defun test-ocr (&optional (string "Hello, Lisp!  42"))
   "Render STRING to a temporary image, recognise it, and return what Vision
 read -- the (:text ...) plists.  The round trip in one call, for the REPL."

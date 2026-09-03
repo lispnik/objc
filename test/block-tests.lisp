@@ -431,6 +431,50 @@ run the block on the caller and normally does."
       (is-true (getf result :overlapped)
                "and the main thread kept working while they did"))))
 
+(test the-natural-language-example-runs-every-shape
+  "examples/natural-language.lisp is where struct-by-value into a block meets a
+real framework: the tagger and the tokenizer both hand their closure an NSRange
+by value, and the embedding hands it a double.  Until this example those paths
+existed only in the tests above.
+
+Foundation-level, so no window server, no network and no permissions."
+  (with-runtime
+    (let ((result (objc/examples:test-natural-language)))
+      (is (equal '("en" "fr" "ja") (getf result :languages))
+          "three languages identified from text alone")
+      (is (equal '("Cons" "cells" "cheaply") (getf result :tokens))
+          "the tokenizer's NSRanges came through by value")
+      (is (equal '(("PersonalName" . "Ada Lovelace")
+                   ("PersonalName" . "Charles Babbage")
+                   ("PlaceName" . "London"))
+                 (getf result :entities))
+          "both two-word names stayed whole, and London is a place")
+      (is-true (getf result :nouns))
+      (is-true (getf result :closer)
+               "cat is nearer dog than table -- the doubles arrived intact")
+      (is (= 5 (getf result :neighbours))))))
+
+(test the-core-image-example-runs-every-shape
+  "examples/core-image.lisp generates its own images, so it ships no assets and
+needs nothing on disk.  Headless: a CIContext renders without a window server.
+
+The QR assertion is the one with teeth.  Everything else checks that bytes came
+back and start with a PNG signature, which a broken filter graph could satisfy;
+that one round-trips through Vision and insists the payload matches."
+  (with-runtime
+    (let ((result (objc/examples:test-core-image)))
+      (is (plusp (getf result :filters)) "the framework listed its filters")
+      (is (= 264 (getf result :format))
+          "kCIFormatRGBA8, read from CoreImage rather than guessed")
+      (is-true (getf result :checkerboard))
+      (is-true (getf result :blurred) "the blur changed the image")
+      (is-true (getf result :gradient))
+      (is-true (getf result :qr))
+      (is-true (getf result :qr-decodes)
+               "Vision read the generated QR code back and the payload matched")
+      (is-true (getf result :infinite-refused)
+               "rendering an uncropped generator is reported, not silently empty"))))
+
 (test the-url-session-example-runs-every-shape
   "examples/url-session.lisp is the completion-handler API, which is the shape
 of most modern Cocoa and the reason block creation matters at all.

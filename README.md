@@ -205,6 +205,12 @@ unchanged:
   a `CGRect` *by value*. The block-based, completion-handler face of Vision would
   need block creation, which the library does not do yet — the synchronous face
   needs none of it. See [Vision OCR](#vision-ocr).
+- `examples/status-item.lisp` — a live item in the macOS menu bar. The canvas
+  shows the drawing half of AppKit; this shows the wiring half: each menu item
+  carries a target and an action selector, and AppKit sends that selector to a
+  Lisp object, invoking a Lisp method, when the item is chosen. Target/action is
+  how the whole of Cocoa's UI is connected, with a closure at the far end here.
+  See [A menu-bar item](#a-menu-bar-item).
 
 ### Running them
 
@@ -361,6 +367,28 @@ The whole thing works without an Objective-C block because
 request and the request holds its `-results` when the call returns. The Vision
 methods that take a completion handler would need block creation, which the
 library does not have yet.
+
+### A menu-bar item
+
+From a **plain `sbcl` REPL** (thread 1), put an item in the menu bar and drive it
+from its menu:
+
+```lisp
+(asdf:load-system :objc/examples)
+(in-package :objc/examples)
+
+(run-status-item)     ; a λ appears in the menu bar; use its menu, Quit returns
+```
+
+The menu's items are wired to Lisp methods by target/action: **Greet** prints
+from a Lisp method, **Increment** and **Reset** change the item's own title
+(`λ 0`, `λ 1`, …), and **Quit** ends the loop and hands the REPL back. Redefine
+`greet:` or `increment:` and the menu runs the new definition — the same live
+loop as the canvas, on a control instead of a view.
+
+`make-status-item` builds and returns the item and its controller without
+running a loop, so you can wire it into your own; `run-status-item` is the
+turnkey version, with an optional `:timeout` watchdog.
 
 ## Testing
 

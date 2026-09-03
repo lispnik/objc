@@ -33,7 +33,10 @@
            #:set-color #:fill-rect #:fill-oval #:stroke-oval #:draw-line
            #:draw-default #:draw-clock
            ;; Vision OCR (examples/vision.lisp).
-           #:ocr-image #:text-image #:test-ocr))
+           #:ocr-image #:text-image #:test-ocr
+           ;; A menu-bar item (examples/status-item.lisp).
+           #:make-status-item #:run-status-item #:remove-status-item
+           #:*status-count* #:*status-running*))
 
 (in-package #:fli)
 

@@ -439,3 +439,35 @@ be a failure is Vision reading the wrong text."
                (is (and (vectorp box) (= 4 (length box))
                         (every (lambda (n) (<= 0 n 1)) box))
                    "the bounding box is a normalised #(x y w h): ~S" box))))))))
+
+;;; The menu-bar item ---------------------------------------------------------
+
+(test status-item-menu-actions-run-lisp-methods
+  "An NSMenuItem's action is a Lisp method.  Build the menu-bar item, then send
+the actions the way a click would -- straight to the target -- and watch the
+Lisp state change.  The item is created in and removed from the real menu bar,
+so it needs a window server; if the status bar will not vend an item, skip."
+  (with-gui
+    (let (item)
+      (unwind-protect
+           (multiple-value-bind (i controller) (objc/examples::make-status-item :title "T")
+             (setf item i)
+             (let ((item-ptr (if (cffi:pointerp i) i (objc:objc-object-pointer i))))
+               (if (cffi:null-pointer-p item-ptr)
+                   (skip "no system status bar on this runner")
+                   (let ((target (objc:objc-object-pointer controller)))
+                     (is (= 5 (objc:invoke (objc:invoke i "menu") "numberOfItems"))
+                         "Greet, Increment, Reset, a separator, and Quit")
+                     (setf objc/examples:*status-count* 0)
+                     (objc:invoke target "increment:" nil)
+                     (objc:invoke target "increment:" nil)
+                     (is (= 2 objc/examples:*status-count*)
+                         "the increment: Lisp method ran, twice")
+                     (objc:invoke target "resetCount:" nil)
+                     (is (= 0 objc/examples:*status-count*) "the reset: Lisp method ran")
+                     (setf objc/examples:*status-running* t)
+                     (objc:invoke target "quit:" nil)
+                     (is-false objc/examples:*status-running*
+                               "the quit: Lisp method ran and cleared the flag")))))
+        (when item
+          (ignore-errors (objc/examples::remove-status-item item)))))))

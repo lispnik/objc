@@ -1,0 +1,127 @@
+;;;; examples/status-item.lisp -- a macOS menu-bar item, run from Lisp.
+;;;;
+;;;; Another example not in the manual.  It shows the other half of AppKit
+;;;; interop from the canvas: not a view you draw, but a control whose actions
+;;;; are Lisp methods.  An NSStatusItem sits in the system menu bar; its menu's
+;;;; items each carry a target and an action selector, and AppKit sends that
+;;;; selector -- to a Lisp object, invoking a Lisp method -- when the item is
+;;;; chosen.  Target/action is how the whole of Cocoa's UI is wired, and here
+;;;; the far end of it is a closure you can redefine at the REPL.
+
+(in-package #:objc/examples)
+
+(defvar *status-running* nil
+  "T while RUN-STATUS-ITEM is pumping; the Quit menu item sets it NIL.")
+
+(defvar *status-count* 0
+  "State the menu mutates, so a Lisp method visibly changes the menu-bar item.")
+
+(objc:define-objc-class status-controller ()
+  ()
+  (:objc-class-name "LispStatusController")
+  (:objc-instance-vars ("statusItem" objc:objc-object-pointer)))
+
+(defun %status-item-of (controller)
+  "The controller's NSStatusItem, or NIL before one is stored."
+  (let ((item (objc:objc-object-var-value controller "statusItem")))
+    (unless (cffi:null-pointer-p (if (cffi:pointerp item)
+                                     item
+                                     (objc:objc-object-pointer item)))
+      item)))
+
+(defun %update-status-title (controller)
+  "Reflect *STATUS-COUNT* in the menu-bar button -- the visible proof a Lisp
+method ran."
+  (let ((item (%status-item-of controller)))
+    (when item
+      (objc:invoke (objc:invoke item "button") "setTitle:"
+                   (format nil "~C ~D" #\GREEK_SMALL_LETTER_LAMDA *status-count*)))))
+
+;;; The actions, each a Lisp method an NSMenuItem points at ------------------
+
+(objc:define-objc-method ("greet:" :void)
+    ((self status-controller) (sender objc:objc-object-pointer))
+  (declare (ignore sender))
+  (format t "~&Hello from a Lisp method, sent by an NSMenuItem.~%")
+  (finish-output))
+
+(objc:define-objc-method ("increment:" :void)
+    ((self status-controller) (sender objc:objc-object-pointer))
+  (declare (ignore sender))
+  (incf *status-count*)
+  (%update-status-title self))
+
+(objc:define-objc-method ("resetCount:" :void)
+    ((self status-controller) (sender objc:objc-object-pointer))
+  (declare (ignore sender))
+  (setf *status-count* 0)
+  (%update-status-title self))
+
+(objc:define-objc-method ("quit:" :void)
+    ((self status-controller) (sender objc:objc-object-pointer))
+  (declare (ignore sender))
+  (setf *status-running* nil))
+
+;;; Building and running ------------------------------------------------------
+
+(defun %menu-item (title action target)
+  "An NSMenuItem titled TITLE whose action selector ACTION is sent to TARGET."
+  (let ((item (objc:invoke (objc:invoke "NSMenuItem" "alloc")
+                           "initWithTitle:action:keyEquivalent:"
+                           title (objc:coerce-to-selector action) "")))
+    (objc:invoke item "setTarget:" target)
+    item))
+
+(defparameter +variable-status-item-length+ -1d0
+  "NSVariableStatusItemLength: the item is as wide as its content.")
+
+(defun make-status-item (&key (title "λ"))
+  "Put an item in the menu bar whose menu's actions are Lisp methods.
+
+Returns (VALUES STATUS-ITEM CONTROLLER).  The system status bar retains the
+item until REMOVE-STATUS-ITEM, so keep the value only if you want to change it;
+RUN-STATUS-ITEM removes it for you."
+  (objc:ensure-objc-initialized)
+  (objc.runloop:shared-application)            ; the status bar wants an app object
+  (setf *status-count* 0)
+  (let* ((controller (make-instance 'status-controller))
+         (target (objc:objc-object-pointer controller))
+         (bar (objc:invoke "NSStatusBar" "systemStatusBar"))
+         (item (objc:invoke bar "statusItemWithLength:" +variable-status-item-length+))
+         (menu (objc:invoke (objc:invoke "NSMenu" "alloc") "init")))
+    (objc:invoke (objc:invoke item "button") "setTitle:" title)
+    (objc:invoke menu "addItem:" (%menu-item "Greet from Lisp" "greet:" target))
+    (objc:invoke menu "addItem:" (%menu-item "Increment" "increment:" target))
+    (objc:invoke menu "addItem:" (%menu-item "Reset" "resetCount:" target))
+    (objc:invoke menu "addItem:" (objc:invoke "NSMenuItem" "separatorItem"))
+    (objc:invoke menu "addItem:" (%menu-item "Quit" "quit:" target))
+    (objc:invoke item "setMenu:" menu)
+    (setf (objc:objc-object-var-value controller "statusItem") item)
+    (values item controller)))
+
+(defun remove-status-item (item)
+  "Take ITEM out of the menu bar."
+  (objc:invoke (objc:invoke "NSStatusBar" "systemStatusBar") "removeStatusItem:" item))
+
+(defun run-status-item (&key (title "λ") timeout)
+  "Show the menu-bar item and keep the app live until its Quit item is chosen.
+
+Run it from a plain sbcl REPL (AppKit needs thread 1).  Click the item in the
+macOS menu bar: Greet prints from a Lisp method, Increment and Reset change the
+item's title, Quit ends the loop and hands the REPL back.  TIMEOUT in seconds is
+a watchdog if you would rather not reach for the mouse.  Returns T."
+  (multiple-value-bind (item controller) (make-status-item :title title)
+    (declare (ignore controller))
+    (setf *status-running* t)
+    (let ((deadline (when timeout
+                      (+ (get-internal-real-time)
+                         (* timeout internal-time-units-per-second)))))
+      (unwind-protect
+           (objc.runloop:pump-events
+            :seconds 0.05d0
+            :until (lambda ()
+                     (or (not *status-running*)
+                         (and deadline (> (get-internal-real-time) deadline)))))
+        (remove-status-item item)
+        (objc.runloop:restore-frontmost)))
+    t))

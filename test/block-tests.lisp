@@ -431,6 +431,32 @@ run the block on the caller and normally does."
       (is-true (getf result :overlapped)
                "and the main thread kept working while they did"))))
 
+(test concurrent-blocks-work-or-refuse-according-to-the-build
+  "Running a Lisp closure on several libdispatch threads at once is fatal on a
+stock SBCL -- a GC stops the world by signalling every other thread in Lisp, and
+Darwin will not signal a libdispatch worker -- and works on one built
+--with-sb-safepoint, which stops the world by polling instead.
+
+So this asserts two different things depending on the Lisp running it, and the
+one it must never do is take the process down.  On a stock build the refusal is
+the feature."
+  (with-runtime
+    (if (objc/examples:concurrent-blocks-supported-p)
+        (let ((squares (objc/examples:parallel-map
+                        (lambda (n) (* n n))
+                        (coerce (loop for i below 32 collect i) 'vector))))
+          (is (equalp (map 'vector (lambda (n) (* n n))
+                           (coerce (loop for i below 32 collect i) 'vector))
+                      squares)
+              "every index was computed exactly once, in parallel"))
+        (progn
+          (signals error (objc/examples:parallel-map #'identity #(1 2 3)))
+          (is (search "sb-safepoint"
+                      (princ-to-string
+                       (handler-case (objc/examples:parallel-map #'identity #(1 2 3))
+                         (error (c) c))))
+              "and the refusal names the build that would work")))))
+
 (test with-objc-block-frees-on-a-non-local-exit
   (with-runtime
     (let ((escaped nil))

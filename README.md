@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-743 checks, green on a clean GitHub runner as well as locally. Behaviour the
+744 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -250,13 +250,26 @@ the process dies outright:
 fatal error encountered in SBCL: cannot suspend thread ...: 45, Operation not supported
 ```
 
-Safe: `dispatch_sync`; any number of blocks on a **serial** queue; and your own
-Lisp threads running while a queue thread is in a callback. Unsafe: concurrent
-queues with more than one block in flight, and `dispatch_apply`. Serialising
-Lisp entry with a lock does not help — a worker parked on a Lisp lock still has
-to be signalled. The mechanism that would fix it is an SBCL built
-`--with-sb-safepoint`, which stops the world by polling rather than signalling;
-untried here. See [Grand Central Dispatch](#grand-central-dispatch).
+Safe on a stock build: `dispatch_sync`; any number of blocks on a **serial**
+queue; and your own Lisp threads running while a queue thread is in a callback.
+Unsafe: concurrent queues with more than one block in flight, and
+`dispatch_apply`. Serialising Lisp entry with a lock does not help — a worker
+parked on a Lisp lock still has to be signalled.
+
+**Building SBCL `--with-sb-safepoint` lifts the limit**, and this is verified
+rather than hoped for: the same source on a safepoint build runs an eight-way
+concurrent barrier, `dispatch_apply` and a parallel map, five runs out of five,
+with the whole suite green. The worker thread is still unsignallable there —
+`ENOTSUP`, exactly as before — which is the point: safepoint doesn't make
+signalling work, it makes it unnecessary.
+
+```
+./make.sh --with-sb-safepoint --prefix=$HOME/.local && sh install.sh
+```
+
+`objc/examples:parallel-map` is therefore real, and refuses with an explanation
+rather than killing the process when the build cannot take it. See
+[Grand Central Dispatch](#grand-central-dispatch).
 
 ## Examples
 
@@ -526,14 +539,16 @@ are plain C functions that need nothing from Objective-C except the block you
 hand them. The entire binding here is a dozen lines of `defcfun`; what makes it
 work is that the block is a Lisp closure.
 
-It is also where the concurrency limit above stops being abstract. The example
-defaults every asynchronous entry point to a **serial** queue, and there is no
-`parallel-map` in it however much the name suggests itself: `dispatch_apply` with
-an allocating Lisp closure kills the process every time. `group-async`, by
-contrast, is three lines and uses `with-objc-block` like everything else, even
-though the work has not started when it returns — an earlier draft carried every
-queued block on the group and freed them after the wait, which is what the job
-takes without copy and dispose helpers.
+It is also where the concurrency limit above stops being abstract. `group-async`
+defaults to a **serial** queue, which is safe on any build. `parallel-map` and
+`dispatch-apply` need a safepoint build and say so — `concurrent-blocks-supported-p`
+is the predicate, and on a stock SBCL they signal an error naming the fix instead
+of taking the process down.
+
+`group-async` is also three lines and uses `with-objc-block` like everything
+else, even though the work has not started when it returns — an earlier draft
+carried every queued block on the group and freed them after the wait, which is
+what the job takes without copy and dispose helpers.
 
 ## Testing
 
@@ -541,7 +556,7 @@ takes without copy and dispose helpers.
 make test
 ```
 
-The suite runs 743 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 744 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

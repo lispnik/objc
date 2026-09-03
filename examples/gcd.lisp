@@ -27,23 +27,26 @@
 ;;;;     45, Operation not supported
 ;;;;
 ;;;; -- the process, immediately, with no condition and no Lisp backtrace.
-;;;; Measured here, not inferred: eight concurrent allocating blocks kill it
-;;;; every time, and so does dispatch_apply, which is why there is no
-;;;; PARALLEL-MAP in this file however much the name suggests itself.  Nor does
-;;;; serialising Lisp entry with a lock help: a worker parked on a Lisp lock has
-;;;; already been adopted, and still has to be signalled.
+;;;; Measured, not inferred: eight concurrent allocating blocks kill it every
+;;;; time, and so does dispatch_apply.  Nor does serialising Lisp entry with a
+;;;; lock help: a worker parked on a Lisp lock has already been adopted, and
+;;;; still has to be signalled.
 ;;;;
-;;;; What IS safe, also measured: dispatch_sync; any number of blocks on a
+;;;; What IS safe on a stock build: dispatch_sync; any number of blocks on a
 ;;;; SERIAL queue, which by construction runs one at a time; and the main Lisp
-;;;; thread working away while a queue thread is inside a callback.  So this
-;;;; file defaults every asynchronous entry point to a serial queue, and the
-;;;; concurrent global queues are here for DISPATCH-SYNC and for reference.
+;;;; thread working away while a queue thread is inside a callback.  So
+;;;; GROUP-ASYNC defaults to a serial queue, and the concurrent global queues
+;;;; are here for DISPATCH-SYNC.
 ;;;;
-;;;; The mechanism that would lift the limit is an SBCL built
-;;;; --with-sb-safepoint, which stops the world by polling rather than
-;;;; signalling; arm64 has the safepoint code and the macOS build failure was
-;;;; fixed upstream in 2020, but a stock build does not enable it and this has
-;;;; not been tried.
+;;;; AND THE LIMIT LIFTS IF YOU BUILD SBCL --with-sb-safepoint, which stops the
+;;;; world by polling rather than signalling.  Verified, not hoped for: the same
+;;;; source built that way runs the eight-way barrier, dispatch_apply and
+;;;; PARALLEL-MAP below, five runs out of five, and the whole 743-check suite
+;;;; passes on it.  The worker thread is still unsignallable there -- ENOTSUP,
+;;;; exactly as before -- which is the point: safepoint does not make signalling
+;;;; work, it makes it unnecessary.  So DISPATCH-APPLY and PARALLEL-MAP are
+;;;; here, and they refuse with an explanation rather than killing the process
+;;;; when the build cannot take them.
 ;;;;
 ;;;; Lifetime, by contrast, needs no care here at all, and it is worth saying
 ;;;; why because it did until recently.  dispatch_group_async copies the block
@@ -73,6 +76,11 @@
   (attr :pointer))
 
 (cffi:defcfun ("dispatch_sync" %dispatch-sync) :void
+  (queue :pointer)
+  (block :pointer))
+
+(cffi:defcfun ("dispatch_apply" %dispatch-apply) :void
+  (iterations :unsigned-long)
   (queue :pointer)
   (block :pointer))
 
@@ -121,6 +129,31 @@ when done, or let WITH-SERIAL-QUEUE do it."
 
 (objc:define-objc-block-type dispatch-work :void ())
 
+(objc:define-objc-block-type dispatch-indexed-work :void ((:unsigned :long-long)))
+
+;;; Is running Lisp on several queue threads at once survivable? -------------
+
+(defun concurrent-blocks-supported-p ()
+  "True on an SBCL that stops the world by polling rather than by signalling.
+
+The whole of the concurrency question above reduces to this.  Verified by
+building the same source --with-sb-safepoint: eight workers held inside Lisp by
+a barrier and all allocating, dispatch_apply, and a parallel map all come
+through, five runs out of five, where a stock build dies on the first."
+  (and (member :sb-safepoint *features*) t))
+
+(defun check-concurrent-blocks (operation)
+  (unless (concurrent-blocks-supported-p)
+    (error "~A runs a Lisp closure on several libdispatch threads at once, ~
+            which this SBCL cannot survive.~%~
+            A garbage collection stops the world by signalling every other ~
+            thread in Lisp, and Darwin refuses to signal a libdispatch worker ~
+            at all -- so the process dies with \"cannot suspend thread: 45, ~
+            Operation not supported\", no condition and no backtrace.~%~
+            Build SBCL --with-sb-safepoint, which stops the world by polling ~
+            instead, and this works.  Otherwise use a serial queue: ~
+            GROUP-ASYNC defaults to one." operation)))
+
 ;;; Synchronous ---------------------------------------------------------------
 
 (defun dispatch-sync (function &key (queue (global-queue)))
@@ -131,6 +164,32 @@ it -- so WITH-OBJC-BLOCK is exactly right, and the block is freed on the way out
 even if FUNCTION signals."
   (objc:with-objc-block (block 'dispatch-work function)
     (%dispatch-sync queue (objc:objc-block-pointer block))))
+
+(defun dispatch-apply (count function &key (queue (global-queue)))
+  "Call FUNCTION with each index below COUNT, concurrently, and return when all
+have finished.
+
+GCD's parallel for loop: it runs as many iterations at once as the machine has
+cores to spare, on threads SBCL did not create, and does not return until the
+last is done.  FUNCTION must be safe to run on several threads at once --
+writing to distinct elements of a vector is fine, pushing onto a shared list is
+not -- and this needs a safepoint build; see CHECK-CONCURRENT-BLOCKS."
+  (check-concurrent-blocks "DISPATCH-APPLY")
+  (objc:with-objc-block (block 'dispatch-indexed-work function)
+    (%dispatch-apply count queue (objc:objc-block-pointer block))))
+
+(defun parallel-map (function sequence)
+  "Map FUNCTION over SEQUENCE in parallel, and return the results as a vector.
+
+A Lisp function applied across every core the machine has, scheduled by the same
+queues Cocoa schedules its own work on.  Each index is written by exactly one
+iteration, which is what makes the shared result vector safe without a lock."
+  (let* ((input (coerce sequence 'vector))
+         (results (make-array (length input))))
+    (dispatch-apply (length input)
+                    (lambda (index)
+                      (setf (aref results index) (funcall function (aref input index)))))
+    results))
 
 ;;; Asynchronous --------------------------------------------------------------
 ;;;

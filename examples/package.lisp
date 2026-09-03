@@ -39,6 +39,7 @@
            #:*status-count* #:*status-running*
            ;; Grand Central Dispatch (examples/gcd.lisp).
            #:global-queue #:serial-queue #:with-serial-queue #:dispatch-sync
+           #:dispatch-apply #:parallel-map #:concurrent-blocks-supported-p
            #:dispatch-group #:make-dispatch-group #:group-async #:group-wait
            #:with-dispatch-group #:test-gcd #:report-gcd))
 

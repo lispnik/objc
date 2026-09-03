@@ -203,18 +203,31 @@ Each of these is a bug that actually happened here.
   no Lisp backtrace.
 
   So a mutex serialising Lisp entry does **not** help: a worker parked on a Lisp
-  lock has already been adopted and still has to be signalled. The fix is
-  `:sb-safepoint`, which stops the world by polling instead of signalling; it is
-  not enabled in a stock build (`make-config.sh` forces it on win32 only),
-  `arm64-arch.c` does have the safepoint code, and the macOS `--with-sb-safepoint`
-  build failure was fixed upstream in 2020. Untried here.
+  lock has already been adopted and still has to be signalled.
+
+  **`--with-sb-safepoint` fixes it, verified.** Safepoint stops the world by
+  polling rather than signalling, so the unsignallable thread stops mattering —
+  and on such a build the worker is *still* `ENOTSUP`, which is the proof that
+  the mechanism rather than the platform changed. Built from `~/Projects/sbcl`
+  (`./make.sh --with-sb-safepoint --prefix=$HOME/.local`): the eight-way barrier,
+  `dispatch_apply` and `parallel-map` all pass five runs out of five, and the
+  whole suite is green including the dump test. `make-config.sh` forces safepoint
+  on win32 only, but `arm64-arch.c` carries the code and the macOS build failure
+  was fixed upstream in 2020.
 
   Safe on a stock build, also measured: `dispatch_sync`; any number of blocks on
   a **serial** queue; and SBCL's own threads running while one queue thread is in
-  a callback. Fatal every run: eight concurrent allocating blocks, and
-  `dispatch_apply` with any allocating closure. This is why `examples/gcd.lisp`
-  defaults every asynchronous entry point to a serial queue and has no
-  `parallel-map`.
+  a callback. So `examples/gcd.lisp` defaults `group-async` to a serial queue,
+  and gates `parallel-map` and `dispatch-apply` on
+  `concurrent-blocks-supported-p` — they signal and name the build rather than
+  killing the process.
+
+  One trap when building SBCL here: `~/.config/common-lisp/source-registry.conf`
+  puts a `:tree` over `~/Projects/common-lisp/`, which sweeps in an old vendored
+  ASDF under `mezzano/MBuild`. The contrib build calls `upgrade-asdf`, finds it,
+  fails to compile it, and the build dies at `sb-manual` with the core already
+  fine. Build the contribs with
+  `CL_SOURCE_REGISTRY="(:source-registry :ignore-inherited-configuration)"`.
 
 - **`*block-machinery*` is the GC root for every block invoke callable**, exactly
   as `*imp-registry*` is for IMPs, and for the same reason. It is also the

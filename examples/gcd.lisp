@@ -13,12 +13,15 @@
 ;;;; scheduled by the same queues Cocoa schedules its own work on.
 ;;;;
 ;;;; ONE LIBDISPATCH THREAD IN LISP AT A TIME.  This is the limit that shapes
-;;;; everything below, and it is SBCL's rather than GCD's.  A block running on a
-;;;; queue runs on a thread SBCL did not create; SBCL adopts it for the duration
-;;;; of the callback, and stopping the world for a garbage collection means
-;;;; signalling every thread that is in Lisp.  macOS will not let it signal more
-;;;; than one of libdispatch's pooled worker threads, so a collection that fires
-;;;; while two blocks are running dies as
+;;;; everything below, and it is SBCL's rather than GCD's.  A block runs on a
+;;;; thread SBCL did not create; SBCL adopts it for the duration of the
+;;;; callback, and stopping the world for a garbage collection means sending
+;;;; every other thread in Lisp a signal.  Darwin refuses to signal a
+;;;; libdispatch worker thread at all -- pthread_kill returns ENOTSUP on one
+;;;; even for signal 0, where an ordinary SBCL thread returns 0 -- and a single
+;;;; block gets away with it only because the collector skips the thread that
+;;;; triggered the collection.  With two, the second has to be signalled and
+;;;; cannot be:
 ;;;;
 ;;;;     fatal error encountered in SBCL: cannot suspend thread ...:
 ;;;;     45, Operation not supported
@@ -26,12 +29,21 @@
 ;;;; -- the process, immediately, with no condition and no Lisp backtrace.
 ;;;; Measured here, not inferred: eight concurrent allocating blocks kill it
 ;;;; every time, and so does dispatch_apply, which is why there is no
-;;;; PARALLEL-MAP in this file however much the name suggests itself.  What IS
-;;;; safe, also measured: dispatch_sync; any number of blocks on a SERIAL queue,
-;;;; which by construction runs one at a time; and the main Lisp thread working
-;;;; away while a queue thread is inside a callback.  So this file defaults
-;;;; every asynchronous entry point to a serial queue, and the concurrent global
-;;;; queues are here for DISPATCH-SYNC and for reference.
+;;;; PARALLEL-MAP in this file however much the name suggests itself.  Nor does
+;;;; serialising Lisp entry with a lock help: a worker parked on a Lisp lock has
+;;;; already been adopted, and still has to be signalled.
+;;;;
+;;;; What IS safe, also measured: dispatch_sync; any number of blocks on a
+;;;; SERIAL queue, which by construction runs one at a time; and the main Lisp
+;;;; thread working away while a queue thread is inside a callback.  So this
+;;;; file defaults every asynchronous entry point to a serial queue, and the
+;;;; concurrent global queues are here for DISPATCH-SYNC and for reference.
+;;;;
+;;;; The mechanism that would lift the limit is an SBCL built
+;;;; --with-sb-safepoint, which stops the world by polling rather than
+;;;; signalling; arm64 has the safepoint code and the macOS build failure was
+;;;; fixed upstream in 2020, but a stock build does not enable it and this has
+;;;; not been tried.
 ;;;;
 ;;;; Lifetime, by contrast, needs no care here at all, and it is worth saying
 ;;;; why because it did until recently.  dispatch_group_async copies the block

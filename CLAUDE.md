@@ -189,18 +189,32 @@ Each of these is a bug that actually happened here.
   destination — the plain-`invoke` path had no coverage at all. The same
   reasoning is why `call-objc-block` refuses the same case.
 
-- **Only one libdispatch worker thread may be inside Lisp at a time.** A block
-  runs on a thread SBCL did not create; SBCL adopts it for the callback, and
-  stopping the world for a GC means signalling every thread that is in Lisp.
-  macOS refuses that for more than one of libdispatch's pooled workqueue
-  threads, so a collection while two blocks are running dies as `cannot suspend
-  thread ...: 45, Operation not supported` — the process, with no condition and
-  no Lisp backtrace. Measured, and reproducible every run: eight concurrent
-  allocating blocks, and `dispatch_apply` with any allocating closure. Safe, also
-  measured: `dispatch_sync`; any number of blocks on a **serial** queue; and
-  SBCL's own threads running while one queue thread is in a callback. This is
-  why `examples/gcd.lisp` defaults every asynchronous entry point to a serial
-  queue and has no `parallel-map`.
+- **Only one libdispatch worker thread may be inside Lisp at a time**, and the
+  reason is worth knowing exactly, because the obvious workarounds all fail for
+  it. `stop-the-world.c` suspends every other thread with
+  `pthread_kill(th->os_thread, SIG_STOP_FOR_GC)` and calls `lose()` if that
+  fails; `attach_os_thread` has stored the workqueue thread's real `pthread_t`.
+  **Darwin refuses to signal a libdispatch workqueue thread at all** — measured:
+  `pthread_kill` returns `ENOTSUP` (45) on one even for signal 0, while the main
+  thread and an ordinary SBCL thread return 0. One block gets away with it only
+  because `for_each_thread` skips `me`, and the single worker in Lisp is the one
+  that triggered the collection. Two, and the second must be signalled: `cannot
+  suspend thread ...: 45, Operation not supported`, the process, no condition and
+  no Lisp backtrace.
+
+  So a mutex serialising Lisp entry does **not** help: a worker parked on a Lisp
+  lock has already been adopted and still has to be signalled. The fix is
+  `:sb-safepoint`, which stops the world by polling instead of signalling; it is
+  not enabled in a stock build (`make-config.sh` forces it on win32 only),
+  `arm64-arch.c` does have the safepoint code, and the macOS `--with-sb-safepoint`
+  build failure was fixed upstream in 2020. Untried here.
+
+  Safe on a stock build, also measured: `dispatch_sync`; any number of blocks on
+  a **serial** queue; and SBCL's own threads running while one queue thread is in
+  a callback. Fatal every run: eight concurrent allocating blocks, and
+  `dispatch_apply` with any allocating closure. This is why `examples/gcd.lisp`
+  defaults every asynchronous entry point to a serial queue and has no
+  `parallel-map`.
 
 - **`*block-machinery*` is the GC root for every block invoke callable**, exactly
   as `*imp-registry*` is for IMPs, and for the same reason. It is also the

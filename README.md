@@ -239,10 +239,12 @@ signals instead.
 
 **Only one libdispatch thread may be inside Lisp at a time.** This is SBCL's
 limit, not GCD's, and it is worth knowing before writing anything concurrent. A
-block runs on a thread SBCL did not create; a garbage collection has to signal
-every thread that is in Lisp, and macOS will not let it signal more than one of
-libdispatch's pooled worker threads. A collection while two blocks are running
-kills the process outright:
+block runs on a thread SBCL did not create; a garbage collection stops the world
+by sending every other thread a signal, and **Darwin refuses to signal a
+libdispatch worker thread at all** — `pthread_kill` on one returns `ENOTSUP`
+even for signal 0, where an ordinary SBCL thread returns 0. A single block gets
+away with it because the collector skips the thread that triggered it. Two, and
+the process dies outright:
 
 ```
 fatal error encountered in SBCL: cannot suspend thread ...: 45, Operation not supported
@@ -250,8 +252,11 @@ fatal error encountered in SBCL: cannot suspend thread ...: 45, Operation not su
 
 Safe: `dispatch_sync`; any number of blocks on a **serial** queue; and your own
 Lisp threads running while a queue thread is in a callback. Unsafe: concurrent
-queues with more than one block in flight, and `dispatch_apply`. See
-[Grand Central Dispatch](#grand-central-dispatch).
+queues with more than one block in flight, and `dispatch_apply`. Serialising
+Lisp entry with a lock does not help — a worker parked on a Lisp lock still has
+to be signalled. The mechanism that would fix it is an SBCL built
+`--with-sb-safepoint`, which stops the world by polling rather than signalling;
+untried here. See [Grand Central Dispatch](#grand-central-dispatch).
 
 ## Examples
 

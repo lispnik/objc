@@ -1,10 +1,17 @@
 ;;;; test/gui-tests.lisp -- the AppKit examples.
 ;;;;
 ;;;; Gated on there being a window server.  [NSScreen mainScreen] is nil in a
-;;;; process with no display, which is what a CI runner looks like, and every
-;;;; test here skips rather than fails in that case.  The skip count is printed
-;;;; by the suite; a green run on a headless machine is a green run of fewer
-;;;; checks, not a green run of these.
+;;;; process with no display, and every windowed test here skips rather than
+;;;; fails in that case; the skip count is printed by the suite, so a green run
+;;;; on such a machine is a green run of fewer checks, not a green run of these.
+;;;;
+;;;; The gate is defensive, not a description of CI.  The GitHub macOS runners
+;;;; this project uses turned out to HAVE a window server -- a full run reports
+;;;; Skip: 0, so these tests actually execute there rather than skipping.  The
+;;;; gate stays because some environment (a headless server, an ssh session
+;;;; without a session) will not have one, and skipping beats a SIGFPE.  The one
+;;;; exception is CANVAS-RENDERS-ITS-LISP-DRAWING-OFFSCREEN, which renders
+;;;; through Core Graphics into a bitmap and so is gated on the runtime alone.
 
 (in-package #:objc/test)
 

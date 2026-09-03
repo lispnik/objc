@@ -49,6 +49,37 @@ that returns a structure by value, filling it through the result variable."
       (is (= 1.0 (cffi:mem-aref p :float 0)))
       (is (= 2.0 (cffi:mem-aref p :float 1))))))
 
+(test the-pair-struct-method-refuses-to-return-a-freed-buffer
+  "The same method through plain INVOKE.  A structure result is written into a
+buffer INVOKE owns and frees on the way out, so the pointer it used to return
+was already dangling -- and it read as plausible numbers, which is why the test
+above, the manual's own, never caught it: the manual uses INVOKE-INTO.
+
+Only the four Cocoa structures have a Lisp representation to return instead, so
+everything else signals and says which method and what to do."
+  (with-objc
+    (let ((object (objc:alloc-init-object "MyObject")))
+      (signals objc::unrepresentable-struct-result (objc:invoke object "pair"))
+      (is (search "-pair"
+                  (princ-to-string
+                   (handler-case (objc:invoke object "pair")
+                     (error (c) c))))
+          "the report names the method that was called"))))
+
+(test a-cocoa-structure-result-still-comes-back-from-plain-invoke
+  "The other side of that guard: NSRange has a Lisp representation, so INVOKE
+returns it and nothing is refused.  This is the LispWorks behaviour the oracle
+records, and the guard must not have broken it."
+  (with-objc
+    (is (equal '(6 . 5)
+               (objc:invoke (objc:invoke "NSString" "stringWithUTF8String:" "hello world")
+                            "rangeOfString:" "world")))
+    (is (equalp #(0d0 0d0 0d0 0d0)
+                (objc:invoke-into #(0d0 0d0 0d0 0d0)
+                                  (objc:invoke "NSValue" "valueWithRect:"
+                                               #(0d0 0d0 0d0 0d0))
+                                  "rectValue")))))
+
 (test the-size-mixin-reaches-both-subclasses
   (with-objc
     (is (= 42 (objc:invoke (objc:alloc-init-object "MyData") "size")))

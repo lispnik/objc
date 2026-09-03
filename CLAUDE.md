@@ -161,6 +161,17 @@ Each of these is a bug that actually happened here.
   after `free-objc-block` is a reported miss rather than a call into whatever
   closure was allocated that id next.
 
+- **A structure result may only leave `unmarshal-result` as a value copied OUT
+  of the buffer.** The buffer is `%invoke`'s own `with-foreign-object` and is
+  gone the moment the call returns, so returning a pointer into it is a
+  use-after-free that reads as plausible numbers — a struct holding `(7 8)` came
+  back as `(4191 2)`. Only the four Cocoa structures have a Lisp representation
+  to return instead; anything else now signals `unrepresentable-struct-result`
+  and names `invoke-into`. This survived because the manual's own struct example,
+  and therefore the test ported from it, uses `invoke-into` with a caller-owned
+  destination — the plain-`invoke` path had no coverage at all. The same
+  reasoning is why `call-objc-block` refuses the same case.
+
 - **Only one libdispatch worker thread may be inside Lisp at a time.** A block
   runs on a thread SBCL did not create; SBCL adopts it for the callback, and
   stopping the world for a GC means signalling every thread that is in Lisp.

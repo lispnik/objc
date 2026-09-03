@@ -100,6 +100,37 @@ Signalling beats guessing here: a struct of the wrong size passed by value
 corrupts the argument registers of every parameter after it, and the call
 returns plausible garbage instead of failing."))
 
+(define-condition unrepresentable-struct-result (objc-error)
+  ((encoding :initarg :encoding :reader unrepresentable-struct-result-encoding)
+   (selector :initarg :selector :initform nil
+             :reader unrepresentable-struct-result-selector))
+  (:report
+   (lambda (condition stream)
+     (format stream
+             "~@[-~A ~]returns ~A, which has no Lisp representation.~%~
+              A structure result is written into a buffer the call owns, and ~
+              the only value INVOKE could return is a pointer into it -- ~
+              which this call frees on its way out.  Use INVOKE-INTO with a ~
+              destination you allocated:~%~
+              ~2T(cffi:with-foreign-object (p :uint8 <size>)~%~
+              ~4T(objc:invoke-into p receiver ~S)~%~
+              ~4T...)~%~
+              NSRect, NSPoint, NSSize and NSRange need none of this: INVOKE ~
+              returns those as a vector or a cons."
+             (unrepresentable-struct-result-selector condition)
+             (unrepresentable-struct-result-encoding condition)
+             (or (unrepresentable-struct-result-selector condition) "selector"))))
+  (:documentation
+   "Signalled when INVOKE would have to return a pointer to a structure buffer
+that is already freed.
+
+The four Cocoa structures convert to a vector or a cons and are unaffected; any
+other structure has no Lisp representation here, so the result used to be a
+pointer into the WITH-FOREIGN-OBJECT that INVOKE had just left.  It read as
+plausible numbers -- a struct holding (7 8) came back as (4191 2) -- which is
+the failure mode this library refuses everywhere else it appears.  The manual's
+own struct-returning example uses INVOKE-INTO, which is why nothing caught it."))
+
 (define-condition not-main-thread (objc-error)
   ((operation :initarg :operation :initform nil :reader not-main-thread-operation))
   (:report

@@ -77,15 +77,24 @@ as \"r*16@0:8\", a const char *."
   (or (eq node :cstring)
       (and (consp node) (eq (first node) :qualified) (cstring-node-p (third node)))))
 
-(defun unmarshal-result (raw result-node out-sap disposition)
+(defun unmarshal-result (raw result-node out-sap disposition &optional selector)
   "Turn a trampoline's result into what the caller asked for.
 
 DISPOSITION is :DEFAULT for INVOKE, :BOOLEAN for INVOKE-BOOL, or the RESULT
 argument of INVOKE-INTO."
   (let ((kind (cocoa-struct-kind result-node)))
     (cond
-      ;; Struct results were written through OUT-SAP.
+      ;; Struct results were written through OUT-SAP, which belongs to the
+      ;; caller's WITH-FOREIGN-OBJECT and is gone once this call returns.  So a
+      ;; struct result may only leave here as a value copied OUT of that buffer:
+      ;; a Cocoa structure, which becomes a vector or a cons, or a copy into a
+      ;; destination the caller allocated.  Anything else would be a pointer
+      ;; into freed memory, and reads back as plausible numbers.
       ((struct-node-p result-node)
+       (unless (or kind (cffi:pointerp disposition))
+         (error 'unrepresentable-struct-result
+                :encoding (unparse-type result-node)
+                :selector (and selector (string selector))))
        (let ((value (if kind (read-cocoa-struct out-sap kind) (pointer-of out-sap))))
          (unmarshal-into value result-node out-sap disposition kind)))
       ((eq result-node :void) (values))
@@ -216,7 +225,8 @@ Anything the manual does not name a conversion for is returned unchanged --
                     (let ((raw (call-with-signature trampoline kind pointer
                                                     (coerce-to-selector selector-name)
                                                     marshalled (sap-of out))))
-                      (unmarshal-result raw result-node (sap-of out) disposition)))
+                      (unmarshal-result raw result-node (sap-of out) disposition
+                                        selector-name)))
                   (let ((raw (call-with-signature trampoline kind pointer
                                                   (coerce-to-selector selector-name)
                                                   marshalled (sb-sap-zero))))

@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-726 checks, green on a clean GitHub runner as well as locally. Behaviour the
+730 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -169,6 +169,17 @@ each one deliberate:
   call passes its variable arguments on the stack and a fixed-arity call passes
   them in registers, so calling `+stringWithFormat:` without it reads garbage.
   LispWorks fails silently here; this warns once, naming the fix.
+
+- **A structure result that is not one of the four Cocoa structures needs
+  `invoke-into`.** `invoke` writes a struct result into a buffer it owns and
+  frees on the way out, so the only thing it could return is a pointer into
+  freed memory — which read back as plausible numbers rather than crashing. It
+  signals now, naming the method and the fix. `NSRect`, `NSPoint`, `NSSize` and
+  `NSRange` are unaffected: they come back as a vector or a cons. Whether
+  LispWorks returns something usable here is untested — its Personal edition
+  cannot be scripted, which is how the oracle answers were gathered — so this is
+  a deliberate choice to fail loudly rather than a difference measured against
+  it. The manual's own struct-returning example uses `invoke-into`.
 
 - **`OBJC` exports eight symbols LispWorks does not**: the block API below.
   LispWorks has no block interface in `OBJC` at all — there it is
@@ -522,7 +533,7 @@ wait, which is the first moment they are known not to be about to run.
 make test
 ```
 
-The suite runs 726 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 730 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

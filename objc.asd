@@ -87,6 +87,7 @@ Lisp method can take and return C structs by value like any other."
                  (:file "movie-view")
                  (:file "web-kit")
                  (:file "canvas")
+                 (:file "vision")
                  (:file "standalone")))))
 
 (asdf:defsystem #:objc/test

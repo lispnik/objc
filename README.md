@@ -198,6 +198,13 @@ unchanged:
   `NSRect` *by value*, and each shape passes `NSRect`/`NSPoint` by value to
   `NSBezierPath` and `NSColor` — so a paint loop is where `src/abi.lisp` earns
   its keep. See [The live canvas](#the-live-canvas).
+- `examples/vision.lisp` — optical character recognition through the Vision
+  framework, and the clearest illustration of where the bindings' edge is.
+  `-[VNImageRequestHandler performRequests:error:]` is *synchronous*, so no
+  Objective-C block is needed; each recognised line's bounding box comes back as
+  a `CGRect` *by value*. The block-based, completion-handler face of Vision would
+  need block creation, which the library does not do yet — the synchronous face
+  needs none of it. See [Vision OCR](#vision-ocr).
 
 ### Running them
 
@@ -323,6 +330,37 @@ Because a Lisp `-drawRect:` is a real Cocoa draw, the view also renders offscree
   (invoke (invoke rep "representationUsingType:properties:" 4 (invoke "NSDictionary" "dictionary"))
           "writeToFile:atomically:" "/tmp/canvas.png" nil))
 ```
+
+### Vision OCR
+
+Recognise text in an image, from Lisp:
+
+```lisp
+(asdf:load-system :objc/examples)
+(in-package :objc/examples)
+
+(test-ocr "Hello, Lisp!  42")
+;; => ((:text "Hello, Lisp! 42" :confidence 1.0
+;;      :bounding-box #(0.05d0 0.31d0 0.50d0 0.36d0)))
+
+(ocr-image #p"/path/to/scan.png")           ; a file you already have
+(ocr-image #p"scan.png" :level :fast :languages '("en-US"))
+```
+
+`ocr-image` returns one plist per line — its `:text`, the `:confidence`, and a
+`:bounding-box` normalised to 0..1 with a bottom-left origin. That box is a
+`CGRect` the framework returned *by value*; the bridge turned it into
+`#(x y width height)`, the same path a Lisp method's struct return takes.
+
+`test-ocr` renders the string to a temporary image with `text-image` (offscreen
+`NSImage` drawing, so it needs no window) and reads it straight back — which is
+also how the example is tested, headless.
+
+The whole thing works without an Objective-C block because
+`-[VNImageRequestHandler performRequests:error:]` is synchronous: it runs the
+request and the request holds its `-results` when the call returns. The Vision
+methods that take a completion handler would need block creation, which the
+library does not have yet.
 
 ## Testing
 

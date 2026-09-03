@@ -31,7 +31,9 @@
            #:test-canvas #:run-canvas #:animate-canvas #:make-canvas #:refresh
            #:*canvas-draw* #:*current-canvas*
            #:set-color #:fill-rect #:fill-oval #:stroke-oval #:draw-line
-           #:draw-default #:draw-clock))
+           #:draw-default #:draw-clock
+           ;; Vision OCR (examples/vision.lisp).
+           #:ocr-image #:text-image #:test-ocr))
 
 (in-package #:fli)
 

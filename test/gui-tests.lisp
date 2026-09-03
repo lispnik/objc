@@ -411,3 +411,31 @@ without anyone having to look."
             (is (plusp rings) "the canvas produced a PNG")
             (is (/= rings solid)
                 "the rings scene and a flat fill must not encode identically"))))))))
+
+;;; Vision OCR ----------------------------------------------------------------
+
+(test vision-recognises-text-it-rendered
+  "Round-trip through Vision: render a known string to an image, recognise it,
+and get the string back.
+
+Gated on the runtime alone, like the canvas: NSImage offscreen drawing and
+-[VNImageRequestHandler performRequests:error:] are not a display.  Vision or
+the offscreen context being unavailable is a skip, not a failure -- what would
+be a failure is Vision reading the wrong text."
+  (cond
+    ((not (ensure-initialized)) (skip "Objective-C runtime not available"))
+    (t
+     (let ((lines (handler-case (objc/examples:test-ocr "OCR 1234")
+                    (error (condition)
+                      (skip "Vision OCR unavailable here: ~A" condition)))))
+       (if (null lines)
+           (skip "Vision returned no text on this runner")
+           (let ((text (format nil "~{~A~^ ~}"
+                               (mapcar (lambda (line) (getf line :text)) lines))))
+             (is (search "OCR" text) "recognised the letters: ~S" text)
+             (is (search "1234" text) "recognised the digits: ~S" text)
+             ;; boundingBox arrived as a CGRect by value: #(x y w h), 0..1.
+             (let ((box (getf (first lines) :bounding-box)))
+               (is (and (vectorp box) (= 4 (length box))
+                        (every (lambda (n) (<= 0 n 1)) box))
+                   "the bounding box is a normalised #(x y w h): ~S" box))))))))

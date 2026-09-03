@@ -66,6 +66,15 @@ against, so the differential tests run without LispWorks installed.
   a selector the class does not implement is a Lisp error raised before anything
   is sent. A genuine `NSException` from inside a method that *does* exist will
   take the image down.
+- **Running Lisp on two libdispatch threads at once needs a safepoint SBCL.** A
+  block runs on a thread SBCL did not create; a garbage collection stops the
+  world by signalling every other thread in Lisp, and Darwin refuses to signal a
+  libdispatch worker at all. One block is fine — the collector skips the thread
+  that triggered it — and two takes the process down with `cannot suspend
+  thread: 45, Operation not supported`, no condition and no backtrace. On a
+  stock SBCL, keep asynchronous block work on a **serial** queue; `group-async`
+  in the GCD example defaults to one. Building SBCL `--with-sb-safepoint` lifts
+  the limit entirely, verified — see [Blocks](#blocks).
 - **Variadic methods need `:variadic-num-of-fixed`.** On Apple silicon a variadic
   call passes its variable arguments on the stack and a fixed-arity call passes
   them in registers, so `+stringWithFormat:` without it reads garbage. LispWorks
@@ -104,6 +113,21 @@ make test-clean   # the suite with no ~/.sbclrc and no site init, as CI sees it
 
 There is no C toolchain in the build: no `cffi-grovel`, no `cffi-libffi`, and no
 shim library.
+
+A stock SBCL runs everything here. If you intend to run **Lisp closures on
+several libdispatch queues at once** — `dispatch_apply`, or a concurrent queue
+with more than one block in flight — you need one built with safepoints, or the
+process dies on the first garbage collection that lands while two blocks are
+running:
+
+```
+./make.sh --with-sb-safepoint --prefix=$HOME/.local && sh install.sh
+```
+
+Nothing else needs it, and the suite is green either way. `objc/examples:concurrent-blocks-supported-p`
+is the runtime predicate, and the calls that require it refuse with an
+explanation on a build that lacks it rather than taking the image down. The
+reason is under [Blocks](#blocks).
 
 ## How it works
 

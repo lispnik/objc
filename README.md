@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-744 checks, green on a clean GitHub runner as well as locally. Behaviour the
+745 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -580,13 +580,28 @@ what the job takes without copy and dispose helpers.
 make test
 ```
 
-The suite runs 744 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 745 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot
 be scripted — it ignores `-eval` and launches the IDE.
 
 The `gui` suite skips itself without a window server.
+
+`make test LISP=/path/to/sbcl` runs it under a particular Lisp, which is how the
+safepoint build gets tested.
+
+Two workflows. `macOS` runs the suite on stock SBCL on both architectures for
+every push. `safepoint` builds an SBCL `--with-sb-safepoint` and runs the suite
+on that — weekly and on demand, because the build costs about fifteen minutes
+and the answer only changes when the block or GCD code does. It exists because
+`parallel-map` and `dispatch-apply` cannot run at all on a stock build, so the
+main workflow tests their refusal and nothing else.
+
+That workflow checks that it really got a safepoint build, and fails if not. The
+test they are covered by passes on either build — asserting the parallel result
+on one and the refusal on the other — so a run that quietly came out stock would
+be green having tested exactly what the other workflow already tests.
 
 ## License
 

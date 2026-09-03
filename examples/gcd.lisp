@@ -41,7 +41,7 @@
 ;;;; AND THE LIMIT LIFTS IF YOU BUILD SBCL --with-sb-safepoint, which stops the
 ;;;; world by polling rather than signalling.  Verified, not hoped for: the same
 ;;;; source built that way runs the eight-way barrier, dispatch_apply and
-;;;; PARALLEL-MAP below, five runs out of five, and the whole 743-check suite
+;;;; PARALLEL-MAP below, five runs out of five, and the whole suite
 ;;;; passes on it.  The worker thread is still unsignallable there -- ENOTSUP,
 ;;;; exactly as before -- which is the point: safepoint does not make signalling
 ;;;; work, it makes it unnecessary.  So DISPATCH-APPLY and PARALLEL-MAP are

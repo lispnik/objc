@@ -1,0 +1,121 @@
+# Running Lisp closures on several libdispatch queues at once -- dispatch_apply,
+# or a concurrent queue with more than one block in flight -- works only on an
+# SBCL built with safepoints, and the main workflow's stock SBCL cannot exercise
+# it.  So OBJC/EXAMPLES:PARALLEL-MAP and DISPATCH-APPLY, and the parallel half of
+# CONCURRENT-BLOCKS-WORK-OR-REFUSE-ACCORDING-TO-THE-BUILD, have no coverage
+# there at all.  This workflow builds such an SBCL and runs the suite on it.
+#
+# Why it is separate, and not another leg of the matrix: building SBCL takes
+# fifteen minutes or so, which is too much to pay on every push for a question
+# that changes only when the block or GCD code does.  Weekly, plus on demand.
+#
+# THE TRAP THIS WORKFLOW IS BUILT AROUND.  The gated test passes on a stock
+# build too -- there it asserts the refusal instead -- so a run that quietly
+# ended up without safepoints would be green while testing exactly what the main
+# workflow already tests.  The "Verify the build really has safepoints" step
+# below is therefore not a diagnostic, it is the thing that makes this workflow
+# mean anything, and it fails the run rather than warning.
+#
+# arm64 only.  The limit is about how SBCL stops the world and how Darwin treats
+# libdispatch's worker threads, neither of which differs between the two
+# architectures, so a second leg would cost another fifteen-minute build to
+# re-answer a question that is not architecture-specific.
+#
+# Note the step order: SBCL is built BEFORE ocicl is set up.  An SBCL contrib
+# build calls UPGRADE-ASDF, so a source registry that has any ASDF or UIOP
+# source in it can fail the build at sb-manual with the core already built and
+# working.  Building first keeps that environment empty.
+
+name: safepoint
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays, 04:17 UTC.  Off the hour because everything is scheduled on it.
+    - cron: '17 4 * * 1'
+
+jobs:
+  concurrent-blocks:
+    name: sbcl --with-sb-safepoint · macos-latest (arm64)
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    env:
+      SAFEPOINT_PREFIX: ${{ github.workspace }}/../sbcl-safepoint
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install a host SBCL
+        # Only to compile the new one; the tests never see it.
+        run: brew install sbcl
+
+      - name: Build SBCL with safepoints
+        run: |
+          set -eux
+          git clone --depth 1 --branch sbcl-2.6.7 \
+            https://github.com/sbcl/sbcl.git "$RUNNER_TEMP/sbcl-src"
+          cd "$RUNNER_TEMP/sbcl-src"
+          ./make.sh --with-sb-safepoint --prefix="$SAFEPOINT_PREFIX"
+          INSTALL_ROOT="$SAFEPOINT_PREFIX" sh install.sh
+          echo "SBCL_SAFEPOINT=$SAFEPOINT_PREFIX/bin/sbcl" >> "$GITHUB_ENV"
+
+      - name: Verify the build really has safepoints
+        # Without this the run is theatre: the gated test passes either way, so
+        # a build that silently came out stock would be green having proved
+        # nothing.  Exit non-zero rather than warn.
+        run: |
+          "$SBCL_SAFEPOINT" --non-interactive \
+            --eval '(format t "~&version: ~A~%safepoint: ~A~%" (lisp-implementation-version) (and (member :sb-safepoint *features*) t))' \
+            --eval '(uiop:quit (if (member :sb-safepoint *features*) 0 1))'
+
+      - name: Install and configure ocicl
+        run: |
+          git clone --depth 1 https://github.com/ocicl/ocicl.git "$HOME/ocicl-src"
+          ( cd "$HOME/ocicl-src" && sbcl --non-interactive --load setup.lisp )
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Restore dependencies
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          ocicl setup
+          ocicl install
+
+      - name: Confirm the library agrees concurrent blocks are supported
+        # CONCURRENT-BLOCKS-SUPPORTED-P is what PARALLEL-MAP and DISPATCH-APPLY
+        # consult, so this is the difference between the suite running the
+        # parallel branch of that test and running the refusal branch.
+        run: |
+          "$SBCL_SAFEPOINT" --non-interactive \
+            --load "$HOME/.local/share/ocicl/ocicl-runtime.lisp" \
+            --eval '(asdf:initialize-source-registry (list :source-registry (list :directory (uiop:getcwd)) :inherit-configuration))' \
+            --eval '(asdf:load-system :objc/examples)' \
+            --eval '(format t "~&concurrent blocks supported: ~A~%" (objc/examples:concurrent-blocks-supported-p))' \
+            --eval '(uiop:quit (if (objc/examples:concurrent-blocks-supported-p) 0 1))'
+
+      - name: Run a Lisp closure on every core
+        # The thing a stock build cannot do, on its own rather than buried in
+        # the suite, so a failure here is unambiguous about what broke.  Each
+        # index is written by exactly one iteration; a wrong answer means
+        # iterations collided, a crash means the world could not be stopped.
+        run: |
+          "$SBCL_SAFEPOINT" --non-interactive \
+            --load "$HOME/.local/share/ocicl/ocicl-runtime.lisp" \
+            --eval '(asdf:initialize-source-registry (list :source-registry (list :directory (uiop:getcwd)) :inherit-configuration))' \
+            --eval '(asdf:load-system :objc/examples)' \
+            --eval '(objc:ensure-objc-initialized)' \
+            --eval '(let* ((input (coerce (loop for i below 64 collect i) (quote vector)))
+                           (got (objc/examples:parallel-map (lambda (n) (* n n)) input))
+                           (want (map (quote vector) (lambda (n) (* n n)) input)))
+                      (format t "~&parallel-map of 64: ~A~%" (if (equalp got want) "correct" "WRONG"))
+                      (uiop:quit (if (equalp got want) 0 1)))'
+
+      - name: Run tests
+        # RUN-TESTS returns the status; FIVEAM:RUN! alone would exit 0 on a
+        # failing suite, which is how a CI run goes green on red tests.
+        run: |
+          "$SBCL_SAFEPOINT" --non-interactive \
+            --load "$HOME/.local/share/ocicl/ocicl-runtime.lisp" \
+            --eval '(asdf:initialize-source-registry (list :source-registry (list :directory (uiop:getcwd)) :inherit-configuration))' \
+            --eval '(asdf:load-system :objc/test)' \
+            --eval '(uiop:quit (if (objc/test:run-tests) 0 1))'

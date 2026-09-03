@@ -73,17 +73,23 @@ project directory covers both the system and its ocicl-vendored dependencies."
           :void))
        (format t \"BLOCK ~a~%\" hits)))")
 
-(defun sbcl-available-p ()
-  (handler-case
-      (zerop (nth-value 2 (uiop:run-program '("sbcl" "--version")
-                                            :ignore-error-status t
-                                            :output nil :error-output nil)))
-    (error () nil)))
+(defun test-runtime ()
+  "The Lisp running this test, as a program to spawn.
+
+Deliberately not \"sbcl\" from PATH.  The question here is whether an image
+dumped by THIS Lisp reopens its libraries, so building that image with whichever
+SBCL happens to be first on PATH answers a different one -- and when the two are
+not the same SBCL it does not even get that far: a Lisp exports SBCL_HOME to its
+children, so the spawned runtime loads the parent's core and dies with \"core was
+built for runtime ... but this is ...\" before any of this code runs.  Installing
+a second SBCL is enough to trigger it, which is not an exotic thing to do -- a
+--with-sb-safepoint build alongside the stock one is exactly that."
+  (namestring sb-ext:*runtime-pathname*))
 
 (test a-dumped-image-rebuilds-its-objective-c-classes
   (cond
     ((not (ensure-initialized)) (skip "Objective-C runtime not available"))
-    ((not (sbcl-available-p)) (skip "sbcl not on PATH"))
+    ((not (probe-file (test-runtime))) (skip "no runtime to re-spawn"))
     (t
      (uiop:with-temporary-file (:pathname source :type "lisp" :keep nil)
        (with-open-file (out source :direction :output :if-exists :supersede)
@@ -97,7 +103,7 @@ project directory covers both the system and its ocicl-vendored dependencies."
                             (uiop:temporary-directory))))
            (unwind-protect
                 (progn
-                  (uiop:run-program (list "sbcl" "--non-interactive"
+                  (uiop:run-program (list (test-runtime) "--non-interactive"
                                           "--load" (namestring source)
                                           (namestring executable))
                                     :output nil :error-output nil

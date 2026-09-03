@@ -431,6 +431,25 @@ run the block on the caller and normally does."
       (is-true (getf result :overlapped)
                "and the main thread kept working while they did"))))
 
+(test the-url-session-example-runs-every-shape
+  "examples/url-session.lisp is the completion-handler API, which is the shape
+of most modern Cocoa and the reason block creation matters at all.
+
+file:// URLs throughout, so the suite needs no network -- a data task serves
+those through the same machinery as http.  The concurrent case is the one worth
+having: eight transfers issued together, on a session whose delegate queue runs
+its completion handlers one at a time, which is what keeps it alive on a stock
+build."
+  (with-runtime
+    (let ((result (objc/examples:test-url-session)))
+      (is (string= "payload 0" (getf result :one)))
+      (is (null (getf result :status))
+          "a file:// transfer has no HTTP status, whatever -statusCode answers")
+      (is-true (getf result :missing)
+               "a URL that does not exist reported an error rather than nothing")
+      (is (= 8 (getf result :all)) "every concurrent transfer came back")
+      (is-true (getf result :concurrent) "and each result went to its own slot"))))
+
 (test concurrent-blocks-work-or-refuse-according-to-the-build
   "Running a Lisp closure on several libdispatch threads at once is fatal on a
 stock SBCL -- a GC stops the world by signalling every other thread in Lisp, and

@@ -41,7 +41,11 @@
            #:global-queue #:serial-queue #:with-serial-queue #:dispatch-sync
            #:dispatch-apply #:parallel-map #:concurrent-blocks-supported-p
            #:dispatch-group #:make-dispatch-group #:group-async #:group-wait
-           #:with-dispatch-group #:test-gcd #:report-gcd))
+           #:with-dispatch-group #:test-gcd #:report-gcd
+           ;; NSURLSession (examples/url-session.lisp).
+           #:fetch #:fetch-async #:fetch-all #:serial-session #:with-url-session
+           #:ns-data-to-bytes #:ns-data-to-string #:response-status
+           #:test-url-session #:report-url-session))
 
 (in-package #:fli)
 

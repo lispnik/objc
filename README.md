@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-745 checks, green on a clean GitHub runner as well as locally. Behaviour the
+749 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -342,6 +342,10 @@ unchanged:
   entry points are plain C functions that all take a block. The shortest answer
   to what blocks bought, and where the concurrency limit above is drawn in code.
   See [Grand Central Dispatch](#grand-central-dispatch).
+- `examples/url-session.lisp` — `NSURLSession`, the completion-handler API, and
+  the shape of most modern Cocoa: hand it a block, it calls you back when the
+  answer is ready. Also the practical answer to the concurrency limit, in one
+  line of session configuration. See [NSURLSession](#nsurlsession).
 
 ### Running them
 
@@ -574,13 +578,50 @@ else, even though the work has not started when it returns — an earlier draft
 carried every queued block on the group and freed them after the wait, which is
 what the job takes without copy and dispose helpers.
 
+### NSURLSession
+
+```lisp
+(asdf:load-system :objc/examples)
+(in-package :objc/examples)
+
+(fetch "https://example.com/")          ; => content, 200, NIL
+(fetch #p"/etc/hosts" :as :bytes)       ; a file:// URL, same machinery
+(fetch-all (list url-1 url-2 url-3))    ; all three at once
+```
+
+`-dataTaskWithURL:completionHandler:` is the shape of nearly every modern Cocoa
+API, and before block creation there was no way to call it at all.
+
+The interesting part is not the fetching. A completion handler runs on a queue
+Foundation chooses, and by default that queue runs several at once — which is
+precisely what a stock SBCL cannot survive. The fix is one line, and it is why
+this example is worth reading:
+
+```lisp
+(objc:invoke queue "setMaxConcurrentOperationCount:" 1)
+```
+
+A session built with that delegate queue hands results back **one at a time**.
+What it does not do is serialise the transfers: `fetch-all` puts every request
+in flight together and they download together, because that concurrency lives
+inside Foundation where no Lisp runs. Only the callback into Lisp is serialised,
+which is the only part that has to be — so it is safe on a stock build, measured
+with eight at a time.
+
+One trap the example documents, because it is the kind that reads as working: a
+`file://` transfer comes back as a plain `NSURLResponse` that nevertheless
+answers `-statusCode`, with 200. Asking `can-invoke-p` whether it responds to
+that selector therefore reports an HTTP status for a transfer that never spoke
+HTTP. `response-status` does an `-isKindOfClass:` check instead. `can-invoke-p`
+answers "will this send work", which is not the question.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 745 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 749 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

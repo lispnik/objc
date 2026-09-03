@@ -161,6 +161,19 @@ Each of these is a bug that actually happened here.
   after `free-objc-block` is a reported miss rather than a call into whatever
   closure was allocated that id next.
 
+- **Only one libdispatch worker thread may be inside Lisp at a time.** A block
+  runs on a thread SBCL did not create; SBCL adopts it for the callback, and
+  stopping the world for a GC means signalling every thread that is in Lisp.
+  macOS refuses that for more than one of libdispatch's pooled workqueue
+  threads, so a collection while two blocks are running dies as `cannot suspend
+  thread ...: 45, Operation not supported` — the process, with no condition and
+  no Lisp backtrace. Measured, and reproducible every run: eight concurrent
+  allocating blocks, and `dispatch_apply` with any allocating closure. Safe, also
+  measured: `dispatch_sync`; any number of blocks on a **serial** queue; and
+  SBCL's own threads running while one queue thread is in a callback. This is
+  why `examples/gcd.lisp` defaults every asynchronous entry point to a serial
+  queue and has no `parallel-map`.
+
 - **`*block-machinery*` is the GC root for every block invoke callable**, exactly
   as `*imp-registry*` is for IMPs, and for the same reason. It is also the
   per-signature memo, so clearing it to "free some memory" looks harmless twice

@@ -182,6 +182,75 @@ usable at all, and it is not something the synchronous tests cover."
                    (skip "the asynchronous block never ran on this machine")))
           (objc:free-objc-block b))))))
 
+;;; Structures by value ------------------------------------------------------
+
+(test foundation-passes-structures-to-a-block-by-value
+  "-[NSString enumerateSubstringsInRange:options:usingBlock:] passes two NSRanges
+BY VALUE, which is the case a block ABI gets wrong quietly: a struct argument
+occupies its own registers, so misreading one shifts every argument after it.
+The ranges arriving right is what says the block's invoke function has the
+signature Foundation thinks it has."
+  (with-runtime
+    (let ((string (objc:invoke "NSString" "stringWithUTF8String:" "alpha beta gamma"))
+          (seen '()))
+      (objc:with-objc-block
+          (b '(:void (objc:objc-object-pointer cocoa:ns-range cocoa:ns-range
+                      (:pointer objc:objc-bool)))
+             (lambda (substring range enclosing stop)
+               (declare (ignore enclosing stop))
+               (push (cons (objc:ns-string-to-string substring) range) seen)))
+        (objc:invoke string "enumerateSubstringsInRange:options:usingBlock:"
+                     (cons 0 (objc:invoke string "length"))
+                     3                          ; NSStringEnumerationByWords
+                     b))
+      (is (equal '(("alpha" . (0 . 5)) ("beta" . (6 . 4)) ("gamma" . (11 . 5)))
+                 (reverse seen))
+          "each word, with the NSRange Foundation passed by value"))))
+
+(test a-block-can-return-a-structure-by-value
+  "The other side of the same ABI question, and the one with a wrinkle: an
+NSRect is four doubles, so arm64 returns it in v0-v3 rather than through a
+hidden pointer despite being 32 bytes.  Whether that is right is sb-alien's
+business; that it is exercised is this test's."
+  (with-runtime
+    (objc:with-objc-block (b '(cocoa:ns-rect (:double))
+                             (lambda (n) (vector n (* 2 n) (* 3 n) (* 4 n))))
+      (is (equalp #(1.5d0 3.0d0 4.5d0 6.0d0)
+                  (objc:call-objc-block '(cocoa:ns-rect (:double)) b 1.5d0))))))
+
+(test structures-cross-in-both-directions-in-one-call
+  (with-runtime
+    (let ((type '(cocoa:ns-rect (cocoa:ns-rect cocoa:ns-point))))
+      (objc:with-objc-block (b type
+                               (lambda (rect point)
+                                 (vector (+ (aref rect 0) (aref point 0))
+                                         (+ (aref rect 1) (aref point 1))
+                                         (aref rect 2) (aref rect 3))))
+        (is (equalp #(11d0 22d0 30d0 40d0)
+                    (objc:call-objc-block type b #(1d0 2d0 30d0 40d0) #(10d0 20d0))))))))
+
+(test the-signature-names-the-structures
+  (with-runtime
+    (objc:with-objc-block (b '(cocoa:ns-rect (cocoa:ns-point))
+                             (lambda (p) (declare (ignore p)) #(0d0 0d0 0d0 0d0)))
+      (is (string= "{CGRect={CGPoint=dd}{CGSize=dd}}@?{CGPoint=dd}"
+                   (cffi:foreign-string-to-lisp
+                    (objc::%block-signature (objc:objc-block-pointer b))))))))
+
+(test a-structure-result-with-no-lisp-representation-is-refused-not-dangled
+  "A block may RETURN any structure -- Cocoa gets it by value and is happy --
+but CALL-OBJC-BLOCK has to hand Lisp something, and for a structure with no
+Lisp representation the only candidate is a pointer into the buffer this call
+frees on its way out.  Refusing beats returning one: a dangling pointer reads
+as plausible numbers."
+  (with-runtime
+    (objc:define-objc-struct (block-test-quad (:foreign-name "BlockTestQuad"))
+      (a :long-long) (b :long-long) (c :long-long) (d :long-long))
+    ;; Creating it is fine -- this is only about the direction back into Lisp.
+    (objc:with-objc-block (b '(block-test-quad (:long-long))
+                             (lambda (n) (declare (ignore n)) nil))
+      (signals error (objc:call-objc-block '(block-test-quad (:long-long)) b 1)))))
+
 ;;; Calling a block from Lisp ------------------------------------------------
 
 (test a-block-can-be-called-from-lisp
@@ -297,6 +366,25 @@ Ids are never reused, which is what stops it reaching some later block instead."
           "every block was unregistered")
       (is (= (+ 5 before-counter) objc::*block-id-counter*)
           "and each got its own id, none reused"))))
+
+;;; The GCD example ----------------------------------------------------------
+
+(test the-gcd-example-runs-every-shape
+  "examples/gcd.lisp is what block creation was for: GCD is plain C functions
+that all take a block, so it needed nothing else from the bridge.  Foundation
+only, no window server.
+
+Deliberately not asserted: which thread dispatch_sync used.  It is entitled to
+run the block on the caller and normally does."
+  (with-runtime
+    (let ((result (objc/examples:test-gcd)))
+      (is (= 42 (getf result :sync)))
+      (is (eq :other (getf result :async-thread))
+          "the queued blocks ran on a thread SBCL did not create")
+      (is-true (getf result :group) "the group finished")
+      (is (= 4950 (getf result :total)) "every one of the 100 blocks ran, once")
+      (is-true (getf result :overlapped)
+               "and the main thread kept working while they did"))))
 
 (test with-objc-block-frees-on-a-non-local-exit
   (with-runtime

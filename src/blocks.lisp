@@ -59,6 +59,26 @@
 (defconstant +block-use-stret+        (ash 1 29))
 (defconstant +block-has-signature+    (ash 1 30))
 
+;;; Only BLOCK_HAS_SIGNATURE is ever set, and each omission is a decision:
+;;;
+;;;   BLOCK_IS_GLOBAL          would make _Block_copy return the same pointer;
+;;;                            see STACK-BLOCK-ISA for why that is worse.
+;;;   BLOCK_NEEDS_FREE         so a stray _Block_release on our own storage is a
+;;;                            documented no-op rather than a foreign free of a
+;;;                            pointer CFFI allocated.
+;;;   BLOCK_HAS_COPY_DISPOSE   there is nothing to copy or dispose: the imported
+;;;                            variable is an integer id.
+;;;   BLOCK_USE_STRET          left clear even for a block that does return a
+;;;                            structure indirectly.  Its one consumer is
+;;;                            imp_implementationWithBlock, which this library
+;;;                            never calls, and setting it right means keeping
+;;;                            an ABI classification right -- on arm64 an NSRect
+;;;                            is four doubles and comes back in v0-v3 despite
+;;;                            being 32 bytes, so "larger than 16" is the wrong
+;;;                            rule and a wrong flag is worse than none.  A
+;;;                            consumer that needs to know can read the
+;;;                            signature, which is why that flag IS set.
+
 (defun block-literal-size ()
   (cffi:foreign-type-size '(:struct block-literal)))
 
@@ -134,23 +154,33 @@ the memo, the declaring form is a convenience rather than a necessity.")
   "Compile the Lisp side of one signature: raw C arguments in, closure called,
 result converted out.
 
+Exactly the conversions DEFINE-OBJC-METHOD gives a Lisp method body, so a
+closure sees an NSRect argument as #(x y width height) and may return one the
+same way -- a block is a method's shape without the receiver, and it would be a
+poor joke to make the argument conventions differ.
+
 Compiled rather than interpreted because the conversions are known once the
 signature is, and a block on an enumeration runs per element."
   (let ((raws (loop for i from 0 below (length arg-nodes)
                     collect (gensym (format nil "A~D-" i))))
         (block-sap (gensym "BLOCK"))
-        (result-sap (gensym "RESULT")))
+        (result-sap (gensym "RESULT"))
+        (function (gensym "FUNCTION"))
+        (value (gensym "VALUE")))
     (compile
      nil
      `(lambda (,block-sap ,result-sap ,@raws)
         (declare (ignorable ,result-sap))
-        (let ((function (block-function-for-sap ,block-sap)))
-          (convert-method-result
-           (funcall function
-                    ,@(loop for raw in raws
-                            for node in arg-nodes
-                            collect (argument-conversion-form raw node nil)))
-           ',result-node))))))
+        (let* ((,function (block-function-for-sap ,block-sap))
+               (,value (funcall ,function
+                                ,@(loop for raw in raws
+                                        for node in arg-nodes
+                                        collect (argument-conversion-form raw node nil)))))
+          ,(if (struct-node-p result-node)
+               ;; A structure result is not returned; it is written into the
+               ;; buffer BUILD-CALLABLE holds, which then returns it by value.
+               `(write-method-struct-result ,value ',result-node ,result-sap)
+               `(convert-method-result ,value ',result-node)))))))
 
 (defun ensure-block-machinery (result-node arg-nodes)
   "The machinery for one signature, building it the first time.
@@ -165,15 +195,6 @@ callers describe the signature the way it reads in C."
 
 (defun build-block-machinery (result-node arg-nodes key)
   (declare (ignore key))
-  (when (struct-node-p result-node)
-    (error 'unsupported-type-encoding
-           :encoding (unparse-type result-node)
-           :detail "a block returning a structure by value is not supported yet"))
-  (dolist (node arg-nodes)
-    (when (struct-node-p node)
-      (error 'unsupported-type-encoding
-             :encoding (unparse-type node)
-             :detail "a block taking a structure by value is not supported yet")))
   (let ((dispatcher (build-block-dispatcher result-node arg-nodes))
         (signature (block-type-encoding result-node arg-nodes)))
     (multiple-value-bind (sap name)
@@ -410,15 +431,34 @@ BLOCK is an OBJC-BLOCK, a raw pointer, or anything OBJC-OBJECT-POINTER accepts."
       (unless (= (length args) (length arg-nodes))
         (error "The block signature takes ~D argument~:P but ~D ~:*~[were~;was~:;were~] given."
                (length arg-nodes) (length args)))
-      ;; ENSURE-BLOCK-MACHINERY already refuses a struct result, so by here the
-      ;; caller's contract is the scalar-or-NIL one and OUT-SAP is unused.
       (with-call-temporaries
-        (apply (block-machinery-caller machinery)
-               (sap-of (cffi:null-pointer))
-               (sap-of pointer)
-               (loop for arg in args
-                     for node in arg-nodes
-                     collect (marshal-argument arg node)))))))
+        (flet ((call (out-sap)
+                 (apply (block-machinery-caller machinery)
+                        out-sap
+                        (sap-of pointer)
+                        (loop for arg in args
+                              for node in arg-nodes
+                              collect (marshal-argument arg node)))))
+          ;; A structure result is written through a buffer rather than
+          ;; returned.  For the Cocoa structures that becomes a vector or a cons
+          ;; and the buffer's lifetime stops mattering; for anything else the
+          ;; only thing there is to hand back is a pointer INTO that buffer,
+          ;; which is dead by the time this function returns, so this refuses
+          ;; rather than returning one.
+          (cond
+            ((and (struct-node-p result-node) (cocoa-struct-kind result-node))
+             (let ((size (node-size-and-alignment (resolve-struct-layout result-node))))
+               (cffi:with-foreign-object (out :uint8 (max 1 size))
+                 (call (sap-of out))
+                 (read-cocoa-struct (sap-of out) (cocoa-struct-kind result-node)))))
+            ((struct-node-p result-node)
+             (error "CALL-OBJC-BLOCK cannot return a ~A: it is a structure with no ~
+                     Lisp representation, so the only result would be a pointer to a ~
+                     buffer this call frees on the way out.  A block that RETURNS such ~
+                     a structure to Lisp is the gap; MAKE-OBJC-BLOCK can still create ~
+                     one, and a structure ARGUMENT in either direction is fine."
+                    (unparse-type result-node)))
+            (t (call (sap-of (cffi:null-pointer))))))))))
 
 (defun block-pointer-of (block)
   (etypecase block

@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-716 checks, green on a clean GitHub runner as well as locally. Behaviour the
+726 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -218,9 +218,28 @@ Freeing one that something still holds is softened rather than made safe: blocks
 carry an id that is never reused, and a copy invoked after the free reports
 being called after it was freed instead of jumping through freed memory.
 
-Not supported yet: structs passed or returned **by value** through a block —
-`-[NSString enumerateSubstringsInRange:options:usingBlock:]` wants an `NSRange`.
-That signals rather than misbehaving.
+Structs pass **by value** in both directions, so
+`-[NSString enumerateSubstringsInRange:options:usingBlock:]` hands its `NSRange`s
+straight to the closure and a block may return an `NSRect`. The one gap is
+`call-objc-block` *returning* a struct that has no Lisp representation: the only
+answer would be a pointer into a buffer the call frees on its way out, so it
+signals instead.
+
+**Only one libdispatch thread may be inside Lisp at a time.** This is SBCL's
+limit, not GCD's, and it is worth knowing before writing anything concurrent. A
+block runs on a thread SBCL did not create; a garbage collection has to signal
+every thread that is in Lisp, and macOS will not let it signal more than one of
+libdispatch's pooled worker threads. A collection while two blocks are running
+kills the process outright:
+
+```
+fatal error encountered in SBCL: cannot suspend thread ...: 45, Operation not supported
+```
+
+Safe: `dispatch_sync`; any number of blocks on a **serial** queue; and your own
+Lisp threads running while a queue thread is in a callback. Unsafe: concurrent
+queues with more than one block in flight, and `dispatch_apply`. See
+[Grand Central Dispatch](#grand-central-dispatch).
 
 ## Examples
 
@@ -264,6 +283,11 @@ unchanged:
   Lisp object, invoking a Lisp method, when the item is chosen. Target/action is
   how the whole of Cocoa's UI is connected, with a closure at the far end here.
   See [A menu-bar item](#a-menu-bar-item).
+- `examples/gcd.lisp` — Grand Central Dispatch, which LispWorks also ships as an
+  example and which needs nothing from the bridge except block creation: its
+  entry points are plain C functions that all take a block. The shortest answer
+  to what blocks bought, and where the concurrency limit above is drawn in code.
+  See [Grand Central Dispatch](#grand-central-dispatch).
 
 ### Running them
 
@@ -465,13 +489,40 @@ The consequence is that `run-status-item` does not return until the item quits,
 so unlike the Vision example there is no REPL interaction while it runs. That is
 no loss for a menu-bar app, and `:timeout` means a session cannot get stuck.
 
+### Grand Central Dispatch
+
+Needs no window server, so it runs anywhere:
+
+```lisp
+(asdf:load-system :objc/examples)
+(objc/examples:report-gcd)
+
+;; dispatch_sync returned 42
+;; a dispatch group of 100 blocks on a serial queue finished, summing to 4950,
+;;   on a libdispatch thread
+;; the main thread kept running while they did: T
+```
+
+GCD is the clearest case for block creation, and LispWorks ships an example of
+it too — under the *FLI*, not under `OBJC`, because `dispatch_async` and friends
+are plain C functions that need nothing from Objective-C except the block you
+hand them. The entire binding here is a dozen lines of `defcfun`; what makes it
+work is that the block is a Lisp closure.
+
+It is also where the concurrency limit above stops being abstract. The example
+defaults every asynchronous entry point to a **serial** queue, and there is no
+`parallel-map` in it however much the name suggests itself: `dispatch_apply` with
+an allocating Lisp closure kills the process every time. `with-dispatch-group`
+shows the lifetime rule in five lines — the blocks are freed after the group's
+wait, which is the first moment they are known not to be about to run.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 716 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 726 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

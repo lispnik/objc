@@ -471,3 +471,34 @@ so it needs a window server; if the status bar will not vend an item, skip."
                                "the quit: Lisp method ran and cleared the flag")))))
         (when item
           (ignore-errors (objc/examples::remove-status-item item)))))))
+
+(test the-menu-bar-app-becomes-an-accessory-and-stays-one
+  "The bug behind \"clicking the lambda does nothing\".
+
+A status item is not a window, and a Regular application (SHARED-APPLICATION's
+default, right for a program that owns windows) with no window and no activation
+does not get its status-item menu tracked: the item draws and the click lands
+nowhere.  Accessory is the policy a menu-bar-only app needs.
+
+Two halves, and the second is what the original test missed by sending the
+action selectors directly: PUMP-EVENTS calls SHARED-APPLICATION once per pass,
+so a policy that is merely set at startup was reset to Regular by the first pass
+of the very loop meant to service the item."
+  (with-gui
+    (let (item)
+      (unwind-protect
+           (progn
+             ;; Start Regular, the way a session that ran a window demo first would.
+             (objc.runloop:set-activation-policy 0)
+             (setf item (objc/examples::make-status-item :title "A"))
+             (let ((app (objc.runloop:shared-application)))
+               (is (= objc/examples::+activation-policy-accessory+
+                      (objc:invoke app "activationPolicy"))
+                   "make-status-item asked for Accessory")
+               (objc.runloop:pump-events :seconds 0.02d0)
+               (is (= objc/examples::+activation-policy-accessory+
+                      (objc:invoke app "activationPolicy"))
+                   "and pumping the loop did not reset it to Regular")))
+        (when item (ignore-errors (objc/examples::remove-status-item item)))
+        ;; Leave the process as the other tests expect to find it.
+        (ignore-errors (objc.runloop:set-activation-policy 0))))))

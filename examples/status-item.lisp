@@ -75,6 +75,18 @@ method ran."
 (defparameter +variable-status-item-length+ -1d0
   "NSVariableStatusItemLength: the item is as wide as its content.")
 
+(defconstant +activation-policy-accessory+ 1
+  "NSApplicationActivationPolicyAccessory.
+
+The policy a menu-bar-only application must have, and the reason clicking the
+item did nothing at first.  SHARED-APPLICATION defaults to Regular (0), which is
+right for a process that owns windows: it gets a Dock icon and its windows can
+come to the front.  A status item is not a window, and a Regular application
+with no windows that has never been activated does not get its status-item menu
+driven -- the item draws, the click lands nowhere.  Accessory means \"no Dock
+icon, no menu bar of my own, but I do have UI\", which is exactly a menu-bar
+app, and AppKit then tracks the item's menu normally.")
+
 (defun make-status-item (&key (title "λ"))
   "Put an item in the menu bar whose menu's actions are Lisp methods.
 
@@ -82,7 +94,12 @@ Returns (VALUES STATUS-ITEM CONTROLLER).  The system status bar retains the
 item until REMOVE-STATUS-ITEM, so keep the value only if you want to change it;
 RUN-STATUS-ITEM removes it for you."
   (objc:ensure-objc-initialized)
-  (objc.runloop:shared-application)            ; the status bar wants an app object
+  ;; Accessory, not the default Regular -- see +ACTIVATION-POLICY-ACCESSORY+.
+  ;; SET-ACTIVATION-POLICY rather than the SHARED-APPLICATION keyword, so this
+  ;; holds even in a session that already brought AppKit up as Regular (a REPL
+  ;; where you ran one of the window demos first).
+  (objc.runloop:shared-application)
+  (objc.runloop:set-activation-policy +activation-policy-accessory+)
   (setf *status-count* 0)
   (let* ((controller (make-instance 'status-controller))
          (target (objc:objc-object-pointer controller))

@@ -107,12 +107,27 @@ here."
      (invoke (invoke "NSApplication" "sharedApplication") "deactivate")))
   t)
 
+(defvar *activation-policy-set* nil
+  "Whether SHARED-APPLICATION has already set an activation policy.
+
+The policy is a property of the process, and the first caller's choice is the
+one that means something: a program that asked for Accessory -- a menu-bar
+application -- must not have it silently reset to Regular by the next internal
+call.  PUMP-EVENTS calls SHARED-APPLICATION on every pass, so before this flag
+existed the loop undid an Accessory policy immediately and a status item's menu
+stopped being tracked, which presented as \"clicking the item does nothing\".")
+
 (defun shared-application (&key (activation-policy 0))
   "Return the NSApplication, creating it and setting its activation policy.
 
 ACTIVATION-POLICY 0 is NSApplicationActivationPolicyRegular.  Without setting
 it, an unbundled process has no Dock presence and its windows cannot come to
-the front."
+the front.  1 is Accessory, which is what a menu-bar-only application wants.
+
+Only the FIRST policy is applied.  Later calls leave it alone unless they pass
+one explicitly, so an internal call -- PUMP-EVENTS makes one per pass -- cannot
+overwrite the policy the program chose.  Passing ACTIVATION-POLICY NIL never
+sets one."
   (check-main-thread "NSApplication")
   (objc::with-fp-traps-masked
     (objc::ensure-appkit)
@@ -120,8 +135,22 @@ the front."
     ;; else.
     (remember-frontmost)
     (let ((app (invoke "NSApplication" "sharedApplication")))
-      (when activation-policy
-        (invoke app "setActivationPolicy:" activation-policy))
+      (when (and activation-policy (not *activation-policy-set*))
+        (invoke app "setActivationPolicy:" activation-policy)
+        (setf *activation-policy-set* t))
+      app)))
+
+(defun set-activation-policy (policy)
+  "Set the application's activation policy to POLICY, overriding any earlier
+one: 0 Regular, 1 Accessory, 2 Prohibited.
+
+SHARED-APPLICATION honours only the first policy, so this is how a program that
+has already brought AppKit up changes its mind."
+  (check-main-thread "NSApplication")
+  (objc::with-fp-traps-masked
+    (let ((app (invoke "NSApplication" "sharedApplication")))
+      (invoke app "setActivationPolicy:" policy)
+      (setf *activation-policy-set* t)
       app)))
 
 (defconstant +ns-event-mask-any+ (1- (expt 2 64))

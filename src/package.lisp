@@ -106,6 +106,7 @@
    #:check-main-thread
    ;; The application and its event loop ---------------------------------------
    #:shared-application
+   #:set-activation-policy
    #:pump-events
    #:pump-run-loop
    #:diagnose-pump

@@ -257,6 +257,67 @@ while a fixed signature passes them in registers."
              (t call)))))))
 
 
+(defun build-block-caller (result-node arg-nodes invoke-offset)
+  "Compile a function that calls a block, and return it.
+
+    (out-sap block-sap arg...) => scalar-or-NIL
+
+The same contract as BUILD-TRAMPOLINE, and the same struct handling, with one
+difference that is the whole point: a message send jumps to objc_msgSend, whose
+address is known when the trampoline is compiled, while a block carries its own
+function pointer in its invoke field.  So the entry is read out of the block at
+call time rather than baked in as an immediate, and the block is passed back to
+it as the first argument -- a block's invoke function takes the block where a
+method takes self.
+
+ARG-NODES includes the block as its first element.  INVOKE-OFFSET is where the
+invoke field sits in the block literal; the caller passes it from the CFFI
+struct definition so the layout has exactly one source of truth.
+
+This works on any block, whoever made it: one built by MAKE-OBJC-BLOCK, or one
+Cocoa handed us."
+  (let* ((structp (struct-node-p result-node))
+         (result-node (if structp (resolve-struct-layout result-node) result-node))
+         (rtype (alien-type result-node))
+         (out (gensym "OUT"))
+         (fn (gensym "INVOKE"))
+         (syms (loop for i from 0 below (length arg-nodes)
+                     collect (gensym (format nil "A~D-" i))))
+         (atypes (mapcar #'alien-type arg-nodes))
+         (args (loop for sym in syms
+                     for node in arg-nodes
+                     collect (if (struct-node-p node)
+                                 `(sb-alien:deref
+                                   (sb-alien:sap-alien ,sym (sb-alien:* ,(alien-type node))))
+                                 sym)))
+         (ftype `(sb-alien:function ,rtype ,@atypes)))
+    (compile
+     nil
+     `(lambda (,out ,@syms)
+        (declare (optimize (speed 3) (safety 0))
+                 (ignorable ,out)
+                 (type sb-sys:system-area-pointer ,out ,(first syms))
+                 ,@(loop for sym in (rest syms)
+                         for node in (rest arg-nodes)
+                         when (or (struct-node-p node)
+                                  (member node '(:id :class :sel :cstring :block))
+                                  (and (consp node)
+                                       (member (first node) '(:pointer :array))))
+                           collect `(type sb-sys:system-area-pointer ,sym)))
+        (let ((,fn (sb-sys:sap-ref-sap ,(first syms) ,invoke-offset)))
+          ,(let ((call `(sb-alien:alien-funcall
+                         (sb-alien:sap-alien ,fn ,ftype)
+                         ,@args)))
+             (cond
+               (structp
+                `(progn
+                   (setf (sb-alien:deref (sb-alien:sap-alien ,out (sb-alien:* ,rtype)))
+                         ,call)
+                   nil))
+               ((eq result-node :void) `(progn ,call nil))
+               (t call))))))))
+
+
 ;;; Implementations -- the other direction ----------------------------------
 ;;;
 ;;; A Lisp-implemented Objective-C method needs a real function pointer with the
@@ -266,9 +327,11 @@ while a fixed signature passes them in registers."
 ;;; CFFI:DEFCALLBACK does not: a struct return there signals CASE-FAILURE.  That
 ;;; is what makes the manual's "pair" example, and -drawRect:, work.
 ;;;
-;;; Plain function pointers rather than imp_implementationWithBlock: a Block
-;;; would mean constructing a Clang Block literal and would buy nothing here.
-;;; LispWorks does not use blocks for this either.
+;;; Plain function pointers rather than imp_implementationWithBlock: an IMP has
+;;; no need of a Block literal, and LispWorks does not use blocks for this
+;;; either.  Blocks themselves are built in blocks.lisp -- BUILD-BLOCK-INVOKE
+;;; below is this same machinery with one hidden argument instead of two -- but
+;;; a method is not where they earn anything.
 
 (defvar *imp-registry* (make-hash-table :test 'equal)
   "(objc-class-name selector class-method-p) -> the alien callable's name.
@@ -282,11 +345,16 @@ crashing during interactive development.")
 
 (defvar *imp-counter* 0)
 
-(defun report-imp-error (condition selector)
+(defun report-imp-error (condition selector &optional (noun "method"))
+  "Report a condition that tried to escape a Lisp implementation into Objective-C.
+
+NOUN is what the thing is called in the message -- a block is not a method, and
+saying so is the difference between a diagnostic that locates the fault and one
+that sends the reader to the wrong file."
   (format *error-output*
-          "~&Error in Objective-C method ~A: ~A~%~
+          "~&Error in Objective-C ~A ~A: ~A~%~
              Returning a zero value; the Objective-C caller has no handler.~%"
-          selector condition)
+          noun selector condition)
   (finish-output *error-output*))
 
 (defun zero-value-form (node)
@@ -301,11 +369,19 @@ crashing during interactive development.")
          '(sb-sys:int-sap 0))
         (t 0)))
 
-(defun build-imp (result-node arg-nodes body)
-  "Build a real IMP that calls BODY, and return (VALUES SAP CALLABLE-NAME).
+(defun build-callable (name result-node arg-nodes n-hidden body &optional (noun "method"))
+  "Build an alien callable named NAME, and return (VALUES SAP NAME).
 
-BODY is a function of (self-sap cmd-sap result-sap . args).  ARG-NODES includes
-self and _cmd, as every Objective-C method signature does.
+The generic form of what an Objective-C implementation needs: a real C function
+pointer with an exact signature, calling into Lisp.  ARG-NODES describes every
+C parameter, including the hidden leading ones.  N-HIDDEN says how many of those
+are the calling convention's rather than the user's, and BODY is called as
+
+    (funcall BODY hidden... result-sap user-args...)
+
+An IMP has two hidden arguments, self and _cmd.  A block's invoke function has
+one, the block itself.  That number is the only thing that differs between them,
+which is why this is one function and not two.
 
 Two things happen at the boundary and both are necessary.  The float traps Cocoa
 violates are masked, because AppKit generates invalid operations freely and an
@@ -313,8 +389,7 @@ unmasked one here takes the process out.  And no Lisp condition is allowed to
 escape: there is no handler on the Objective-C side, so an unwind past this
 frame aborts.  LispWorks does the same thing, calling it a catch-all frame --
 its message is \"Capturing attempt to throw out of Cocoa handler\"."
-  (let* ((name (intern (format nil "OBJC-IMP-~D" (incf *imp-counter*)) '#:objc))
-         (structp (struct-node-p result-node))
+  (let* ((structp (struct-node-p result-node))
          (result-node (if structp (resolve-struct-layout result-node) result-node))
          (syms (loop for i from 0 below (length arg-nodes)
                      collect (intern (format nil "A~D" i) '#:objc)))
@@ -352,20 +427,46 @@ its message is \"Capturing attempt to throw out of Cocoa handler\"."
                ;; DEFINE-OBJC-METHOD's result-style variable binds to.
                `(sb-alien:with-alien ((,result-sym ,(alien-type result-node)))
                   (handler-case
-                      (funcall ,body ,(first syms) ,(second syms)
+                      (funcall ,body ,@(subseq body-args 0 n-hidden)
                                (sb-alien:alien-sap (sb-alien:addr ,result-sym))
-                               ,@(cddr body-args))
-                    (serious-condition (c) (report-imp-error c ',name)))
+                               ,@(nthcdr n-hidden body-args))
+                    (serious-condition (c) (report-imp-error c ',name ,noun)))
                   ,result-sym)
                `(handler-case
-                    (funcall ,body ,(first syms) ,(second syms) (sb-sys:int-sap 0)
-                             ,@(cddr body-args))
+                    (funcall ,body ,@(subseq body-args 0 n-hidden) (sb-sys:int-sap 0)
+                             ,@(nthcdr n-hidden body-args))
                   (serious-condition (c)
-                    (report-imp-error c ',name)
+                    (report-imp-error c ',name ,noun)
                     ,(zero-value-form result-node))))))))
     ;; ALIEN-CALLABLE-FUNCTION returns an ALIEN-VALUE; class_addMethod needs the
     ;; address, and passing the alien value is a type error.
     (values (sb-alien:alien-sap (sb-alien:alien-callable-function name)) name)))
+
+(defun build-imp (result-node arg-nodes body)
+  "Build a real IMP that calls BODY, and return (VALUES SAP CALLABLE-NAME).
+
+BODY is a function of (self-sap cmd-sap result-sap . args).  ARG-NODES includes
+self and _cmd, as every Objective-C method signature does -- the two hidden
+arguments every Objective-C message send passes."
+  (build-callable (intern (format nil "OBJC-IMP-~D" (incf *imp-counter*)) '#:objc)
+                  result-node arg-nodes 2 body "method"))
+
+(defvar *block-invoke-counter* 0)
+
+(defun build-block-invoke (result-node arg-nodes body)
+  "Build a block's invoke function that calls BODY, and return (VALUES SAP NAME).
+
+BODY is a function of (block-sap result-sap . args).  ARG-NODES includes the
+block pointer as its first element: a block's invoke function takes the block
+where a method takes self, and there is no _cmd -- one hidden argument rather
+than two, which is the whole of the difference from an IMP.
+
+The SAP goes in the block literal's invoke field.  Like an IMP's, the callable
+must be kept alive for as long as any block can reach it; see *BLOCK-MACHINERY*
+in blocks.lisp, which is that root."
+  (build-callable (intern (format nil "OBJC-BLOCK-INVOKE-~D" (incf *block-invoke-counter*))
+                          '#:objc)
+                  result-node arg-nodes 1 body "block"))
 
 ;;; Small helpers the layers above need, kept here so they need not know sb-sys.
 

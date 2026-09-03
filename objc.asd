@@ -63,6 +63,7 @@ Lisp method can take and return C structs by value like any other."
                  (:file "root")
                  (:file "cocoa")
                  (:file "runloop")
+                 (:file "blocks")
                  (:file "init"))))
   :in-order-to ((test-op (test-op #:objc/test))))
 
@@ -115,6 +116,7 @@ Lisp method can take and return C structs by value like any other."
                  (:file "cocoa-tests")
                  (:file "class-tests")
                  (:file "method-tests")
+                 (:file "block-tests")
                  (:file "manual-tests")
                  (:file "gui-tests")
                  (:file "seam-tests")

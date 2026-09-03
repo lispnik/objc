@@ -46,9 +46,9 @@ the slowest thing here and it earns the time (see below).
 
 Systems are defined in `objc.asd`; files load `:serial t`.
 
-- `src/package.lisp` — `OBJC` (42 symbols), `COCOA` (11), and `OBJC.RUNLOOP`.
-  Both Cocoa packages are created here because the type descriptor symbols cross
-  between them.
+- `src/package.lisp` — `OBJC` (the 42 LispWorks symbols plus 8 block symbols),
+  `COCOA` (11), and `OBJC.RUNLOOP`. Both Cocoa packages are created here because
+  the type descriptor symbols cross between them.
 - `src/conditions.lisp` — internal conditions, none exported.
 - `src/library.lisp` — foreign library discovery, and the image dump/restore
   hooks.
@@ -66,6 +66,9 @@ Systems are defined in `objc.asd`; files load `:serial t`.
 - `src/object.lisp` — `standard-objc-object` and the identity map.
 - `src/class-def.lisp`, `src/method-def.lisp`, `src/root.lisp` — the defining
   macros and the three lifecycle methods.
+- `src/blocks.lisp` — Objective-C blocks in both directions. The literal, the
+  per-signature machinery cache, and the id-keyed closure registry; the
+  `sb-alien` half is `build-block-invoke` / `build-block-caller` in `abi.lisp`.
 - `src/cocoa.lisp`, `src/runloop.lisp`, `src/init.lisp`.
 
 ## Things that are easy to get wrong
@@ -148,6 +151,22 @@ Each of these is a bug that actually happened here.
   callback's trampoline once the callable becomes garbage, and Cocoa will still
   be holding the address. Redefining a method leaks a few hundred bytes and that
   is the right trade against crashing mid-session.
+
+- **A block's closure must be keyed on an id inside the literal, never on the
+  block's address.** `_Block_copy` — which is what every asynchronous API does to
+  a block it keeps — returns a *different* address, and the copy would then find
+  nothing. The id is inside the struct, so the copy carries it. Measured: an
+  original and its copy reached the same closure from two different addresses.
+  Ids are never reused, not even across an image restore, so a block invoked
+  after `free-objc-block` is a reported miss rather than a call into whatever
+  closure was allocated that id next.
+
+- **`*block-machinery*` is the GC root for every block invoke callable**, exactly
+  as `*imp-registry*` is for IMPs, and for the same reason. It is also the
+  per-signature memo, so clearing it to "free some memory" looks harmless twice
+  over and is a delayed crash. There is deliberately no public function that
+  does, and the only caller is the image-restore thunk, where the callables are
+  already dangling.
 
 - **All ivars must be added before `objc_registerClassPair`.** The runtime
   silently refuses afterwards, so changing `:objc-instance-vars` needs a fresh
@@ -274,11 +293,15 @@ Each of these is a bug that actually happened here.
 
 ## Conventions specific to this codebase
 
-- **`OBJC` exports exactly the 42 symbols the LispWorks manual documents, and
-  `COCOA` exactly 11.** A test asserts the counts. Anything else is an
+- **`OBJC` exports the 42 symbols the LispWorks manual documents plus the 8
+  block symbols, and `COCOA` exactly 11.** A test asserts **the exact sets**, in
+  two named lists, rather than a count: a count lets the next accidental export
+  through as soon as someone adjusts the number to match. Anything else is an
   implementation detail, however useful — adding to the list turns a detail into
   a compatibility promise nothing else keeps. SBCL-only additions such as
-  `pump-events` live in `OBJC.RUNLOOP` for exactly that reason.
+  `pump-events` live in `OBJC.RUNLOOP` for exactly that reason; blocks are in
+  `OBJC` because a block is Objective-C's own notion and belongs beside `invoke`,
+  and that widening was a decision, written down in both places.
 
 - **No exported condition types.** LispWorks documents none and has none; its
   failures are plain `cl:error` calls. The internal hierarchy exists for

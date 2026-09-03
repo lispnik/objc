@@ -2,15 +2,13 @@
 ;;;; framework, driven from Lisp.
 ;;;;
 ;;;; Like the canvas, this is not in the LispWorks manual; it is here to show
-;;;; the bindings reaching a modern macOS framework.  Vision is a good fit for
-;;;; what the bridge does well and a good illustration of where its edge is:
+;;;; the bindings reaching a modern macOS framework:
 ;;;;
 ;;;;   -[VNImageRequestHandler performRequests:error:] is SYNCHRONOUS.  It runs
 ;;;;   the request and the request holds its results when the call returns, so
-;;;;   no Objective-C block is needed.  The completion-handler APIs -- the ones
-;;;;   that hand you a block to fill in -- would need block *creation*, which is
-;;;;   a capability the bindings do not have yet; the synchronous face of Vision
-;;;;   sidesteps that entirely.
+;;;;   no Objective-C block is needed.  The completion-handler face of Vision is
+;;;;   reachable too, with MAKE-OBJC-BLOCK, but a request that has already
+;;;;   finished is the shorter road to the same results.
 ;;;;
 ;;;;   Each recognised line's bounding box comes back as a CGRect passed BY
 ;;;;   VALUE, which the bridge converts to #(x y width height) -- the same

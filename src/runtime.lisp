@@ -10,7 +10,8 @@
 ;;;; like oversights and are not: objc_setAssociatedObject is not here (the
 ;;;; pointer -> Lisp object map is a side table, as LispWorks' is), and
 ;;;; imp_implementationWithBlock is not here (IMPs are plain function pointers,
-;;;; which needs no Block ABI).
+;;;; which needs no Block ABI -- blocks.lisp does build real blocks, and still
+;;;; does not route IMPs through them).
 ;;;;
 ;;;; Not bound at all: objc_msgSend_stret, objc_msgSendSuper_stret and
 ;;;; objc_msgSend_fpret.  All three are marked OBJC_ARM64_UNAVAILABLE in the

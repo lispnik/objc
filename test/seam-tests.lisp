@@ -50,18 +50,60 @@ compatibility, and someone porting code will ask DESCRIBE what it is."
           (push symbol undocumented))))
     (is (null undocumented) "undocumented exported symbols: ~S" (reverse undocumented))))
 
-(test the-exported-surface-is-exactly-the-lispworks-one
-  "42 symbols in OBJC and 11 in COCOA.  The manual has 43 OBJC reference pages,
-but OBJC-OBJECT-POINTER gets two of them -- one for the reader, one for the FLI
-type -- and it is one symbol.
+(defparameter +lispworks-objc-symbols+
+  '("ENSURE-OBJC-INITIALIZED"
+    "INVOKE" "INVOKE-BOOL" "INVOKE-INTO" "CAN-INVOKE-P" "CURRENT-SUPER"
+    "ALLOC-INIT-OBJECT" "DESCRIPTION" "TRACE-INVOKE" "UNTRACE-INVOKE"
+    "COERCE-TO-OBJC-CLASS" "OBJC-CLASS-NAME" "COERCE-TO-SELECTOR" "SELECTOR-NAME"
+    "OBJC-CLASS-METHOD-SIGNATURE"
+    "OBJC-OBJECT-POINTER" "OBJC-CLASS" "SEL" "OBJC-C-STRING" "OBJC-BOOL"
+    "OBJC-C++-BOOL" "OBJC-UNKNOWN" "OBJC-AT-QUESTION-MARK"
+    "RETAIN" "RELEASE" "AUTORELEASE" "RETAIN-COUNT" "MAKE-AUTORELEASE-POOL"
+    "WITH-AUTORELEASE-POOL"
+    "NS-STRING-TO-STRING" "STRING-TO-NS-STRING"
+    "STANDARD-OBJC-OBJECT" "DEFINE-OBJC-CLASS" "DEFINE-OBJC-METHOD"
+    "DEFINE-OBJC-CLASS-METHOD" "DEFINE-OBJC-PROTOCOL" "DEFINE-OBJC-STRUCT"
+    "DEFINE-OBJC-TYPEDEF"
+    "OBJC-OBJECT-FROM-POINTER" "OBJC-OBJECT-VAR-VALUE" "OBJC-OBJECT-COPIED"
+    "OBJC-OBJECT-DESTROYED")
+  "The 42 symbols the LispWorks 8.1 manual documents in its OBJC package.
 
-Adding to these lists is not a small decision: it turns an implementation detail
-into a compatibility promise nothing else keeps."
-  (let ((objc-count 0) (cocoa-count 0))
-    (do-external-symbols (s (find-package :objc)) (declare (ignore s)) (incf objc-count))
-    (do-external-symbols (s (find-package :cocoa)) (declare (ignore s)) (incf cocoa-count))
-    (is (= 42 objc-count))
-    (is (= 11 cocoa-count))))
+The manual has 43 reference pages: OBJC-OBJECT-POINTER gets two of them, one for
+the reader function and one for the FLI type descriptor, and it is one symbol.")
+
+(defparameter +sbcl-additions+
+  '("DEFINE-OBJC-BLOCK-TYPE" "MAKE-OBJC-BLOCK" "FREE-OBJC-BLOCK" "WITH-OBJC-BLOCK"
+    "CALL-OBJC-BLOCK" "OBJC-BLOCK" "OBJC-BLOCK-POINTER" "OBJC-BLOCK-LIVE-P")
+  "Block creation, which LispWorks has no OBJC interface for at all.
+
+There it lives in the FLI -- ALLOCATE-FOREIGN-BLOCK and
+DEFINE-FOREIGN-BLOCK-CALLABLE-TYPE -- and there is no FLI here.  Exported from
+OBJC rather than a sibling package because a block is Objective-C's own notion
+and belongs beside INVOKE, and listed separately here so the line between what
+LispWorks promises and what this library adds stays legible.")
+
+(test the-exported-surface-is-the-lispworks-one-plus-the-block-api
+  "OBJC exports the 42 documented LispWorks symbols and the 8 block symbols, and
+COCOA exports 11.  Deliberately the exact sets rather than the counts: widening
+the surface is a decision to write down, and a count would let the next
+accidental export through as soon as someone adjusted the number to match."
+  (flet ((exported (package)
+           (sort (let ((names '()))
+                   (do-external-symbols (symbol (find-package package))
+                     (push (symbol-name symbol) names))
+                   names)
+                 #'string<)))
+    (let ((expected (sort (append (copy-list +lispworks-objc-symbols+)
+                                  (copy-list +sbcl-additions+))
+                          #'string<))
+          (actual (exported :objc)))
+      (is (null (set-difference actual expected :test #'string=))
+          "OBJC exports symbols on neither list: ~S"
+          (set-difference actual expected :test #'string=))
+      (is (null (set-difference expected actual :test #'string=))
+          "OBJC no longer exports: ~S"
+          (set-difference expected actual :test #'string=)))
+    (is (= 11 (length (exported :cocoa))))))
 
 (test no-package-exports-an-undefined-name
   "An exported symbol with nothing behind it is a broken promise that nothing

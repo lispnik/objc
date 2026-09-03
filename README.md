@@ -49,7 +49,11 @@ passed and returned by value in both directions, `define-objc-struct`,
 integration with `objc-object-copied` and `objc-object-destroyed`, and
 `invoke-into`'s full set of result dispositions.
 
-643 checks, green on a clean GitHub runner as well as locally. Behaviour the
+Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
+closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
+[Blocks](#blocks).
+
+716 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -166,6 +170,58 @@ each one deliberate:
   them in registers, so calling `+stringWithFormat:` without it reads garbage.
   LispWorks fails silently here; this warns once, naming the fix.
 
+- **`OBJC` exports eight symbols LispWorks does not**: the block API below.
+  LispWorks has no block interface in `OBJC` at all — there it is
+  `fli:allocate-foreign-block`, and there is no FLI here. It is the one
+  deliberate widening of the package, and the seam test names the eight
+  explicitly so an accidental forty-ninth export still fails.
+
+## Blocks
+
+A block is C's closure: a struct carrying a function pointer, which every modern
+Cocoa API that takes a completion handler expects. `make-objc-block` builds one
+from an arbitrary Lisp closure, so `NSURLSession`, GCD, and the
+`...UsingBlock:` half of Foundation are reachable.
+
+```lisp
+;; -[NSArray sortedArrayUsingComparator:] -- Foundation sorts, Lisp compares.
+(objc:with-objc-block (compare '(:long-long (objc:objc-object-pointer
+                                             objc:objc-object-pointer))
+                       (lambda (a b)
+                         (let ((x (objc:ns-string-to-string a))
+                               (y (objc:ns-string-to-string b)))
+                           (cond ((string< x y) -1) ((string> x y) 1) (t 0)))))
+  (objc:invoke array "sortedArrayUsingComparator:" compare))
+```
+
+The type is `(result-type (argument-type...))` using the ordinary type
+descriptors, or a name given to `define-objc-block-type`. The block passes
+straight to `invoke`. Building the invoke function calls the compiler, so it
+happens once per distinct *signature* rather than once per block — which is why
+LispWorks splits its own API into a load-time declaration and a run-time
+allocation; here the memo makes the declaring form a convenience.
+
+`call-objc-block` goes the other way, calling a block whoever made it.
+
+**Lifetime is manual, and the rule is about escape rather than scope.**
+`with-objc-block` frees on unwind, which is right for a comparator, an
+enumeration, or a `dispatch_sync` — anything that has finished when the call
+returns. Anything *asynchronous* copies the block and outlives the form, so give
+those a `make-objc-block` you free when the work is done:
+
+```lisp
+(let ((b (objc:make-objc-block '(:void ()) (lambda () (do-something)))))
+  (unwind-protect (dispatch-async b) ...))   ; free after it has run, not before
+```
+
+Freeing one that something still holds is softened rather than made safe: blocks
+carry an id that is never reused, and a copy invoked after the free reports
+being called after it was freed instead of jumping through freed memory.
+
+Not supported yet: structs passed or returned **by value** through a block —
+`-[NSString enumerateSubstringsInRange:options:usingBlock:]` wants an `NSRange`.
+That signals rather than misbehaving.
+
 ## Examples
 
 `examples/manual.lisp` is a near-verbatim port of the file LispWorks ships at
@@ -199,12 +255,9 @@ unchanged:
   `NSBezierPath` and `NSColor` — so a paint loop is where `src/abi.lisp` earns
   its keep. See [The live canvas](#the-live-canvas).
 - `examples/vision.lisp` — optical character recognition through the Vision
-  framework, and the clearest illustration of where the bindings' edge is.
-  `-[VNImageRequestHandler performRequests:error:]` is *synchronous*, so no
-  Objective-C block is needed; each recognised line's bounding box comes back as
-  a `CGRect` *by value*. The block-based, completion-handler face of Vision would
-  need block creation, which the library does not do yet — the synchronous face
-  needs none of it. See [Vision OCR](#vision-ocr).
+  framework. `-[VNImageRequestHandler performRequests:error:]` is *synchronous*,
+  so no Objective-C block is needed; each recognised line's bounding box comes
+  back as a `CGRect` *by value*. See [Vision OCR](#vision-ocr).
 - `examples/status-item.lisp` — a live item in the macOS menu bar. The canvas
   shows the drawing half of AppKit; this shows the wiring half: each menu item
   carries a target and an action selector, and AppKit sends that selector to a
@@ -365,8 +418,9 @@ also how the example is tested, headless.
 The whole thing works without an Objective-C block because
 `-[VNImageRequestHandler performRequests:error:]` is synchronous: it runs the
 request and the request holds its `-results` when the call returns. The Vision
-methods that take a completion handler would need block creation, which the
-library does not have yet.
+methods that take a completion handler are reachable too — see
+[Blocks](#blocks) — but a request that has already finished is the shorter road
+to the same results.
 
 ### A menu-bar item
 
@@ -417,7 +471,7 @@ no loss for a menu-bar app, and `:timeout` means a session cannot get stuck.
 make test
 ```
 
-The suite runs 643 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 716 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

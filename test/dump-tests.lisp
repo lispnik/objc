@@ -42,6 +42,9 @@ project directory covers both the system and its ocicl-vendored dependencies."
    (define-objc-method (\"tripled:\" :int) ((self dumped) (n :int))
      (* 3 n))
    (assert (= 15 (invoke (alloc-init-object \"ObjcDumpedClass\") \"tripled:\" 5)))
+   ;; Deliberately not freed: the restored image must find it dead rather than
+   ;; hand out a pointer into memory this process malloc'd.
+   (defvar *doomed-block* (make-objc-block '(:void ()) (lambda () nil)))
    (sb-ext:save-lisp-and-die (second sb-ext:*posix-argv*) :executable t)")
 
 (defparameter +restart-program+
@@ -55,7 +58,20 @@ project directory covers both the system and its ocicl-vendored dependencies."
                                             (objc-object-pointer object))))
      (format t \"SLOT ~a~%\" (dumped-tag object))
      (format t \"INVOKE ~a~%\"
-             (invoke (invoke \"NSString\" \"stringWithUTF8String:\" \"hello\") \"length\")))")
+             (invoke (invoke \"NSString\" \"stringWithUTF8String:\" \"hello\") \"length\"))
+     ;; The invoke functions were alien callables and the descriptors were
+     ;; malloc'd, so none of it crossed the dump.  A block made before it must
+     ;; report itself dead, and a new one must build fresh machinery and run.
+     (format t \"STALE ~a~%\" (objc:objc-block-live-p *doomed-block*))
+     (let ((hits 0))
+       (objc:with-objc-block (b '(:void ()) (lambda () (incf hits)))
+         (cffi:foreign-funcall
+          \"dispatch_sync\"
+          :pointer (cffi:foreign-funcall \"dispatch_get_global_queue\"
+                                         :long 0 :unsigned-long 0 :pointer)
+          :pointer (objc:objc-block-pointer b)
+          :void))
+       (format t \"BLOCK ~a~%\" hits)))")
 
 (defun sbcl-available-p ()
   (handler-case
@@ -100,5 +116,9 @@ project directory covers both the system and its ocicl-vendored dependencies."
                         "the pointer to Lisp object map works in the new image")
                     (is (search "SLOT RESTORED" output))
                     (is (search "INVOKE 5" output)
-                        "ordinary dispatch works after the trampoline caches were cleared")))
+                        "ordinary dispatch works after the trampoline caches were cleared")
+                    (is (search "STALE NIL" output)
+                        "a block made before the dump reports itself freed")
+                    (is (search "BLOCK 1" output)
+                        "and a new block builds fresh machinery and is invoked")))
              (ignore-errors (delete-file executable)))))))))

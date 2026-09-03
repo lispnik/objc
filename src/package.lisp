@@ -6,15 +6,25 @@
 ;;;; OBJC:INVOKE.  Creating both up front is what keeps that from being a load
 ;;;; order problem.
 ;;;;
-;;;; The export lists are exactly the symbols documented in the LispWorks 8.1
-;;;; Objective-C and Cocoa manual -- 42 in OBJC and 11 in COCOA -- and nothing
-;;;; else.  Anything not on these lists is an implementation detail even when it
-;;;; is useful, because a symbol exported here is a promise to LispWorks source
-;;;; compatibility that the manual does not make.
+;;;; The export lists are the symbols documented in the LispWorks 8.1
+;;;; Objective-C and Cocoa manual -- 42 in OBJC and 11 in COCOA -- plus one
+;;;; named group of additions, and nothing else.  Anything not on these lists is
+;;;; an implementation detail even when it is useful, because a symbol exported
+;;;; here is a promise to LispWorks source compatibility that the manual does
+;;;; not make.
 ;;;;
 ;;;; The manual has 43 OBJC reference pages, not 42: OBJC-OBJECT-POINTER gets
 ;;;; two, one for the reader function and one for the FLI type descriptor.  It
 ;;;; is one symbol wearing two hats, so it is exported once.
+;;;;
+;;;; The addition is the block API -- MAKE-OBJC-BLOCK and its companions.  A
+;;;; block is not in the LispWorks OBJC package at all: there it lives in the
+;;;; FLI, as ALLOCATE-FOREIGN-BLOCK and DEFINE-FOREIGN-BLOCK-CALLABLE-TYPE, and
+;;;; there is no FLI here.  It is exported from OBJC rather than from a sibling
+;;;; package like OBJC.RUNLOOP because a block is Objective-C's own notion and
+;;;; belongs beside INVOKE, not beside the event loop.  That is a deliberate
+;;;; widening of the promise, so the seam test names these symbols explicitly
+;;;; rather than counting them: an export nobody decided on still fails.
 
 (defpackage #:objc
   (:use #:cl #:alexandria)
@@ -70,7 +80,16 @@
    #:objc-object-from-pointer
    #:objc-object-var-value
    #:objc-object-copied
-   #:objc-object-destroyed))
+   #:objc-object-destroyed
+   ;; Blocks -- NOT a LispWorks interface, see the note above ----------------
+   #:define-objc-block-type
+   #:make-objc-block
+   #:free-objc-block
+   #:with-objc-block
+   #:call-objc-block
+   #:objc-block
+   #:objc-block-pointer
+   #:objc-block-live-p))
 
 (defpackage #:cocoa
   (:use #:cl #:alexandria)

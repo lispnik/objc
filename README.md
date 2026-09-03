@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-763 checks, green on a clean GitHub runner as well as locally. Behaviour the
+767 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -100,6 +100,15 @@ against, so the differential tests run without LispWorks installed.
 - **AppKit from a REPL needs care.** The event loop helpers in `OBJC.RUNLOOP` are
   additions, not LispWorks API; driving the event loop is CAPI's job there and
   there is no CAPI here. See the notes under Examples.
+- **Swift-only frameworks are out of reach, and Apple Intelligence is one.**
+  This library sends Objective-C messages, so it reaches what a class exposes to
+  the Objective-C runtime. `FoundationModels` — the on-device LLM — is pure
+  Swift: it ships no headers, and although its classes are registered with the
+  runtime (Swift does that), `FoundationModels.LanguageModelSession` and
+  `SystemLanguageModel` publish **zero** selectors, measured with
+  `class-selectors`. Same for `Translation`. The reachable machine learning is
+  `Vision`, `NaturalLanguage` and `CoreML`, all of which have real Objective-C
+  interfaces — and two of which have examples here.
 
 ## Requirements
 
@@ -354,6 +363,9 @@ unchanged:
 - `examples/core-image.lisp` — a filter graph, headless. Generates its own
   images, so it ships no assets: a checkerboard, a gradient and a QR code that
   Vision reads back to prove it is one. See [Core Image](#core-image).
+- `examples/file-watcher.lisp` — dispatch sources: watch a file or directory and
+  run a Lisp closure when it changes, plus a periodic timer. The one here you
+  might actually keep. See [Watching the filesystem](#watching-the-filesystem).
 
 ### Running them
 
@@ -682,13 +694,43 @@ The test round-trips: it generates a QR code with Core Image and reads it back
 with Vision, insisting the payload matches. That is the difference between
 "plausible PNG bytes" and "a QR code".
 
+### Watching the filesystem
+
+```lisp
+(asdf:load-system :objc/examples)
+(in-package :objc/examples)
+
+(defvar *w* (watch #p"/tmp/notes.txt"
+                   (lambda (events) (format t "~&changed: ~S~%" events))))
+;; changed: (:WRITE :EXTEND)
+(unwatch *w*)
+
+(every-seconds 5 (lambda () (format t "~&tick~%")))   ; a timer source
+```
+
+A dispatch source turns something the kernel notices into a block on a queue.
+Like GCD, it needs nothing from Objective-C — the entry points are C functions
+that take blocks — and the queue is serial, so it is safe on a stock build.
+
+**The trap, and it is why most hand-rolled file watchers quietly stop working:**
+a vnode source watches a *file descriptor*, not a path. Almost every editor saves
+by writing a temporary file and renaming it over the original, so after one save
+the descriptor names a file that no longer has that name, and the watch goes
+silent while `watcher-live` still answers true. `:rearm` (the default) reopens
+the path when a delete or rename is reported; watching the containing
+**directory** instead is the more robust shape, since its descriptor survives
+whatever happens to the files inside it.
+
+Measured both ways: with `:rearm nil`, a write to the replacing file produces no
+event at all.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 763 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 767 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

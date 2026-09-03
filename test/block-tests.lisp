@@ -431,6 +431,26 @@ run the block on the caller and normally does."
       (is-true (getf result :overlapped)
                "and the main thread kept working while they did"))))
 
+(test the-file-watcher-example-runs-every-shape
+  "examples/file-watcher.lisp is dispatch sources: the kernel notices something
+and a Lisp closure runs.  Blocks and GCD, on a serial queue, so it is safe on
+any build.
+
+:SURVIVED-ATOMIC-SAVE is the assertion with teeth, and it took two attempts to
+make it one.  A vnode source watches a descriptor, not a path, so after an
+editor's write-temporary-and-rename the watch reports the rename and then goes
+silent -- while still answering WATCHER-LIVE with true.  Asserting that the
+rename was seen passes either way; the test has to write again afterwards and
+require an event."
+  (with-runtime
+    (let ((result (objc/examples:test-file-watcher)))
+      (is (equal '(:write :extend) (getf result :write))
+          "an append reports write and extend")
+      (is-true (getf result :survived-atomic-save)
+               "and the watch still sees writes to the file that replaced it")
+      (is-true (getf result :directory) "a directory watch saw a new entry")
+      (is (= 3 (getf result :timer)) "the timer source fired three times"))))
+
 (test the-natural-language-example-runs-every-shape
   "examples/natural-language.lisp is where struct-by-value into a block meets a
 real framework: the tagger and the tokenizer both hand their closure an NSRange

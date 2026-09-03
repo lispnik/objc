@@ -53,7 +53,11 @@
            ;; Core Image (examples/core-image.lisp).
            #:apply-filter #:filter-names #:crop #:scale #:render-png #:png-p
            #:rgba #:objc-value #:ci-format #:checkerboard #:gradient #:qr-code
-           #:test-core-image #:report-core-image))
+           #:test-core-image #:report-core-image
+           ;; Dispatch sources (examples/file-watcher.lisp).
+           #:watch #:unwatch #:with-watch #:watcher #:watcher-live
+           #:every-seconds #:stop-repeating
+           #:test-file-watcher #:report-file-watcher))
 
 (in-package #:fli)
 

@@ -468,6 +468,26 @@ in blocks.lisp, which is that root."
                           '#:objc)
                   result-node arg-nodes 1 body "block"))
 
+(defvar *block-helper-counter* 0)
+
+(defun build-block-helper (arg-count body)
+  "Build a block copy or dispose helper, and return (VALUES SAP NAME).
+
+libclosure calls these when it copies a block to the heap and when it finally
+frees that copy: copy(dst, src) with ARG-COUNT 2, dispose(block) with 1.  Each
+takes pointers and returns nothing, so unlike an invoke function there is no
+signature to vary -- there are exactly two of them in the process, whatever
+block types exist, which is why this takes an argument count rather than nodes.
+
+BODY is a function of (result-sap . args); the result SAP is always null, since
+these return void.  It reaches BUILD-CALLABLE with no hidden arguments at all:
+neither a receiver nor a block, because libclosure passes the block as an
+ordinary parameter here."
+  (build-callable (intern (format nil "OBJC-BLOCK-HELPER-~D" (incf *block-helper-counter*))
+                          '#:objc)
+                  :void (make-list arg-count :initial-element '(:pointer :void))
+                  0 body "block helper"))
+
 ;;; Small helpers the layers above need, kept here so they need not know sb-sys.
 
 (declaim (inline sap-of pointer-of))

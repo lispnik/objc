@@ -38,8 +38,25 @@ allocate."
   (is (= 32 (cffi:foreign-slot-offset '(:struct objc::block-literal) 'objc::block-id)))
   ;; The descriptor is allocated in full whatever the flags say, so that
   ;; declaring BLOCK_HAS_SIGNATURE can never make _Block_signature read past it.
-  (is (= 32 (cffi:foreign-type-size '(:struct objc::block-descriptor))))
-  (is (= 16 (cffi:foreign-slot-offset '(:struct objc::block-descriptor) 'objc::signature))))
+  ;; Its size and the signature's offset both depend on BLOCK_HAS_COPY_DISPOSE:
+  ;; libclosure steps over the copy and dispose pointers only when that flag is
+  ;; set, so these two numbers and the flags have to agree or the signature is
+  ;; read from the wrong place.
+  (is (= 48 (cffi:foreign-type-size '(:struct objc::block-descriptor))))
+  (is (= 16 (cffi:foreign-slot-offset '(:struct objc::block-descriptor) 'objc::copy)))
+  (is (= 24 (cffi:foreign-slot-offset '(:struct objc::block-descriptor) 'objc::dispose)))
+  (is (= 32 (cffi:foreign-slot-offset '(:struct objc::block-descriptor) 'objc::signature))))
+
+(test the-flags-say-what-the-descriptor-provides
+  (with-runtime
+    (objc:with-objc-block (b '(:void ()) (lambda () nil))
+      (let ((flags (cffi:foreign-slot-value (objc:objc-block-pointer b)
+                                            '(:struct objc::block-literal) 'objc::flags)))
+        (is (logtest flags objc::+block-has-signature+))
+        (is (logtest flags objc::+block-has-copy-dispose+))
+        (is (not (logtest flags objc::+block-is-global+))
+            "a global block would make _Block_copy return the same pointer")
+        (is (not (logtest flags objc::+block-use-stret+)))))))
 
 ;;; Signatures ---------------------------------------------------------------
 
@@ -338,22 +355,50 @@ past the invoke frame aborts the process."
       (finishes (objc:free-objc-block b))
       (signals error (objc:objc-object-pointer b)))))
 
-(test invoking-a-freed-blocks-copy-is-reported-not-fatal
-  "The hazard this design exists to soften.  A copy Cocoa made lives in Cocoa's
-memory, so invoking it after the original was freed finds a live invoke function
-and a missing registry entry: a diagnostic, not a jump through freed memory.
-Ids are never reused, which is what stops it reaching some later block instead."
+(test a-block-freed-while-cocoa-holds-a-copy-still-runs
+  "The hazard the copy and dispose helpers exist to remove, and the one thing
+that makes the lifetime rule ordinary.  A copy libclosure made took its own
+reference to the closure on the way, so freeing the original releases only the
+reference this OBJC-BLOCK held -- and the copy still runs.
+
+Before the helpers this was a diagnostic at best: the block was gone and the
+invocation reported a missing registry entry."
+  (with-runtime
+    (let ((hits 0))
+      (let* ((b (objc:make-objc-block '(:void ()) (lambda () (incf hits))))
+             (copy (objc::%block-copy (objc:objc-block-pointer b))))
+        (objc:free-objc-block b)
+        (is-false (objc:objc-block-live-p b) "the original's storage is gone")
+        (cffi:foreign-funcall "dispatch_sync"
+                              :pointer (global-queue) :pointer copy :void)
+        (is (= 1 hits) "and the copy reached the closure anyway")
+        (objc::%block-release copy)))))
+
+(test the-refcount-follows-libclosure-not-our-guesses
+  "What the helpers actually count is ALLOCATIONS, one dispose per copy-helper
+call -- not retains.  _Block_copy on a block already on the heap bumps
+libclosure's own count and returns the same pointer without calling the copy
+helper, so the two schemes nest instead of double-counting.  Asserted because
+getting it wrong leaks every escaped closure, silently and forever."
   (with-runtime
     (let* ((b (objc:make-objc-block '(:void ()) (lambda () nil)))
-           (copy (objc::%block-copy (objc:objc-block-pointer b)))
-           (output (make-string-output-stream)))
-      (objc:free-objc-block b)
-      (let ((*error-output* output))
-        (finishes (cffi:foreign-funcall "dispatch_sync"
-                                        :pointer (global-queue) :pointer copy :void)))
-      (is (search "freed" (get-output-stream-string output))
-          "the invocation reported a freed block")
-      (objc::%block-release copy))))
+           (id (objc::objc-block-id b)))
+      (flet ((refcount ()
+               (let ((record (gethash id objc::*block-records*)))
+                 (and record (objc::block-record-refcount record)))))
+        (is (= 1 (refcount)) "the OBJC-BLOCK itself")
+        (let ((copy (objc::%block-copy (objc:objc-block-pointer b))))
+          (is (= 2 (refcount)) "the first copy called the copy helper")
+          (let ((again (objc::%block-copy copy)))
+            (is (cffi:pointer-eq copy again)
+                "a copy of a heap block is the same pointer")
+            (is (= 2 (refcount)) "and did not call the helper again")
+            (objc::%block-release again)
+            (is (= 2 (refcount)) "nor did releasing it call dispose"))
+          (objc:free-objc-block b)
+          (is (= 1 (refcount)) "freeing the original dropped only its own")
+          (objc::%block-release copy)
+          (is (null (refcount)) "and the last release retired the entry"))))))
 
 (test the-registry-does-not-leak-and-does-not-reuse-ids
   (with-runtime

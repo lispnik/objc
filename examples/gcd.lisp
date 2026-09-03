@@ -33,12 +33,15 @@
 ;;;; every asynchronous entry point to a serial queue, and the concurrent global
 ;;;; queues are here for DISPATCH-SYNC and for reference.
 ;;;;
-;;;; The other thing to watch is lifetime, and it is the ordinary block rule:
-;;;; anything ASYNCHRONOUS outlives the form that started it, so the blocks here
-;;;; are freed when the work is known to have finished -- after the group's wait,
-;;;; not on the way out of the function that queued it.  WITH-OBJC-BLOCK is right
-;;;; for DISPATCH-SYNC, which is done with its block when it returns, and wrong
-;;;; for everything asynchronous.
+;;;; Lifetime, by contrast, needs no care here at all, and it is worth saying
+;;;; why because it did until recently.  dispatch_group_async copies the block
+;;;; before it returns; the copy takes its own reference to the Lisp closure
+;;;; through the descriptor's copy helper, and gives it up through the dispose
+;;;; helper when libclosure finally destroys it.  So WITH-OBJC-BLOCK is right
+;;;; even for work that has not started yet: what it frees is the storage and
+;;;; one reference, not the closure.  An earlier draft of this file carried every
+;;;; queued block on the group and freed them after the wait, which is what the
+;;;; job takes without those helpers.
 
 (in-package #:objc/examples)
 
@@ -124,10 +127,8 @@ even if FUNCTION signals."
 ;;; it is the natural owner of the blocks that work runs in.
 
 (defstruct (dispatch-group (:constructor %make-dispatch-group))
-  "A GCD dispatch group, the blocks whose lifetime it governs, and the serial
-queue it runs them on."
+  "A GCD dispatch group and the serial queue it runs its work on."
   handle
-  (blocks '())
   (queue nil))
 
 (defun make-dispatch-group ()
@@ -142,16 +143,17 @@ group never run concurrently -- see the note at the top of this file for why
 that default is not merely conservative.  Passing a concurrent queue is allowed
 and is how you would find out.
 
-The block is kept by the group rather than freed here, because it has escaped:
-dispatch_group_async copies it and invokes that copy at some point after this
-function has returned.  Freeing it now is the mistake WITH-OBJC-BLOCK would
-quietly make."
-  (let ((block (objc:make-objc-block 'dispatch-work function)))
-    (push block (dispatch-group-blocks group))
+WITH-OBJC-BLOCK, even though the work outlives this call: dispatch_group_async
+copies the block before it returns, the copy holds the closure, and freeing this
+one releases only our own reference.  An earlier version of this file kept every
+block on the group and freed them after the wait, which is what you have to do
+without copy and dispose helpers; the five lines that went are the whole benefit
+of having them."
+  (objc:with-objc-block (block 'dispatch-work function)
     (%dispatch-group-async (dispatch-group-handle group)
                            (or queue (ensure-group-queue group))
-                           (objc:objc-block-pointer block))
-    group))
+                           (objc:objc-block-pointer block)))
+  group)
 
 (defun ensure-group-queue (group)
   "The serial queue GROUP runs its work on, made on first use."
@@ -165,13 +167,10 @@ quietly make."
 (defmacro with-dispatch-group ((group) &body body)
   "Bind GROUP, run BODY, then wait for everything BODY queued on it.
 
-The blocks are freed after the wait, which is the only point at which they are
-known not to be about to run.  This is the whole lifetime discipline the README
-describes, in five lines."
+Only the GCD objects need releasing here: the blocks look after themselves, so
+what is left is the ordinary Objective-C ownership this library has always had."
   `(let ((,group (make-dispatch-group)))
      (unwind-protect (progn ,@body (group-wait ,group))
-       (mapc #'objc:free-objc-block (dispatch-group-blocks ,group))
-       (setf (dispatch-group-blocks ,group) '())
        (when (dispatch-group-queue ,group)
          (objc:release (dispatch-group-queue ,group))
          (setf (dispatch-group-queue ,group) nil))

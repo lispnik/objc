@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-730 checks, green on a clean GitHub runner as well as locally. Behaviour the
+743 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -214,20 +214,21 @@ allocation; here the memo makes the declaring form a convenience.
 
 `call-objc-block` goes the other way, calling a block whoever made it.
 
-**Lifetime is manual, and the rule is about escape rather than scope.**
-`with-objc-block` frees on unwind, which is right for a comparator, an
-enumeration, or a `dispatch_sync` — anything that has finished when the call
-returns. Anything *asynchronous* copies the block and outlives the form, so give
-those a `make-objc-block` you free when the work is done:
+**Lifetime is refcounted, so `with-objc-block` is almost always right** — including
+for asynchronous work. Anything that keeps a block copies it, and the block
+carries copy and dispose helpers that take and give up a reference to the Lisp
+closure as libclosure copies and destroys those copies. Freeing the original
+therefore releases only the reference *you* held:
 
 ```lisp
-(let ((b (objc:make-objc-block '(:void ()) (lambda () (do-something)))))
-  (unwind-protect (dispatch-async b) ...))   ; free after it has run, not before
+(objc:with-objc-block (b '(:void ()) (lambda () (do-something)))
+  (dispatch-async queue b))       ; freed here; the copy keeps the closure alive
 ```
 
-Freeing one that something still holds is softened rather than made safe: blocks
-carry an id that is never reused, and a copy invoked after the free reports
-being called after it was freed instead of jumping through freed memory.
+Reach for `make-objc-block` and an explicit `free-objc-block` when the *storage*
+has to outlive the form — when the same block is handed out repeatedly. The one
+way left to be wrong is to give a foreign API this exact pointer and have it keep
+the pointer rather than a copy; nothing in Cocoa does that.
 
 Structs pass **by value** in both directions, so
 `-[NSString enumerateSubstringsInRange:options:usingBlock:]` hands its `NSRange`s
@@ -523,9 +524,11 @@ work is that the block is a Lisp closure.
 It is also where the concurrency limit above stops being abstract. The example
 defaults every asynchronous entry point to a **serial** queue, and there is no
 `parallel-map` in it however much the name suggests itself: `dispatch_apply` with
-an allocating Lisp closure kills the process every time. `with-dispatch-group`
-shows the lifetime rule in five lines — the blocks are freed after the group's
-wait, which is the first moment they are known not to be about to run.
+an allocating Lisp closure kills the process every time. `group-async`, by
+contrast, is three lines and uses `with-objc-block` like everything else, even
+though the work has not started when it returns — an earlier draft carried every
+queued block on the group and freed them after the wait, which is what the job
+takes without copy and dispose helpers.
 
 ## Testing
 
@@ -533,7 +536,7 @@ wait, which is the first moment they are known not to be about to run.
 make test
 ```
 
-The suite runs 730 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 743 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

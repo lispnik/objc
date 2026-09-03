@@ -46,11 +46,24 @@
   (descriptor :pointer)
   (block-id   :uint64))
 
+;;; The descriptor is three published structures laid end to end, and which of
+;;; them are present is read from the block's FLAGS rather than from anything in
+;;; the descriptor itself.  _Block_signature walks past Block_descriptor_1, then
+;;; past Block_descriptor_2 if and only if BLOCK_HAS_COPY_DISPOSE is set, and
+;;; reads what it finds.  So the two fields below are not optional padding: with
+;;; that flag set they are where libclosure believes the copy and dispose
+;;; helpers live, and without it the signature must sit sixteen bytes earlier.
+;;; Both flags are set here, so this is the full layout and the offsets are
+;;; asserted in the tests.
 (cffi:defcstruct block-descriptor
   (reserved  :unsigned-long)
   ;; The size of the BLOCK LITERAL, not of this descriptor.  _Block_copy copies
   ;; that many bytes, which is what carries BLOCK-ID across a copy.
   (size      :unsigned-long)
+  ;; Block_descriptor_2 -- present because BLOCK_HAS_COPY_DISPOSE is set.
+  (copy      :pointer)
+  (dispose   :pointer)
+  ;; Block_descriptor_3 -- present because BLOCK_HAS_SIGNATURE is set.
   (signature :pointer)
   (layout    :pointer))
 
@@ -59,15 +72,19 @@
 (defconstant +block-use-stret+        (ash 1 29))
 (defconstant +block-has-signature+    (ash 1 30))
 
-;;; Only BLOCK_HAS_SIGNATURE is ever set, and each omission is a decision:
+;;; BLOCK_HAS_SIGNATURE and BLOCK_HAS_COPY_DISPOSE are set; the other two are
+;;; deliberately clear:
 ;;;
 ;;;   BLOCK_IS_GLOBAL          would make _Block_copy return the same pointer;
 ;;;                            see STACK-BLOCK-ISA for why that is worse.
-;;;   BLOCK_NEEDS_FREE         so a stray _Block_release on our own storage is a
-;;;                            documented no-op rather than a foreign free of a
-;;;                            pointer CFFI allocated.
-;;;   BLOCK_HAS_COPY_DISPOSE   there is nothing to copy or dispose: the imported
-;;;                            variable is an integer id.
+;;;   BLOCK_NEEDS_FREE         belongs to a block libclosure malloc'd, and ours
+;;;                            comes from CFFI.  Leaving it clear is what makes
+;;;                            _Block_release on our own storage a no-op --
+;;;                            libclosure returns early rather than calling the
+;;;                            dispose helper and free()ing a pointer it does
+;;;                            not own.  Its copies get the flag from
+;;;                            _Block_copy, which is how their disposal is
+;;;                            libclosure's business and their bookkeeping ours.
 ;;;   BLOCK_USE_STRET          left clear even for a block that does return a
 ;;;                            structure indirectly.  Its one consumer is
 ;;;                            imp_implementationWithBlock, which this library
@@ -96,11 +113,12 @@ literal -- BUILD-BLOCK-CALLER needs it and there should be one source of truth."
 
 Stack rather than global, and the difference is a safety property rather than a
 formality.  _Block_copy on a global block returns the same pointer, so the
-storage must outlive every holder and freeing it while something holds it is a
-jump through a freed invoke field.  A stack block makes an escaping copy land in
-memory Cocoa owns and frees, carrying the id with it -- so after
-FREE-OBJC-BLOCK, invoking that copy is a table miss that gets reported, not a
-crash.  BLOCK_NEEDS_FREE is deliberately not set either, which makes a stray
+storage would have to outlive every holder and freeing it while something holds
+it would be a jump through a freed invoke field.  A stack block makes an
+escaping copy land in memory libclosure owns and frees, carrying the id with it
+-- and, because the copy helper runs on the way, carrying a reference to the
+closure too.  That is what makes FREE-OBJC-BLOCK safe on a block that has
+escaped.  BLOCK_NEEDS_FREE is deliberately not set either, which makes a stray
 _Block_release on our own storage a documented no-op."
   (or *stack-block-isa*
       (setf *stack-block-isa*
@@ -208,26 +226,68 @@ callers describe the signature the way it reads in C."
        :caller (build-block-caller result-node (cons :block arg-nodes)
                                    (block-invoke-offset))))))
 
+;;; The copy and dispose helpers ---------------------------------------------
+;;;
+;;; There are exactly two in the process, shared by every descriptor, because
+;;; neither of them depends on the block's signature.  Together they are what
+;;; makes an escaped block safe to free: libclosure tells us when it has made a
+;;; copy and when it has finally destroyed one, and the closure stays registered
+;;; in between.
+;;;
+;;; Only the FIRST copy calls the copy helper.  _Block_copy on an already-heap
+;;; block just bumps libclosure's own refcount and returns the same pointer, and
+;;; the matching releases run that count back down before one dispose call
+;;; arrives.  So these count allocations, one dispose per copy helper call, and
+;;; the two schemes nest rather than fight.
+
+(defvar *block-copy-helper* nil)
+(defvar *block-dispose-helper* nil)
+
+(defun ensure-block-helpers ()
+  "Build the copy and dispose helpers on first use; return them.
+
+Rooted in these variables forever, for the reason *BLOCK-MACHINERY* is: SBCL
+recycles a callable's trampoline once the callable is garbage, and every
+descriptor in the process points at these two."
+  (unless *block-copy-helper*
+    (setf *block-copy-helper*
+          (build-block-helper 2 (lambda (result-sap destination source)
+                                  (declare (ignore result-sap source))
+                                  ;; The id was memmove'd into the copy already;
+                                  ;; both ends carry it, and DESTINATION is the
+                                  ;; one that will outlive this call.
+                                  (retain-block-id (block-id-at destination))))
+          *block-dispose-helper*
+          (build-block-helper 1 (lambda (result-sap block)
+                                  (declare (ignore result-sap))
+                                  (release-block-id (block-id-at block))))))
+  (values *block-copy-helper* *block-dispose-helper*))
+
 (defun make-block-descriptor (signature)
   "Allocate the descriptor for a signature.  Shared by every block of that shape.
 
-Always the full four fields and always zeroed, whatever the flags say.
+Always the full six fields and always zeroed, whatever the flags say.
 _Block_signature computes the signature field's offset from the flags, so a
 descriptor shorter than the flags imply is a read past the allocation -- making
 the allocation unconditionally full makes that class of bug impossible rather
 than merely untested."
-  (let ((descriptor (cffi:foreign-alloc :uint8
-                                        :count (cffi:foreign-type-size
-                                                '(:struct block-descriptor))
-                                        :initial-element 0)))
-    (setf (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'reserved) 0
-          (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'size)
-          (block-literal-size)
-          (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'signature)
-          (cffi:foreign-string-alloc signature :encoding :utf-8)
-          (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'layout)
-          (cffi:null-pointer))
-    descriptor))
+  (multiple-value-bind (copy dispose) (ensure-block-helpers)
+    (let ((descriptor (cffi:foreign-alloc :uint8
+                                          :count (cffi:foreign-type-size
+                                                  '(:struct block-descriptor))
+                                          :initial-element 0)))
+      (setf (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'reserved) 0
+            (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'size)
+            (block-literal-size)
+            (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'copy)
+            (pointer-of copy)
+            (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'dispose)
+            (pointer-of dispose)
+            (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'signature)
+            (cffi:foreign-string-alloc signature :encoding :utf-8)
+            (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'layout)
+            (cffi:null-pointer))
+      descriptor)))
 
 ;;; Block types --------------------------------------------------------------
 
@@ -302,19 +362,57 @@ remember that a block that escapes must not then be freed.")
     (format stream "~A ~A" (objc-block-signature block)
             (if (objc-block-pointer block) "live" "freed"))))
 
+(defstruct (block-record (:constructor %make-block-record (block function)))
+  "One live block id: the wrapper, the Lisp closure, and how many holders there
+are.
+
+The count starts at one, for the OBJC-BLOCK the caller was given.  _Block_copy
+adds one through the copy helper and libclosure's own free subtracts it again
+through the dispose helper, so the closure outlives FREE-OBJC-BLOCK exactly as
+long as something Cocoa holds still needs it."
+  block
+  function
+  (refcount 1))
+
 (defvar *block-records* (make-hash-table :test 'eql)
-  "Block id -> (CONS OBJC-BLOCK FUNCTION).
+  "Block id -> BLOCK-RECORD.
 
 A strong reference to the Lisp closure, deliberately.  There are no finalizers
 anywhere in this library -- SBCL runs them on whatever thread triggered the
-collection, and this one would have to reach foreign memory -- so a block is
-freed explicitly, or by WITH-OBJC-BLOCK on unwind.")
+collection, and this one would have to reach foreign memory -- so an entry
+leaves when its last holder does, and that is what the refcount is counting.")
 
 (defvar *block-id-counter* 0
-  "Monotonic, and never reset -- not even on image restore.  Reusing an id would
-turn a use-after-free from a reported miss into a call to the wrong closure.")
+  "Monotonic, and never reset -- not even on image restore.
+
+Reusing an id would turn the one remaining use-after-free -- invoking a copy of
+a block whose storage libclosure has already disposed of -- from a reported miss
+into a call to whatever closure was allocated that id next.")
 
 (defvar *block-lock* (bt:make-lock "objc block registry"))
+
+(defun block-id-at (pointer)
+  "The id embedded in the block literal at POINTER."
+  (cffi:mem-ref (pointer-of pointer) :uint64
+                (cffi:foreign-slot-offset '(:struct block-literal) 'block-id)))
+
+(defun retain-block-id (id)
+  "Note that one more holder exists for ID.  Called by the copy helper."
+  (bt:with-lock-held (*block-lock*)
+    (let ((record (gethash id *block-records*)))
+      (when record (incf (block-record-refcount record))))))
+
+(defun release-block-id (id)
+  "Note that one holder of ID is gone, and forget the closure at the last one.
+
+Called by the dispose helper, and by FREE-OBJC-BLOCK for the creator's own
+reference.  The record is dropped only at zero, which is what lets an escaped
+block outlive the FREE-OBJC-BLOCK that would once have stranded it."
+  (bt:with-lock-held (*block-lock*)
+    (let ((record (gethash id *block-records*)))
+      (when (and record (<= (decf (block-record-refcount record)) 0))
+        (remhash id *block-records*)
+        t))))
 
 (defun block-function-for-sap (block-sap)
   "The Lisp closure a block invocation belongs to.
@@ -324,12 +422,13 @@ is released, because a completion handler that frees a block -- its own or
 another's -- would otherwise deadlock against its own invocation."
   (let* ((id (cffi:mem-ref (pointer-of block-sap) :uint64
                            (cffi:foreign-slot-offset '(:struct block-literal) 'block-id)))
-         (entry (bt:with-lock-held (*block-lock*) (gethash id *block-records*))))
-    (unless entry
-      (error "Objective-C block ~D was invoked after it was freed.  ~
-              If a block escapes -- anything asynchronous copies it -- do not ~
-              free it; use WITH-OBJC-BLOCK only for one that does not." id))
-    (cdr entry)))
+         (record (bt:with-lock-held (*block-lock*) (gethash id *block-records*))))
+    (unless record
+      (error "Objective-C block ~D was invoked after its last holder let go.~%~
+              Every copy libclosure made has been disposed of and the original ~
+              was freed, so the closure is gone.  Reaching a block in that ~
+              state means something kept the raw pointer rather than a copy." id))
+    (block-record-function record)))
 
 ;;; The public API -----------------------------------------------------------
 
@@ -348,10 +447,11 @@ The result can be passed straight to INVOKE wherever a block is wanted:
       (objc:invoke array \"enumerateObjectsUsingBlock:\" b))
 
 The block must be freed with FREE-OBJC-BLOCK, or created with WITH-OBJC-BLOCK,
-which frees it on unwind.  The rule for which to use is about escape, not
-scope: an API that keeps the block past the call -- anything asynchronous, which
-copies it -- must not have it freed underneath, so give those a block you free
-when the work is done.
+which frees it on unwind.  Freeing one an API has kept is safe: anything that
+keeps a block copies it, the copy holds its own reference to the closure, and
+the closure goes when the last holder does.  So the choice between the two is
+about the ordinary question of when the storage is no longer wanted, and not
+about escape.
 
 Compiling the invoke function happens once per distinct signature, so the second
 block of a shape costs an allocation and a hash-table entry."
@@ -364,7 +464,7 @@ block of a shape costs an allocation and a hash-table entry."
       (setf (cffi:foreign-slot-value literal '(:struct block-literal) 'isa)
             (stack-block-isa)
             (cffi:foreign-slot-value literal '(:struct block-literal) 'flags)
-            +block-has-signature+
+            (logior +block-has-signature+ +block-has-copy-dispose+)
             (cffi:foreign-slot-value literal '(:struct block-literal) 'reserved)
             0
             (cffi:foreign-slot-value literal '(:struct block-literal) 'invoke-ptr)
@@ -377,25 +477,34 @@ block of a shape costs an allocation and a hash-table entry."
           (setf record (%make-objc-block
                         :id id :pointer literal
                         :signature (block-type-encoding result-node arg-nodes)))
-          (setf (gethash id *block-records*) (cons record function))))
+          ;; Refcount one: this OBJC-BLOCK.  Every copy libclosure makes adds
+          ;; another through the copy helper.
+          (setf (gethash id *block-records*) (%make-block-record record function))))
       record)))
 
 (defun free-objc-block (block)
-  "Free BLOCK and forget its closure.  Idempotent; returns NIL.
+  "Free BLOCK's storage and drop its reference to the closure.  Idempotent;
+returns NIL.
 
-Freeing a block something still holds is the one hazard here, and it is reduced
-rather than eliminated: a copy Cocoa made lives in Cocoa's own memory and merely
-reports a miss when invoked, but a holder of this exact pointer would be reading
-freed memory.  If the block escaped, do not free it."
+Safe to call on a block something else has kept.  Anything that keeps a block
+copies it -- that is what _Block_copy is for and every asynchronous API does it
+-- and the copy took its own reference through the copy helper, so what this
+releases is only the one this OBJC-BLOCK held.  The closure survives until
+libclosure disposes of the last copy.
+
+The remaining way to be wrong is to hand a foreign API this exact pointer and
+have it keep the pointer rather than a copy.  Nothing in Cocoa does that."
   (check-type block objc-block)
   (let ((pointer nil))
     (bt:with-lock-held (*block-lock*)
       (when (objc-block-pointer block)
         (setf pointer (objc-block-pointer block)
-              (objc-block-pointer block) nil)
-        (remhash (objc-block-id block) *block-records*)))
-    ;; Outside the lock: a free must not stall another thread's invocation.
-    (when pointer (cffi:foreign-free pointer)))
+              (objc-block-pointer block) nil)))
+    (when pointer
+      ;; Both outside the lock: RELEASE-BLOCK-ID takes it itself, and a free
+      ;; must not stall another thread's invocation.
+      (release-block-id (objc-block-id block))
+      (cffi:foreign-free pointer)))
   nil)
 
 (defun objc-block-live-p (block)
@@ -407,9 +516,11 @@ an image dump."
 (defmacro with-objc-block ((var type function) &body body)
   "Bind VAR to a block for the extent of BODY and free it on unwind.
 
-The right shape when the block does not outlive the call -- an enumeration, a
-comparator, a dispatch_sync.  Anything asynchronous outlives it; see
-MAKE-OBJC-BLOCK."
+Usually what you want, including for asynchronous work: a callee that keeps the
+block has copied it by the time BODY returns, and the copy holds the closure
+until libclosure disposes of it.  Reach for MAKE-OBJC-BLOCK and an explicit
+FREE-OBJC-BLOCK when the storage itself has to outlive the form -- when the same
+block is handed out repeatedly, say."
   `(let ((,var (make-objc-block ,type ,function)))
      (unwind-protect (progn ,@body)
        (free-objc-block ,var))))
@@ -476,20 +587,28 @@ BLOCK is an OBJC-BLOCK, a raw pointer, or anything OBJC-OBJECT-POINTER accepts."
 (defun clear-block-caches ()
   "Nothing block-related survives SAVE-LISP-AND-DIE.
 
-The invoke functions are alien callables, and the descriptors and signature
-strings are malloc'd; all of them are dangling in a restored image.  The
-machinery is dropped so the next block of a signature rebuilds it, and every
-live record is marked freed so a wrapper the program still holds answers
+The invoke functions and the two helpers are alien callables, and the
+descriptors and signature strings are malloc'd; all of them are dangling in a
+restored image.  The machinery is dropped so the next block of a signature
+rebuilds it, the helpers are dropped so the next descriptor rebuilds them, and
+every live record is marked freed so a wrapper the program still holds answers
 OBJC-BLOCK-LIVE-P NIL instead of handing out a stale pointer.
+
+The records go whatever their refcounts say.  A block that escaped into Cocoa
+before the dump is not saved by having a reference outstanding: the copy Cocoa
+holds points at an invoke function that no longer exists, so the entry it is
+counting is worth nothing, and the alternative is a table that never empties.
 
 The id counter is deliberately not reset: ids must stay unique across a restore
 for the same reason they are not reused within a run."
   (bt:with-lock-held (*block-machinery-lock*)
     (clrhash *block-machinery*))
+  (setf *block-copy-helper* nil
+        *block-dispose-helper* nil)
   (bt:with-lock-held (*block-lock*)
-    (maphash (lambda (id entry)
+    (maphash (lambda (id record)
                (declare (ignore id))
-               (setf (objc-block-pointer (car entry)) nil))
+               (setf (objc-block-pointer (block-record-block record)) nil))
              *block-records*)
     (clrhash *block-records*)))
 

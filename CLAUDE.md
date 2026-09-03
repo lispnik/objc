@@ -157,9 +157,26 @@ Each of these is a bug that actually happened here.
   a block it keeps — returns a *different* address, and the copy would then find
   nothing. The id is inside the struct, so the copy carries it. Measured: an
   original and its copy reached the same closure from two different addresses.
-  Ids are never reused, not even across an image restore, so a block invoked
-  after `free-objc-block` is a reported miss rather than a call into whatever
-  closure was allocated that id next.
+  Ids are never reused, not even across an image restore, so reaching a retired
+  entry is a reported miss rather than a call into whatever closure was
+  allocated that id next.
+
+- **The copy and dispose helpers count allocations, not retains.** `_Block_copy`
+  on a block already on the heap bumps libclosure's own refcount and returns the
+  *same pointer* without calling the copy helper, and the matching releases run
+  that count back down before one dispose call arrives. So the two schemes nest:
+  one dispose per copy-helper call. Counting every `_Block_copy` instead would
+  leak every escaped closure, silently and forever, and nothing would notice.
+  Measured and asserted, because it is not what the flag name suggests.
+
+- **`BLOCK_HAS_COPY_DISPOSE` moves where the signature lives.** `_Block_signature`
+  walks past `Block_descriptor_1`, then past `Block_descriptor_2` *if and only if*
+  that flag is set. Setting the flag without widening the descriptor reads two
+  fields past the allocation; widening it without the flag puts the signature
+  sixteen bytes from where libclosure looks. The descriptor is allocated in full
+  and zeroed either way, and a test asserts the offsets against a real
+  `_Block_signature` call — which is the only check that proves flags and layout
+  agree.
 
 - **A structure result may only leave `unmarshal-result` as a value copied OUT
   of the buffer.** The buffer is `%invoke`'s own `with-foreign-object` and is

@@ -502,3 +502,24 @@ of the very loop meant to service the item."
         (when item (ignore-errors (objc/examples::remove-status-item item)))
         ;; Leave the process as the other tests expect to find it.
         (ignore-errors (objc.runloop:set-activation-policy 0))))))
+
+(test the-menu-bar-app-uses-appkits-own-loop-and-can-be-stopped
+  "run-status-item must use -[NSApplication run], not PUMP-EVENTS.
+
+The reason clicking the item did nothing even after the activation policy was
+fixed: a status item's menu is tracked in AppKit's own nested run loop mode
+while the mouse is down, and PUMP-EVENTS dequeues in kCFRunLoopDefaultMode
+only.  That keeps a window responsive and starves menu tracking -- the item
+draws, the click opens nothing.  -run pumps every mode AppKit needs.
+
+Checked through the watchdog, which is the same -stop: path the Quit item uses:
+the loop must be entered (so this takes about as long as the timeout) and it
+must come back promptly, which needs the dummy event posted behind -stop:.
+Without that event an idle loop never notices the flag and this hangs."
+  (with-gui
+    (let ((start (get-internal-real-time)))
+      (is-true (objc/examples:run-status-item :title "T" :timeout 2))
+      (let ((elapsed (/ (float (- (get-internal-real-time) start))
+                        internal-time-units-per-second)))
+        (is (< 1.5 elapsed 10d0)
+            "entered -run and -stop: returned from it, in ~,1Fs" elapsed)))))

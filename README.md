@@ -390,6 +390,27 @@ loop as the canvas, on a control instead of a view.
 running a loop, so you can wire it into your own; `run-status-item` is the
 turnkey version, with an optional `:timeout` watchdog.
 
+Two things about it are not obvious, and each one on its own makes the item look
+broken — it appears in the menu bar and clicking it does nothing at all:
+
+- **The application must be an *accessory*.** `shared-application` defaults to
+  `Regular`, which is right for a program that owns windows. A `Regular`
+  application with no window and no activation does not get its status-item menu
+  tracked. `make-status-item` sets `NSApplicationActivationPolicyAccessory`,
+  which is what a menu-bar-only app is.
+- **It must use AppKit's own loop, not `pump-events`.** A status item's menu is
+  tracked in AppKit's own nested run loop mode while the mouse is down;
+  `pump-events` dequeues in `kCFRunLoopDefaultMode` only, which is exactly right
+  for keeping a *window* responsive from a REPL and starves menu tracking.
+  `run-status-item` calls `-[NSApplication run]` and the Quit action calls
+  `-stop:` — with a dummy event posted behind it, since `-stop:` is only noticed
+  when the loop next finishes an event and an idle loop would otherwise sit
+  there.
+
+The consequence is that `run-status-item` does not return until the item quits,
+so unlike the Vision example there is no REPL interaction while it runs. That is
+no loss for a menu-bar app, and `:timeout` means a session cannot get stuck.
+
 ## Testing
 
 ```

@@ -60,9 +60,38 @@ method ran."
 (objc:define-objc-method ("quit:" :void)
     ((self status-controller) (sender objc:objc-object-pointer))
   (declare (ignore sender))
-  (setf *status-running* nil))
+  (setf *status-running* nil)
+  (stop-the-application))
 
 ;;; Building and running ------------------------------------------------------
+
+(defun stop-the-application ()
+  "End -[NSApplication run].
+
+-stop: alone is not enough: it sets a flag the loop notices only when it next
+finishes processing an event, so a loop sitting idle waiting for input can stay
+there indefinitely -- which reads as a hang.  Posting a dummy application-defined
+event behind it guarantees there is an event to finish, so the loop wakes,
+notices the flag, and returns.  Safe from a menu action and from another thread's
+performSelectorOnMainThread:."
+  (let ((app (objc:invoke "NSApplication" "sharedApplication")))
+    (objc:invoke app "stop:" (cffi:null-pointer))
+    (objc:invoke app "postEvent:atStart:"
+                 (objc:invoke "NSEvent"
+                              "otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"
+                              15          ; NSEventTypeApplicationDefined
+                              #(0d0 0d0)  ; NSPoint, by value
+                              0 0d0 0 (cffi:null-pointer) 0 0 0)
+                 t))
+  (values))
+
+(objc:define-objc-method ("stopTheApplication:" :void)
+    ((self status-controller) (sender objc:objc-object-pointer))
+  ;; A selector the watchdog thread can send to the main thread; calling
+  ;; STOP-THE-APPLICATION from the watchdog itself would post the event from
+  ;; the wrong thread.
+  (declare (ignore sender))
+  (stop-the-application))
 
 (defun %menu-item (title action target)
   "An NSMenuItem titled TITLE whose action selector ACTION is sent to TARGET."
@@ -125,20 +154,41 @@ RUN-STATUS-ITEM removes it for you."
 
 Run it from a plain sbcl REPL (AppKit needs thread 1).  Click the item in the
 macOS menu bar: Greet prints from a Lisp method, Increment and Reset change the
-item's title, Quit ends the loop and hands the REPL back.  TIMEOUT in seconds is
-a watchdog if you would rather not reach for the mouse.  Returns T."
+item's title, Quit ends the loop and hands the REPL back.  TIMEOUT in seconds
+arranges for the loop to stop anyway, so a session cannot be stuck.  Returns T.
+
+This uses AppKit's own loop -- -[NSApplication run] -- and not PUMP-EVENTS, and
+that is the difference between a menu that works and one that does nothing when
+clicked.  A status item's menu is tracked in AppKit's own nested run loop mode
+while the mouse is down.  PUMP-EVENTS dequeues in kCFRunLoopDefaultMode only,
+which is right for keeping a window responsive from a REPL, and starves menu
+tracking: the item draws, the click opens nothing, and no action is ever sent.
+-run pumps every mode AppKit needs, at the cost of not returning until
+something stops it -- which for a menu-bar app is no cost at all, since there
+is no REPL interaction to preserve while it runs.  The Quit action calls -stop:
+(and posts an event behind it, so the stop is noticed promptly)."
   (multiple-value-bind (item controller) (make-status-item :title title)
-    (declare (ignore controller))
     (setf *status-running* t)
-    (let ((deadline (when timeout
-                      (+ (get-internal-real-time)
-                         (* timeout internal-time-units-per-second)))))
+    (let ((app (objc.runloop:shared-application))
+          (target (objc:objc-object-pointer controller)))
+      (when timeout
+        ;; Stopping has to happen on the main thread -- both the -stop: and the
+        ;; event posted behind it -- so the watchdog sends a selector there
+        ;; rather than doing it itself.
+        (bt:make-thread
+         (lambda ()
+           (loop repeat (ceiling (* 10 timeout))
+                 while *status-running*
+                 do (sleep 0.1))
+           (when *status-running*
+             (setf *status-running* nil)
+             (ignore-errors
+              (objc:invoke target "performSelectorOnMainThread:withObject:waitUntilDone:"
+                           (objc:coerce-to-selector "stopTheApplication:") nil nil))))
+         :name "objc status item watchdog"))
       (unwind-protect
-           (objc.runloop:pump-events
-            :seconds 0.05d0
-            :until (lambda ()
-                     (or (not *status-running*)
-                         (and deadline (> (get-internal-real-time) deadline)))))
+           (objc:invoke app "run")
+        (setf *status-running* nil)
         (remove-status-item item)
         (objc.runloop:restore-frontmost)))
     t))

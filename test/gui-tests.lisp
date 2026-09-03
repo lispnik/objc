@@ -366,26 +366,41 @@ to find.  RUN-UNTIL-CLOSED restores whoever had the keyboard."
 (test canvas-renders-its-lisp-drawing-offscreen
   "-drawRect: on the Lisp canvas view fires and paints.
 
-Rendered offscreen into an NSBitmapImageRep -- no window -- so it exercises the
-struct-by-value -drawRect: path and the NSColor/NSBezierPath primitives without
-anyone having to look.  Two different draw functions must encode to different
-PNGs: a view that never really drew would hand back the same empty bitmap for
-both."
-  (with-gui
-    (flet ((render-length (draw)
-             (let ((objc/examples:*canvas-draw* draw))
-               (let* ((view (objc/examples::make-view "LispCanvasView" #(0d0 0d0 96d0 96d0)))
-                      (bounds (objc:invoke view "bounds"))
-                      (rep (objc:invoke view "bitmapImageRepForCachingDisplayInRect:" bounds)))
-                 (objc:invoke view "cacheDisplayInRect:toBitmapImageRep:" bounds rep)
-                 (objc:invoke
-                  (objc:invoke rep "representationUsingType:properties:"
-                               4 (objc:invoke "NSDictionary" "dictionary"))  ; 4 = PNG
-                  "length")))))
-      (let ((rings (render-length 'objc/examples:draw-default))
-            (solid (render-length (lambda (w h)
-                                    (objc/examples:set-color 0 0 0)
-                                    (objc/examples:fill-rect 0 0 w h)))))
-        (is (and (integerp rings) (plusp rings)) "the canvas produced a PNG")
-        (is (/= rings solid)
-            "the rings scene and a flat fill must not encode identically")))))
+Gated on the runtime alone, not on a window server: rendering a view into an
+NSBitmapImageRep is Core Graphics, not a display, so it is meant to work on a
+headless CI runner where the windowed tests skip.  If the bitmap context cannot
+be made after all -- a null rep -- the test skips rather than fails, so a runner
+that surprises us costs a skip, not a red.
+
+Two different draw functions must encode to different PNGs; a view that never
+really drew would hand back the same empty bitmap for both.  That is what proves
+the struct-by-value -drawRect: path and the NSColor/NSBezierPath primitives ran,
+without anyone having to look."
+  (cond
+    ((not (ensure-initialized)) (skip "Objective-C runtime not available"))
+    (t
+     (flet ((render-length (draw)
+              (let ((objc/examples:*canvas-draw* draw))
+                (let* ((view (objc/examples::make-view "LispCanvasView" #(0d0 0d0 96d0 96d0)))
+                       (bounds (objc:invoke view "bounds"))
+                       (rep (objc:invoke view "bitmapImageRepForCachingDisplayInRect:" bounds))
+                       (rep-ptr (if (cffi:pointerp rep) rep (objc:objc-object-pointer rep))))
+                  (if (cffi:null-pointer-p rep-ptr)
+                      nil                       ; no offscreen context here
+                      (progn
+                        (objc:invoke view "cacheDisplayInRect:toBitmapImageRep:" bounds rep)
+                        (objc:invoke
+                         (objc:invoke rep "representationUsingType:properties:"
+                                      4 (objc:invoke "NSDictionary" "dictionary"))  ; 4 = PNG
+                         "length")))))))
+       (let ((rings (render-length 'objc/examples:draw-default))
+             (solid (render-length (lambda (w h)
+                                     (objc/examples:set-color 0 0 0)
+                                     (objc/examples:fill-rect 0 0 w h)))))
+         (cond
+           ((not (and (integerp rings) (integerp solid)))
+            (skip "no offscreen bitmap context on this runner"))
+           (t
+            (is (plusp rings) "the canvas produced a PNG")
+            (is (/= rings solid)
+                "the rings scene and a flat fill must not encode identically"))))))))

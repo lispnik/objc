@@ -191,6 +191,13 @@ Each of these is a bug that actually happened here.
   conversion at either end. Found by an example, not by the suite, which had
   covered only the two directions that worked.
 
+- **A method returning `unsigned char *` comes back as a Lisp string.** `*` is
+  the encoding for a C string and there is nothing else it could be, so
+  `-[NSBitmapImageRep bitmapData]` — a pointer to raw pixels — converts, and
+  because the buffer starts with a zero byte you get `""` rather than an error.
+  `invoke-into` with `:pointer` is exactly what the manual provides for this,
+  and `examples/shader.lisp` is the only thing here that needs it.
+
 - **A structure result may only leave `unmarshal-result` as a value copied OUT
   of the buffer.** The buffer is `%invoke`'s own `with-foreign-object` and is
   gone the moment the call returns, so returning a pointer into it is a
@@ -413,7 +420,7 @@ Each of these is a bug that actually happened here.
 
 ## The examples
 
-`examples/` is twenty-five files and half the repository. Each headless one has a
+`examples/` is twenty-six files and half the repository. Each headless one has a
 `test-<thing>` entry point returning a plist of what happened, asserted by the
 `examples` suite in `test/example-tests.lisp`; the windowed ones are in
 `gui-tests.lisp` and skip without a window server.
@@ -443,6 +450,7 @@ those are the ones not to rewrite casually:
 | `metal` | GPU compute | FP traps around a plain C call; where a GPU loses |
 | `scene-kit` | 3D rendered offscreen | a third struct-by-value shape, and no window |
 | `audio` | sound from a Lisp closure | a real-time thread, and offline vs live testing |
+| `shader` | a live shader playground | `-bitmapData` needs `invoke-into :pointer` |
 
 Two of today's library bugs were found by an example rather than by the suite —
 the BOOL argument path by `predicates`, the re-arm ordering by `file-watcher` —

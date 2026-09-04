@@ -143,8 +143,21 @@ accept.  The caller frees it."
           (cffi:mem-aref buffer :uint64 2) depth)
     buffer))
 
+(defun dimensions (extent)
+  "EXTENT as a list of exactly three, padding with ones.
+
+An integer means a line of threads, (w h) a rectangle, (w h d) a box -- which is
+what MTLSize is, and padding here rather than at each call site keeps RUN-KERNEL
+readable."
+  (let ((list (if (listp extent) extent (list extent))))
+    (list (or (first list) 1) (or (second list) 1) (or (third list) 1))))
+
 (defun run-kernel (pipeline buffers count &key (threads-per-group 32))
   "Dispatch PIPELINE over COUNT elements with BUFFERS bound in order.
+
+COUNT is an integer for a one-dimensional grid, or a list of two or three for a
+grid with shape -- (WIDTH HEIGHT) is what an image wants, one thread per pixel.
+THREADS-PER-GROUP follows the same convention.
 
 Blocks until the GPU has finished, which is what -waitUntilCompleted is for and
 what makes this usable from a REPL at all."
@@ -154,10 +167,13 @@ what makes this usable from a REPL at all."
         (let* ((queue (objc:invoke device "newCommandQueue"))
                (command-buffer (objc:invoke queue "commandBuffer"))
                (encoder (objc:invoke command-buffer "computeCommandEncoder"))
-               (group (min threads-per-group
-                           (objc:invoke pipeline "maxTotalThreadsPerThreadgroup")))
-               (grid-size (mtl-size count))
-               (group-size (mtl-size group)))
+               (maximum (objc:invoke pipeline "maxTotalThreadsPerThreadgroup"))
+               (grid-size (apply #'mtl-size (dimensions count)))
+               (group-size (apply #'mtl-size
+                                  (let ((wanted (dimensions threads-per-group)))
+                                    (if (<= (reduce #'* wanted) maximum)
+                                        wanted
+                                        (list (min (first wanted) maximum) 1 1))))))
           (unwind-protect
                (progn
                  (objc:invoke encoder "setComputePipelineState:" pipeline)

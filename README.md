@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-815 checks, green on a clean GitHub runner as well as locally. Behaviour the
+820 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -386,6 +386,9 @@ unchanged:
   PNG with no window. See [A 3D scene, headless](#a-3d-scene-headless).
 - `examples/audio.lisp` — sound synthesised a sample at a time by a Lisp
   closure, offline or through the speakers. See [Sound](#sound).
+- `examples/shader.lisp` — a shader playground: one expression per pixel,
+  rendered to a PNG or animated in a window. See
+  [A shader playground](#a-shader-playground).
 
 ### Running them
 
@@ -891,13 +894,41 @@ One measured surprise: an instrument of amplitude 0.5 comes back peaking at
 through, which is consistent with the equal-power pan law a mono source gets
 across a stereo output. The number is measured; that explanation is inference.
 
+### A shader playground
+
+```lisp
+(shader-file "float3(uv, 0.5 + 0.5 * sin(time))" #p"/tmp/a.png")
+(run-shader "float3(fract(uv * 8.0), abs(sin(time)))")   ; animates in a window
+(report-shader)                                          ; writes four samples
+```
+
+One expression in Metal Shading Language, evaluated once per **pixel**, with
+`uv` running 0..1 across the image and `time` in seconds, returning a colour.
+That is the whole interface, and it is the canvas's live loop with the GPU doing
+the drawing.
+
+A *compute* kernel rather than a fragment shader, which is worth saying because
+the shape is borrowed from fragment-shader toys: one thread per pixel writing
+RGBA into a buffer needs no vertices, no render pass and no drawable, and the
+same kernel then serves both the headless half that writes a PNG and can be
+tested, and the windowed half that animates.
+
+Two things it documents. The kernel's early return is load-bearing:
+`-dispatchThreads:` rounds the grid up to whole threadgroups, so threads exist
+for pixels that do not, and without it they write past the buffer — the test
+renders 37×23 against an 8×8 group for exactly that reason. And
+**`-bitmapData` returns `unsigned char *`**, which encodes identically to a C
+string, so plain `invoke` hands back a Lisp string — `""`, since the buffer
+begins with a zero byte. `invoke-into` with `:pointer` is what the manual
+provides for this, and this is the only example that needs it.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 815 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 820 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

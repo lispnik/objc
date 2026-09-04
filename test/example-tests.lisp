@@ -336,3 +336,32 @@ zero upward once each, and the last may fall past the final sample."
           "amplitude 0.5 arrives as 0.5/sqrt(2); the mixer attenuates")
       (is-true (getf result :fm-differs) "a different instrument gives a different wave")
       (is-true (getf result :wav-header) "and the WAV written from it is well formed"))))
+
+(test the-shader-example-draws-what-it-was-asked-for
+  "examples/shader.lisp compiles a one-expression Metal kernel per pixel and
+turns the result into a PNG -- a shader playground whose headless half is
+testable and whose live half animates in a window.
+
+:CORNER is the assertion with teeth.  \"float3(uv, 0.25)\" makes the pixel at
+the origin exactly (0, 0, 0.25), so its bytes are 0, 0 and 63.  That is a claim
+about one specific pixel, where everything else here would be satisfied by any
+picture at all: a shader running on transposed coordinates, or off by a row,
+would not land on it.
+
+:BOUNDS-RESPECTED renders 37x23, which is not a multiple of the 8x8 threadgroup.
+-dispatchThreads: rounds the grid up, so threads exist for pixels that do not,
+and without the kernel's early return they write past the buffer.
+
+SKIPS without a Metal device."
+  (with-runtime
+    (let ((result (objc/examples:test-shader)))
+      (if (not (getf result :available))
+          (skip "no Metal device on this machine")
+          (progn
+            (is-true (getf result :all-png) "every sample shader produced a PNG")
+            (is (equal '(64 48) (getf result :pixels)) "at the size asked for")
+            (is (equal '(0 0 63) (getf result :corner))
+                "float3(uv, 0.25) at the origin is (0, 0, 63)")
+            (is-true (getf result :animates) "and time changes the picture")
+            (is-true (getf result :bounds-respected)
+                     "a size that is not a multiple of the threadgroup is fine"))))))

@@ -64,10 +64,15 @@ jobs:
         # Without this the run is theatre: the gated test passes either way, so
         # a build that silently came out stock would be green having proved
         # nothing.  Exit non-zero rather than warn.
+        #
+        # SB-EXT:EXIT and not UIOP:QUIT, which every other step here uses: those
+        # load ocicl's runtime first and so have ASDF, while this one runs
+        # against a bare SBCL that has never heard of UIOP.  Locally the
+        # difference is invisible, because ~/.sbclrc loads it.
         run: |
-          "$SBCL_SAFEPOINT" --non-interactive \
+          "$SBCL_SAFEPOINT" --non-interactive --no-userinit --no-sysinit \
             --eval '(format t "~&version: ~A~%safepoint: ~A~%" (lisp-implementation-version) (and (member :sb-safepoint *features*) t))' \
-            --eval '(uiop:quit (if (member :sb-safepoint *features*) 0 1))'
+            --eval '(sb-ext:exit :code (if (member :sb-safepoint *features*) 0 1))'
 
       - name: Install and configure ocicl
         run: |

@@ -73,7 +73,7 @@
            #:text-pdf #:pdf-document #:pdf-text #:pdf-page-count #:pdf-page-text
            #:test-pdf-document #:report-pdf-document
            ;; Quick Look thumbnails (examples/thumbnail.lisp).
-           #:thumbnail #:write-thumbnail #:png-dimensions
+           #:thumbnail #:write-thumbnail #:png-dimensions #:thumbnailing-available-p
            #:test-thumbnail #:report-thumbnail
            ;; NSWorkspace (examples/workspace.lisp).
            #:running-applications #:frontmost-application #:application-named

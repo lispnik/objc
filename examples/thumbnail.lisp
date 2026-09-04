@@ -85,6 +85,22 @@ Works for any file type Finder can preview, which is most of them."
         (error "Quick Look could not thumbnail ~A: ~A" path failure))
       png)))
 
+(defun thumbnailing-available-p (&key (timeout 10))
+  "True when Quick Look answers on this machine at all.
+
+Not a formality.  Quick Look renders through an agent process, and whether that
+agent is there is a property of the login session rather than of this code:
+measured, it answers on a GitHub arm64 runner and never answers on the Intel
+one, where the request simply does not complete.  So the tests skip on that
+rather than fail -- the same distinction gui-tests.lisp draws for the window
+server, for the same reason.  A red build should mean the library broke."
+  (handler-case
+      (uiop:with-temporary-file (:pathname path :type "txt" :stream out)
+        (write-string "probe" out)
+        :close-stream
+        (and (thumbnail path :size 32 :timeout timeout) t))
+    (error () nil)))
+
 (defun cg-image-to-png (cg-image)
   "A CGImageRef as PNG bytes, through NSBitmapImageRep.
 
@@ -116,7 +132,11 @@ conversion, and because it is the representation that is always there."
   "Thumbnail a PDF this example generates, and check what came back is an image.
 
     (objc/examples:test-thumbnail)
-    => (:PNG T :PIXELS (185 256) :FITS-THE-BOX T :FROM-TEXT-FILE T)
+    => (:AVAILABLE T :PNG T :PIXELS (185 256) :FITS-THE-BOX T :FROM-TEXT-FILE T)
+
+:AVAILABLE is NIL and nothing else is present when Quick Look does not answer on
+this machine; see THUMBNAILING-AVAILABLE-P.  Callers should check it rather than
+assume, which is what the suite does.
 
 The PDF is written by TEXT-PDF, so this needs nothing on disk.  :PIXELS is read
 out of the PNG header rather than trusted.
@@ -127,20 +147,23 @@ BOX, not the size of the result.  A portrait page asked to fit 256 comes back
 side is what was asked for and neither side exceeds it, which is the property
 that actually holds."
   (ensure-thumbnailing)
-  (uiop:with-temporary-file (:pathname pdf :type "pdf")
-    (text-pdf "A page to make a picture of." pdf)
-    (let* ((bytes (thumbnail pdf :size 256))
-           (pixels (png-dimensions bytes))
-           (text-file-worked
-             (uiop:with-temporary-file (:pathname text :type "txt" :stream out)
-               (write-string "plain text has a thumbnail too" out)
-               :close-stream
-               (png-p (thumbnail text :size 128)))))
-      (list :png (png-p bytes)
-            :pixels pixels
-            :fits-the-box (and (= 256 (reduce #'max pixels))
-                               (<= (reduce #'min pixels) 256))
-            :from-text-file text-file-worked))))
+  (if (not (thumbnailing-available-p))
+      (list :available nil)
+      (uiop:with-temporary-file (:pathname pdf :type "pdf")
+        (text-pdf "A page to make a picture of." pdf)
+        (let* ((bytes (thumbnail pdf :size 256))
+               (pixels (png-dimensions bytes))
+               (text-file-worked
+                 (uiop:with-temporary-file (:pathname text :type "txt" :stream out)
+                   (write-string "plain text has a thumbnail too" out)
+                   :close-stream
+                   (png-p (thumbnail text :size 128)))))
+          (list :available t
+                :png (png-p bytes)
+                :pixels pixels
+                :fits-the-box (and (= 256 (reduce #'max pixels))
+                                   (<= (reduce #'min pixels) 256))
+                :from-text-file text-file-worked)))))
 
 (defun png-dimensions (bytes)
   "The (WIDTH HEIGHT) in a PNG's IHDR, which begins at byte 16."

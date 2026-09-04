@@ -245,13 +245,19 @@ not a result size, so a portrait page fits 256 by coming back 185 by 256."
   "examples/workspace.lisp queries launch services -- no window server needed,
 and nothing here changes anything.  Its side-effectful half, OPEN-URL and
 REVEAL-IN-FINDER, is deliberately not called: it would bring an application
-forward on whatever machine the suite is running on."
+forward on whatever machine the suite is running on.
+
+Deliberately NOT asserted, though the example reports both: that this process
+appears in its own -runningApplications list, and that Finder is running.  The
+first is false for a plain command-line sbcl and becomes true only once
+something registers the process as an application -- asking Quick Look for a
+thumbnail does exactly that, which is how an earlier version of this test
+passed: the thumbnail test ran first in the same image, and the assertion was
+really about test ordering.  The second needs a logged-in session, which a CI
+runner has not got.  Neither is a property of this library."
   (with-runtime
     (let ((result (objc/examples:test-workspace)))
-      (is (plusp (getf result :running)))
-      (is-true (getf result :has-finder))
-      (is-true (getf result :self-listed)
-               "this process is in the list, found by its own pid")
-      (is-true (getf result :finder-path))
-      (is-true (getf result :opens-text)
-               "something is registered to open a .txt"))))
+      (is (plusp (getf result :running)) "some applications are running")
+      (is-true (getf result :well-formed) "every entry has a real process id")
+      (is-true (getf result :finder-path) "launch services knows where Finder is")
+      (is-true (getf result :opens-text) "and what would open a .txt"))))

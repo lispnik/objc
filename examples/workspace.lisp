@@ -16,6 +16,19 @@
 ;;;; runner would do so invisibly.  They are here because they are the useful
 ;;;; part, and TEST-WORKSPACE does not call them, which is a distinction worth
 ;;;; making explicit rather than leaving to whoever reads the coverage.
+;;;;
+;;;; A PLAIN COMMAND-LINE PROCESS IS NOT AN APPLICATION, and finding that out
+;;;; cost a bad test.  -runningApplications lists applications in launch
+;;;; services' sense, and an `sbcl' started from a shell is not one: it does not
+;;;; appear in its own list.  Ask Quick Look for a thumbnail first and it does --
+;;;; that call registers the process on the way past.  Measured: NIL alone, T
+;;;; after a THUMBNAIL, six runs each way.
+;;;;
+;;;; The first version of TEST-WORKSPACE asserted that this process was listed,
+;;;; and passed -- because the thumbnail test happened to run earlier in the same
+;;;; image.  An assertion that depends on which other test ran first is worse
+;;;; than no assertion, so SELF-LISTED is now reported and not asserted, and what
+;;;; is asserted is what holds whatever else has happened.
 
 (in-package #:objc/examples)
 
@@ -122,25 +135,38 @@ Brings another application forward, so it is a poor thing to call from a test."
   "Query the desktop and return a plist.  Nothing here changes anything.
 
     (objc/examples:test-workspace)
-    => (:RUNNING 141 :HAS-FINDER T :SELF-LISTED T :FINDER-PATH #P\"/System/.../Finder.app/\"
-        :OPENS-TEXT T)
+    => (:RUNNING 139 :WELL-FORMED T :FINDER-PATH #P\"/System/.../Finder.app\"
+        :OPENS-TEXT T :SELF-LISTED NIL :FINDER-RUNNING T)
 
-:SELF-LISTED is the one worth having: this very process is in the list, found by
-its own process id, which is a stronger claim than the count being plausible."
+The first four are asserted.  They are launch-services questions and hold
+whatever else is going on: an application registered to open a .txt exists on
+every Mac, and every entry in the running list has a real process id.
+
+The last two are REPORTED AND NOT ASSERTED, and the difference is the point.
+:SELF-LISTED depends on whether this process has been registered as an
+application, which a plain sbcl has not been until something does it -- see the
+header.  :FINDER-RUNNING depends on there being a logged-in session at all, which
+a CI runner does not have.  Both are worth printing and neither is worth
+failing on."
   (ensure-workspace)
   (let* ((applications (running-applications))
-         (self (objc:invoke (objc:invoke "NSProcessInfo" "processInfo") "processIdentifier")))
+         (self (objc:invoke (objc:invoke "NSProcessInfo" "processInfo")
+                            "processIdentifier")))
     (list :running (length applications)
-          :has-finder (and (find "com.apple.finder" applications
-                                 :key (lambda (a) (getf a :bundle-identifier))
-                                 :test #'equal)
-                           t)
-          :self-listed (and (find self applications :key (lambda (a) (getf a :pid))) t)
+          :well-formed (every (lambda (application)
+                                (let ((pid (getf application :pid)))
+                                  (and (integerp pid) (plusp pid))))
+                              applications)
           :finder-path (application-named "com.apple.finder")
           :opens-text (uiop:with-temporary-file (:pathname path :type "txt" :stream out)
                         (write-string "who opens me" out)
                         :close-stream
-                        (and (application-for-file path) t)))))
+                        (and (application-for-file path) t))
+          :self-listed (and (find self applications :key (lambda (a) (getf a :pid))) t)
+          :finder-running (and (find "com.apple.finder" applications
+                                     :key (lambda (a) (getf a :bundle-identifier))
+                                     :test #'equal)
+                               t))))
 
 (defun report-workspace ()
   "Print the foreground application and a few of the running ones."

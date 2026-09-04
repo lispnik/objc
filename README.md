@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-804 checks, green on a clean GitHub runner as well as locally. Behaviour the
+815 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -382,6 +382,10 @@ unchanged:
   and the smallest example here.
 - `examples/metal.lisp` — GPU compute: a shader compiled at run time from a
   string and executed over a Lisp vector. See [Metal compute](#metal-compute).
+- `examples/scene-kit.lisp` — a 3D scene built from Lisp forms and rendered to a
+  PNG with no window. See [A 3D scene, headless](#a-3d-scene-headless).
+- `examples/audio.lisp` — sound synthesised a sample at a time by a Lisp
+  closure, offline or through the speakers. See [Sound](#sound).
 
 ### Running them
 
@@ -836,13 +840,64 @@ once the arithmetic per element covers two copies, and not before. That is a
 fact about this bridge as much as about Metal: a lower-level marshalling path
 would move the line.
 
+### A 3D scene, headless
+
+```lisp
+(report-scene-kit)          ; writes /tmp/objc-scene.png
+(render-scene (solar-scene :time 1.2) :path #p"/tmp/s.png" :width 800 :height 600)
+```
+
+`SCNRenderer` draws into an image rather than a view, so a scene graph described
+in Lisp forms — spheres, boxes, a torus, a camera, two lights — becomes a PNG
+with no window server, on a CI runner, in a script. It ships no assets: the
+picture is described where you can read it.
+
+`SCNVector3` is three `CGFloat`s, 24 bytes, passed **by value** to
+`-setPosition:`. Like `MTLSize` it isn't one of the four Cocoa structures with a
+Lisp reading, so it crosses as a pointer to a filled buffer. Three such
+structures across the examples now, which makes the rule plain: the `#(x y w h)`
+shorthand is a convenience for `NSRect`, `NSPoint`, `NSSize` and `NSRange`, and
+everything else is a buffer.
+
+### Sound
+
+```lisp
+(synthesize (sine 440) :seconds 0.5)   ; => #(0.0 0.0221 0.0442 ...)
+(write-wav (synthesize (fm 220) :seconds 2) #p"/tmp/fm.wav")
+(play (chord '(261.63 329.63 392.0)))  ; makes a noise
+```
+
+`AVAudioSourceNode` takes a block and calls it whenever the engine needs audio,
+handing it a buffer to fill — so **the block is the instrument**, and what comes
+out of the speakers is whatever a Lisp function put there. Nothing else here
+produces output that continues after the call returns.
+
+**The render block runs on a real-time audio thread**, which is the fact worth
+taking away. It has a deadline: fill the buffer before the hardware needs it or
+the listener hears a gap. A garbage collection that pauses it past that deadline
+is *audible*. A sine wave that allocates nothing is fine; it stops being fine the
+moment the instrument conses. Consing in a render block is the audio equivalent
+of consing in an interrupt handler. It is one thread, so it sits on the safe side
+of the concurrency limit above.
+
+Tested **offline** and demonstrated **live**, and the split is the point.
+`AVAudioEngine`'s manual rendering mode runs the graph as fast as it can into a
+buffer with no audio device involved, so `synthesize` is deterministic, silent
+and works on a CI runner. `play` is the same instrument through the speakers, and
+no test calls it.
+
+One measured surprise: an instrument of amplitude 0.5 comes back peaking at
+0.3536 — exactly 0.5/√2. The main mixer attenuates by that much on the way
+through, which is consistent with the equal-power pan law a mono source gets
+across a stereo output. The number is measured; that explanation is inference.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 804 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 815 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

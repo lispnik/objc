@@ -295,3 +295,44 @@ return nonsense."
                      "the same kernel source compiled once, not twice")
             (is-true (getf result :bad-kernel-reported)
                      "a kernel that will not compile reports the compiler's message"))))))
+
+(test the-scene-kit-example-renders-a-3d-scene
+  "examples/scene-kit.lisp builds a scene graph from Lisp forms and renders it
+to a PNG with no window: SCNRenderer draws into an image rather than a view.
+
+:ANIMATES is the assertion with teeth.  Two renders of the same scene at
+different times must differ, which is what says the time argument reached
+SceneKit; comparing the PNGs byte for byte is blunt and exactly right, because
+if nothing moved they are identical.
+
+SKIPS without a Metal device, which SCNRenderer requires."
+  (with-runtime
+    (let ((result (objc/examples:test-scene-kit)))
+      (if (not (getf result :available))
+          (skip "no Metal device, so no SceneKit renderer")
+          (progn
+            (is-true (getf result :png) "a PNG came out")
+            (is (equal '(480 360) (getf result :pixels)) "at the size asked for")
+            (is-true (getf result :animates) "and the scene time changed the picture")
+            (is (= 10 (getf result :nodes)) "camera, two lights, sphere, five boxes, torus"))))))
+
+(test the-audio-example-synthesises-a-waveform
+  "examples/audio.lisp fills an audio buffer from a Lisp closure -- the block is
+the instrument.  Rendered OFFLINE here, through AVAudioEngine's manual rendering
+mode, so this is deterministic, silent, and needs no sound hardware.  PLAY is
+the same instrument through the speakers and no test calls it.
+
+:ZERO-CROSSINGS is the one that checks the frequency rather than the mere
+presence of numbers: 440Hz completes 44 cycles in a tenth of a second, crossing
+zero upward once each, and the last may fall past the final sample."
+  (with-runtime
+    (let ((result (objc/examples:test-audio)))
+      (is (= 4410 (getf result :frames)) "a tenth of a second at 44.1kHz")
+      (is-true (getf result :starts-at-zero) "sin(0) is 0")
+      (is-true (getf result :in-range) "nothing clipped")
+      (is (<= 43 (getf result :zero-crossings) 44)
+          "the tone came back at the frequency it was asked for")
+      (is (< 0.35 (getf result :peak) 0.36)
+          "amplitude 0.5 arrives as 0.5/sqrt(2); the mixer attenuates")
+      (is-true (getf result :fm-differs) "a different instrument gives a different wave")
+      (is-true (getf result :wav-header) "and the WAV written from it is well formed"))))

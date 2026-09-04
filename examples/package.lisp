@@ -82,7 +82,14 @@
            ;; Metal compute (examples/metal.lisp).
            #:default-device #:device-name #:metal-available-p
            #:compile-kernel #:run-kernel #:gpu-map #:float-buffer #:buffer-floats
-           #:test-metal #:report-metal #:heavy-on-cpu))
+           #:test-metal #:report-metal #:heavy-on-cpu
+           ;; SceneKit, offscreen (examples/scene-kit.lisp).
+           #:make-scene #:add-geometry #:add-camera #:add-light #:render-scene
+           #:solar-scene #:ns-image-to-png #:set-position #:set-euler-angles
+           #:test-scene-kit #:report-scene-kit
+           ;; Audio synthesis (examples/audio.lisp).
+           #:synthesize #:play #:sine #:fm #:chord #:write-wav
+           #:make-audio-engine #:test-audio #:report-audio))
 
 (in-package #:fli)
 

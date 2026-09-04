@@ -178,8 +178,16 @@ each one deliberate:
   The manual gives it dynamic extent; ours outlives the form, which is strictly
   more permissive and cannot break conforming code.
 
-- **`define-objc-protocol` declares, it does not create.** The manual already
-  says creating protocols has been impossible since macOS 10.5.
+- **`define-objc-protocol` declares, it does not create** — following the
+  manual, whose stated reason is now stale. Creating a protocol at run time
+  became possible in macOS 10.7 with `objc_allocateProtocol` and friends, and it
+  works: verified by allocating one, registering it, and finding it again under
+  its own name. What it cannot carry is the **extended** method signatures clang
+  emits, because no runtime function records them — so anything needing those
+  rejects it. `NSXPCInterface` says so outright: *"Unable to get extended method
+  signature from Protocol data … Use of clang is required."* Which puts
+  `NSXPCConnection` out of reach here for the same reason there is no
+  `cffi-grovel` in the build.
 
 - **Driving the event loop is not in `OBJC`.** In LispWorks that is CAPI's job,
   and CAPI does not exist here, so `shared-application`, `pump-events`,

@@ -191,6 +191,18 @@ Each of these is a bug that actually happened here.
   conversion at either end. Found by an example, not by the suite, which had
   covered only the two directions that worked.
 
+- **Protocols CAN be created at run time, and it does not help with XPC.**
+  `objc_allocateProtocol` / `protocol_addMethodDescription` /
+  `objc_registerProtocol` arrived in 10.7 and work — verified. The manual's
+  claim that creating protocols is impossible dates from before that, so
+  `define-objc-protocol` declining to create is a choice rather than a
+  limitation. But a runtime-built protocol carries no **extended** method
+  signatures, since no runtime function records them, and `NSXPCInterface`
+  refuses one: *"Unable to get extended method signature from Protocol data …
+  Use of clang is required for NSXPCInterface."* It refuses by raising an
+  `NSException`, so the process dies. XPC therefore needs a C toolchain, which
+  this build does not have.
+
 - **A method returning `unsigned char *` comes back as a Lisp string.** `*` is
   the encoding for a C string and there is nothing else it could be, so
   `-[NSBitmapImageRep bitmapData]` — a pointer to raw pixels — converts, and

@@ -270,3 +270,28 @@ runner has not got.  Neither is a property of this library."
       (is-true (getf result :well-formed) "every entry has a real process id")
       (is-true (getf result :finder-path) "launch services knows where Finder is")
       (is-true (getf result :opens-text) "and what would open a .txt"))))
+
+(test the-metal-example-computes-on-the-gpu
+  "examples/metal.lisp compiles a Metal Shading Language kernel at run time and
+runs it on the GPU over data a Lisp function handed it.  The flagship: a C entry
+point, message sends, an owned-object convention, and a 24-byte structure passed
+by value, all in one pipeline.
+
+SKIPS where there is no Metal device, which a virtualised runner may not have.
+
+:BAD-KERNEL-REPORTED keeps the error path honest -- a kernel that does not
+compile has to say so, with the compiler's own message, rather than crash or
+return nonsense."
+  (with-runtime
+    (let ((result (objc/examples:test-metal)))
+      (if (not (getf result :available))
+          (skip "no Metal device on this machine")
+          (progn
+            (is-true (getf result :device) "the device has a name")
+            (is-true (getf result :squares) "x*x over eight elements")
+            (is-true (getf result :square-roots) "and sqrt over five")
+            (is-true (getf result :large) "a hundred thousand elements, all correct")
+            (is-true (getf result :cached)
+                     "the same kernel source compiled once, not twice")
+            (is-true (getf result :bad-kernel-reported)
+                     "a kernel that will not compile reports the compiler's message"))))))

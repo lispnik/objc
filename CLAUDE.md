@@ -413,7 +413,7 @@ Each of these is a bug that actually happened here.
 
 ## The examples
 
-`examples/` is twenty-two files and half the repository. Each headless one has a
+`examples/` is twenty-three files and half the repository. Each headless one has a
 `test-<thing>` entry point returning a plist of what happened, asserted by the
 `examples` suite in `test/example-tests.lisp`; the windowed ones are in
 `gui-tests.lisp` and skip without a window server.
@@ -440,6 +440,7 @@ those are the ones not to rewrite casually:
 | `pdf-document` | PDFKit without a window | writes the PDF it reads |
 | `thumbnail` | Quick Look previews | a service that is absent on some machines |
 | `workspace` | `NSWorkspace` | what is asserted vs merely reported |
+| `metal` | GPU compute | FP traps around a plain C call; where a GPU loses |
 
 Two of today's library bugs were found by an example rather than by the suite —
 the BOOL argument path by `predicates`, the re-arm ordering by `file-watcher` —

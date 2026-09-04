@@ -78,7 +78,11 @@
            ;; NSWorkspace (examples/workspace.lisp).
            #:running-applications #:frontmost-application #:application-named
            #:application-for-file #:open-url #:reveal-in-finder
-           #:test-workspace #:report-workspace))
+           #:test-workspace #:report-workspace
+           ;; Metal compute (examples/metal.lisp).
+           #:default-device #:device-name #:metal-available-p
+           #:compile-kernel #:run-kernel #:gpu-map #:float-buffer #:buffer-floats
+           #:test-metal #:report-metal #:heavy-on-cpu))
 
 (in-package #:fli)
 

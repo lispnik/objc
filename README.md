@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-798 checks, green on a clean GitHub runner as well as locally. Behaviour the
+804 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -380,6 +380,8 @@ unchanged:
   completion handler.
 - `examples/workspace.lisp` — `NSWorkspace`: what is running, what opens what,
   and the smallest example here.
+- `examples/metal.lisp` — GPU compute: a shader compiled at run time from a
+  string and executed over a Lisp vector. See [Metal compute](#metal-compute).
 
 ### Running them
 
@@ -792,13 +794,55 @@ wrap a variadic selector where you use it rather than spreading the declaration
 around. `format-string` notes the other honest thing — `cl:format` and a plain
 string is very often the better answer.
 
+### Metal compute
+
+```lisp
+(asdf:load-system :objc/examples)
+(in-package :objc/examples)
+
+(gpu-map "in[i] * in[i]" #(1 2 3 4))    ; => #(1.0 4.0 9.0 16.0)
+(gpu-map "sqrt(in[i])"   #(1 4 9 16))   ; => #(1.0 2.0 3.0 4.0)
+(report-metal)
+```
+
+A compute kernel written as a string, compiled by the system at run time, and
+run on the GPU over data a Lisp function handed it — so the GPU program is data
+another function wrote. Edit it, re-evaluate, run again.
+
+It exercises more of the bridge at once than anything else here: a plain C entry
+point, ordinary message sends, an owned-object convention, and `MTLSize` — three
+`NSUInteger`s, 24 bytes — passed **by value**.
+
+**`MTLCreateSystemDefaultDevice` signals `FLOATING-POINT-OVERFLOW`.** The bridge
+masks the traps Cocoa violates around every message send and every
+Lisp-implemented method, which is why nothing else here has to think about it —
+but this is the first example calling a graphics C function *directly*, and a
+`cffi:defcfun` is not a message send. Nothing masks it for you.
+
+And the timings, which are not the shape people expect:
+
+```
+device: Apple M3
+1000000 elements
+300 iterations each:  GPU 21ms   CPU 5501ms   262x
+one multiply each:    GPU 16ms   CPU 10ms   slower -- copying wins
+```
+
+The second line is the interesting one. For work that cheap the GPU **loses**,
+and it loses to the copying rather than the arithmetic — getting a million
+floats into a buffer and back out again is most of that time, one element at a
+time through CFFI, and the kernel itself is nearly free. A GPU pays for itself
+once the arithmetic per element covers two copies, and not before. That is a
+fact about this bridge as much as about Metal: a lower-level marshalling path
+would move the line.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 798 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 804 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

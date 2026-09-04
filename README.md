@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-839 checks, green on a clean GitHub runner as well as locally. Behaviour the
+848 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -391,6 +391,11 @@ unchanged:
   [A shader playground](#a-shader-playground).
 - `examples/map.lisp` — coordinates in, a PNG of a real place out, with no
   window. See [Maps](#maps).
+- `examples/speech.lisp` — text to audio samples, or out loud. See
+  [Speech](#speech).
+- `examples/file-coordinator.lisp` — `NSFilePresenter`, the other way to watch a
+  file, and the contrast that explains `file-watcher`. See
+  [Watching a file the other way](#watching-a-file-the-other-way).
 
 ### Running them
 
@@ -957,13 +962,66 @@ is no `:scale`, though there obviously should be: `-setScale:` exists on iOS and
 not on macOS, which the runtime settled by raising a Lisp error naming the
 selector.
 
+### Speech
+
+```lisp
+(speak-to-file "Lisp is a programmable programming language." #p"/tmp/q.wav")
+(speak-to-samples "Hello." :voice "en-GB")   ; => #(0.0 ...), 22050.0d0
+(voices :language "en")
+(say "Out loud, this time.")                 ; makes a noise
+```
+
+`AVSpeechSynthesizer` will hand the audio back instead of playing it, a buffer at
+a time through a block, so a sentence becomes a vector of samples — which
+composes with the WAV writer in the audio example.
+
+**The callback arrives on the main thread via the run loop, and there is no
+queue-taking variant** as MapKit has. So a blocking wait cannot be fixed by any
+arrangement of threads: the only way to receive the buffers is to service the run
+loop, with `objc.runloop:pump-events`. That makes this the first example needing
+the run-loop helpers for something with no window in it at all — they were
+written for AppKit, and it turns out a headless API has the same requirement.
+Measured: a semaphore wait sees zero buffers in twenty seconds; pumping sees 122
+in about one.
+
+A zero-length buffer is the only end-of-stream signal — no error argument, no
+second callback — so a reader waiting for a count it guessed will hang, and one
+stopping at the first short buffer will truncate.
+
+### Watching a file the other way
+
+```lisp
+(with-coordinated-watch (p #p"/tmp/notes.txt"
+                           (lambda (event argument)
+                             (format t "~&~S ~S~%" event argument)))
+  (pump-for 30))
+```
+
+`NSFilePresenter` registered with `NSFileCoordinator` does what the dispatch
+source in `file-watcher.lisp` does, and the pair is the point:
+
+**A vnode source watches an inode; a presenter watches a path.** Everything else
+follows. An editor's write-temporary-and-rename leaves the dispatch source
+holding a descriptor for a file that no longer has that name — which is why
+`file-watcher.lisp` needs `:rearm` — while the presenter needs nothing, and a
+write to the *replacing* file still arrives. Measured both ways.
+
+A presenter can also be told where the file *went*, be asked to accommodate a
+deletion before it happens, and make a coordinated writer wait. What it costs is
+that only coordinated writers wait for you, and most writers are not coordinated.
+Uncoordinated changes are still reported, which was not what I expected.
+
+It is also the only example whose Lisp class adopts a framework **protocol**,
+with `-presentedItemURL` and `-presentedItemOperationQueue` answered from the
+instance's own CLOS slots.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 839 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 848 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

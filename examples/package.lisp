@@ -95,7 +95,14 @@
            #:*shader* #:test-shader #:report-shader
            ;; MapKit, headless (examples/map.lisp).
            #:map-snapshot #:map-file #:map-available-p #:coordinate-region
-           #:test-map #:report-map))
+           #:test-map #:report-map
+           ;; Speech synthesis (examples/speech.lisp).
+           #:voices #:make-utterance #:find-voice #:speak-to-samples #:speak-to-file
+           #:say #:test-speech #:report-speech
+           ;; NSFileCoordinator (examples/file-coordinator.lisp).
+           #:watch-coordinated #:unwatch-coordinated #:with-coordinated-watch
+           #:coordinated-write #:file-presenter
+           #:test-file-coordinator #:report-file-coordinator))
 
 (in-package #:fli)
 

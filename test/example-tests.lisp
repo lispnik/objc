@@ -393,3 +393,49 @@ would simply hang."
                      "two coordinates give two different maps")
             (is-true (getf result :types-differ)
                      "and satellite does not look like standard"))))))
+
+(test the-speech-example-synthesises-into-a-buffer
+  "examples/speech.lisp asks AVSpeechSynthesizer for the audio instead of
+playing it, a buffer at a time through a block, so a sentence becomes samples.
+
+The mechanism is what makes it worth having: the callback arrives on the MAIN
+THREAD via the run loop, and there is no queue-taking variant as MapKit has, so
+a blocking wait cannot be made to work by any arrangement of threads.  The only
+way to receive the buffers is to pump the run loop -- which makes this the first
+example needing OBJC.RUNLOOP for something with no window in it.
+
+:LONGER-IS-LONGER has the teeth: a longer sentence must give more samples, where
+a fixed buffer, a truncation at the first chunk, or an early end-of-stream would
+all give the same length twice."
+  (with-runtime
+    (let ((result (objc/examples:test-speech)))
+      (if (zerop (getf result :voices))
+          (skip "no English voices installed")
+          (progn
+            (is (plusp (getf result :samples)) "samples came back")
+            (is (plusp (getf result :rate)) "at the voice's own sample rate")
+            (is (< 0.5 (getf result :seconds) 10) "and a plausible duration")
+            (is-true (getf result :not-silent) "the buffer is not all zeroes")
+            (is-true (getf result :longer-is-longer)
+                     "a longer sentence really did synthesise more audio")
+            (is-true (getf result :wav) "and the WAV written from it is well formed"))))))
+
+(test the-file-coordinator-example-outlives-an-atomic-save
+  "examples/file-coordinator.lisp watches a file with an NSFilePresenter, which
+is the other way to do what file-watcher.lisp does -- and the pair is the point.
+
+A vnode source watches an INODE, so an editor's write-temporary-and-rename
+leaves it holding a descriptor for a file that no longer has that name; that is
+why file-watcher.lisp needs :REARM.  A presenter watches a PATH, so the same
+save needs nothing, and :SURVIVED-ATOMIC-SAVE asserts the case that matters --
+a write to the file that replaced the original.
+
+It is also the only example whose Lisp class adopts a framework protocol, with
+the required members answered from the instance's own CLOS slots."
+  (with-runtime
+    (let ((result (objc/examples:test-file-coordinator)))
+      (is-true (getf result :saw-change) "an ordinary write was reported")
+      (is-true (getf result :survived-atomic-save)
+               "and so was a write to the file that replaced it, with no re-arming")
+      (is-true (getf result :coordinated-write-seen)
+               "a coordinated write was reported too"))))

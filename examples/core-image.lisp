@@ -115,12 +115,80 @@ is what makes the image renderable at all.  RECT crosses as a CGRect by value."
                (map 'vector (lambda (n) (float n 1d0)) rect)))
 
 (defun scale (image factor)
-  "Scale IMAGE by FACTOR.
+  "Scale IMAGE by FACTOR, resampling.
 
-CILanczosScaleTransform rather than -imageByApplyingTransform:, which would want
-a CGAffineTransform -- a struct this library has no layout for, and a filter
-avoids the question entirely."
+CILanczosScaleTransform rather than -imageByApplyingTransform: because it
+RESAMPLES -- a transform moves the sampling grid and leaves the filter chain to
+interpolate, which is not the same picture.  Use TRANSFORM below when the affine
+matrix is what you want.
+
+An earlier version of this comment said -imageByApplyingTransform: was out of
+reach because CGAffineTransform is \"a struct this library has no layout for\".
+That was wrong, and TRANSFORM exists partly to say so: the layout arrives inline
+in the method encoding -- {CGAffineTransform=dddddd} -- so RESOLVE-STRUCT-LAYOUT
+never has to look one up, and a 48-byte buffer crosses like any other structure."
   (apply-filter "CILanczosScaleTransform" "inputImage" image "inputScale" factor))
+
+;;; Affine transforms --------------------------------------------------------------
+;;;
+;;; DEFINE-OBJC-STRUCT is the library's way to name a C structure's fields, and
+;;; outside the manual's own two-float `pair' nothing here had used it.  A
+;;; CGAffineTransform is the natural case: six doubles that mean something
+;;; individually, passed by value to a real framework method.
+;;;
+;;;     | a  b  0 |
+;;;     | c  d  0 |
+;;;     | tx ty 1 |
+;;;
+;;; Note the library needs no layout table entry for this.  The encoding the
+;;; runtime hands back carries the field list inline, which is true of any
+;;; structure a framework's own method signature mentions; *STRUCT-LAYOUT-OVERRIDES*
+;;; is for the ones whose layout the runtime elides.
+
+(objc:define-objc-struct (affine-transform (:foreign-name "CGAffineTransform"))
+  (:a :double) (:b :double)
+  (:c :double) (:d :double)
+  (:tx :double) (:ty :double))
+
+(defun make-transform (&key (a 1) (b 0) (c 0) (d 1) (tx 0) (ty 0))
+  "A CGAffineTransform as a foreign buffer.  The caller frees it, or uses
+WITH-TRANSFORM."
+  (let ((buffer (cffi:foreign-alloc :double :count 6)))
+    (loop for value in (list a b c d tx ty)
+          for i from 0
+          do (setf (cffi:mem-aref buffer :double i) (float value 1d0)))
+    buffer))
+
+(defmacro with-transform ((var &rest arguments) &body body)
+  `(let ((,var (make-transform ,@arguments)))
+     (unwind-protect (locally ,@body)
+       (cffi:foreign-free ,var))))
+
+(defun transform-values (transform)
+  "The six fields of TRANSFORM as a list, in order."
+  (loop for i below 6 collect (cffi:mem-aref transform :double i)))
+
+(defun scaling (x &optional (y x))
+  (make-transform :a x :d y))
+
+(defun translation (x y)
+  (make-transform :tx x :ty y))
+
+(defun rotation (radians)
+  (let ((cosine (cos radians)) (sine (sin radians)))
+    (make-transform :a cosine :b sine :c (- sine) :d cosine)))
+
+(defun transform (image matrix)
+  "IMAGE with MATRIX applied -- moved, scaled or rotated, not resampled.
+
+    (with-transform (m :a 2 :d 2) (transform (checkerboard) m))
+
+The matrix crosses BY VALUE, forty-eight bytes of it."
+  (objc:invoke image "imageByApplyingTransform:" matrix))
+
+(defun image-extent (image)
+  "IMAGE's extent as #(x y width height), rounded."
+  (map 'vector #'round (objc:invoke image "extent")))
 
 ;;; Rendering ------------------------------------------------------------------
 
@@ -194,9 +262,14 @@ CORRECTION is \"L\", \"M\", \"Q\" or \"H\", least to most redundant."
 
     (objc/examples:test-core-image)
     => (:FILTERS 247 :FORMAT 264 :CHECKERBOARD T :BLURRED T :GRADIENT T :QR T
-        :QR-DECODES T :INFINITE-REFUSED T)
+        :QR-DECODES T :TRANSFORMED ((0 0 128 128) (10 20 64 64)) :INFINITE-REFUSED T)
 
-Two of these earn their place.  :INFINITE-REFUSED, because rendering a
+Three of these earn their place.  :TRANSFORMED passes a CGAffineTransform BY
+VALUE -- forty-eight bytes, six doubles -- and checks the extent it produces: a
+scale of two doubles the size, and a translation moves the origin without
+changing it.  Getting the matrix across wrong would give neither.
+
+  :INFINITE-REFUSED, because rendering a
 generator's output without cropping produces nothing, and this asserts we report
 that rather than returning an empty PNG.  And :QR-DECODES, because it is the
 difference between \"those are plausible PNG bytes\" and \"that is a QR code\":
@@ -218,6 +291,12 @@ here checks that a filter graph produced the picture it was asked for."
             :gradient (png-p gradient-png)
             :qr (and (png-p qr-png) (> (length qr-png) 100))
             :qr-decodes (equal (list qr-text) (read-barcodes qr-png))
+            :transformed
+            (let ((square (checkerboard :size 64 :square 8)))
+              (list (with-transform (m :a 2 :d 2)
+                      (coerce (image-extent (transform square m)) 'list))
+                    (with-transform (m :tx 10 :ty 20)
+                      (coerce (image-extent (transform square m)) 'list))))
             :infinite-refused
             (handler-case
                 (progn (render-png (apply-filter "CICheckerboardGenerator")) nil)

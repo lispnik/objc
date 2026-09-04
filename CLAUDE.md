@@ -432,7 +432,7 @@ Each of these is a bug that actually happened here.
 
 ## The examples
 
-`examples/` is thirty files and half the repository. Each headless one has a
+`examples/` is thirty-one files and half the repository. Each headless one has a
 `test-<thing>` entry point returning a plist of what happened, asserted by the
 `examples` suite in `test/example-tests.lisp`; the windowed ones are in
 `gui-tests.lisp` and skip without a window server.
@@ -467,14 +467,26 @@ those are the ones not to rewrite casually:
 | `speech` | text to samples, or out loud | a callback with NO queue variant: you must pump |
 | `file-coordinator` | `NSFilePresenter` | a presenter watches a PATH, a vnode source an INODE |
 | `collections` | a Lisp object Cocoa owns | the CLOS half: identity map, copy and dealloc hooks |
+| `browser` | asking the runtime what a class can do | the library's own introspection, put to use |
+| `undo` | `NSUndoManager` running Lisp methods | a forwarding proxy is invisible to this library |
 
 The examples were measured against the library's exported operators, and the
 gap they left was the CLOS half: `objc-object-copied`, `objc-object-destroyed`,
 `define-objc-class-method` and `standard-objc-object` had no example at all
-until `collections`. Still thin, if another is wanted: `define-objc-struct` and
-`define-objc-typedef` (only the manual's `pair`), and the introspection API —
-`can-invoke-p`, `objc-class-method-signature`, `trace-invoke` — which no example
-uses.
+until `collections`; `can-invoke-p`, `objc-class-method-signature`,
+`objc-class-name` and `trace-invoke` had none until `browser`; and
+`define-objc-struct` had only the manual's `pair` until `core-image` grew a
+`CGAffineTransform`. Still thin, if another is wanted: `define-objc-typedef`,
+`define-objc-protocol`, `objc-object-var-value`, `make-autorelease-pool` and
+`string-to-ns-string`.
+
+`undo` records a limitation worth knowing before reaching for a proxy:
+`-prepareWithInvocationTarget:` returns an object that *forwards* rather than
+implements, and this library resolves the `Method` before sending — so
+`can-invoke-p` answers NIL and `invoke` signals `no-such-method`. The same is
+true of `NSXPCConnection`'s remote object and `NSDistantObject`. That
+resolution is also what turns an unimplemented selector into a Lisp error
+rather than an `NSException` that ends the process, so it is a trade, not a bug.
 
 Two of today's library bugs were found by an example rather than by the suite —
 the BOOL argument path by `predicates`, the re-arm ordering by `file-watcher` —

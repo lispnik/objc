@@ -122,7 +122,14 @@ export list and never defined."
                         (find-class symbol nil)
                         ;; The FLI type descriptors are names, not definitions;
                         ;; they carry documentation and nothing else.
-                        (documentation symbol 'type))
+                        (documentation symbol 'type)
+                        ;; A DEFINE-OBJC-STRUCT name is a real definition too --
+                        ;; the docstring says (:struct name) is usable in INVOKE
+                        ;; and DEFINE-OBJC-METHOD -- but it lives in a table
+                        ;; rather than in any of the namespaces above, so
+                        ;; without this the test calls an exported struct type
+                        ;; a broken promise.  Found by exporting one.
+                        (gethash symbol objc::*struct-encodings*))
               (push (format nil "~A:~A" (package-name package) (symbol-name symbol))
                     missing))))))
     (is (null missing) "exported but undefined: ~{~A~^, ~}" (reverse missing))))

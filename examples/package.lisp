@@ -48,11 +48,13 @@
            #:test-url-session #:report-url-session
            ;; NaturalLanguage (examples/natural-language.lisp).
            #:language-of #:tokenize #:tag-text #:entities #:parts-of-speech #:lemmas
-           #:word-embedding #:word-distance #:neighbours #:class-selectors
+           #:word-embedding #:word-distance #:neighbours
            #:test-natural-language #:report-natural-language
            ;; Core Image (examples/core-image.lisp).
            #:apply-filter #:filter-names #:crop #:scale #:render-png #:png-p
            #:rgba #:objc-value #:ci-format #:checkerboard #:gradient #:qr-code
+           #:affine-transform #:make-transform #:with-transform #:transform-values
+           #:scaling #:translation #:rotation #:transform #:image-extent
            #:test-core-image #:report-core-image
            ;; Dispatch sources (examples/file-watcher.lisp).
            #:watch #:unwatch #:with-watch #:watcher #:watcher-live
@@ -106,7 +108,15 @@
            ;; Lisp objects in Cocoa collections (examples/collections.lisp).
            #:point #:point-x #:point-y #:make-point #:points #:point-set
            #:point-sorted #:point-keyed-table #:lifecycle-events
-           #:test-collections #:report-collections))
+           #:test-collections #:report-collections
+           ;; A class browser (examples/browser.lisp).
+           #:class-selectors #:class-chain #:describe-selector #:describe-objc-class
+           #:responds-p #:class-of-object #:with-traced
+           #:test-browser #:report-browser
+           ;; NSUndoManager (examples/undo.lisp).
+           #:counter #:counter-value #:make-counter #:set-counter #:make-undo-manager
+           #:with-undo-group #:undo #:redo #:undo-state
+           #:test-undo #:report-undo))
 
 (in-package #:fli)
 

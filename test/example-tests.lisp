@@ -97,7 +97,9 @@ that one round-trips through Vision and insists the payload matches."
       (is-true (getf result :qr-decodes)
                "Vision read the generated QR code back and the payload matched")
       (is-true (getf result :infinite-refused)
-               "rendering an uncropped generator is reported, not silently empty"))))
+               "rendering an uncropped generator is reported, not silently empty")
+      (is (equal '((0 0 128 128) (10 20 64 64)) (getf result :transformed))
+          "a CGAffineTransform crossed by value: scaled to double, then moved"))))
 
 (test the-url-session-example-runs-every-shape
   "examples/url-session.lisp is the completion-handler API, which is the shape
@@ -470,3 +472,54 @@ when the pool drains."
                "OBJC-OBJECT-DESTROYED fired when the pool drained")
       (is-true (getf result :foreign-not-equal)
                "and an object that is not one of ours is not EQUAL to one that is"))))
+
+(test the-browser-example-asks-the-runtime
+  "examples/browser.lisp is the library's own introspection put to use --
+CAN-INVOKE-P, OBJC-CLASS-METHOD-SIGNATURE, OBJC-CLASS-NAME and TRACE-INVOKE, all
+of which were exported, documented, and used by nothing but the test suite.
+
+:LENGTH-SIGNATURE has the teeth: -[NSString length] takes the two hidden
+arguments and nothing else and returns an NSUInteger, read from the runtime and
+parsed.  If the encoding parser ever drifted, this notices.
+
+The class of an NSString is deliberately not asserted exactly: a short string is
+a tagged pointer, a longer one is __NSCFString.  That it is SOME string class is
+all that is honestly true, and is itself worth knowing."
+  (with-runtime
+    (let ((result (objc/examples:test-browser)))
+      (is (equal '("NSString" "NSObject") (getf result :chain))
+          "the superclass chain, from the runtime")
+      (is-true (getf result :found-substring) "NSString has substring methods")
+      (is (equal '((objc:objc-object-pointer objc:sel) (:unsigned :long-long))
+                 (getf result :length-signature))
+          "-length takes only the hidden arguments and returns an NSUInteger")
+      (is-true (getf result :responds) "CAN-INVOKE-P says -length will work")
+      (is-true (getf result :does-not-respond) "and that a made-up selector will not")
+      (is (search "String" (getf result :class-of))
+          "the runtime's class for an NSString is some kind of string")
+      (is-true (getf result :traced) "TRACE-INVOKE reported the send"))))
+
+(test the-undo-example-lets-cocoa-run-lisp
+  "examples/undo.lisp hands NSUndoManager a Lisp target and a Lisp-implemented
+selector, so undoing is Cocoa deciding when to call our method.
+
+:VALUES is the whole assertion and the last element is the interesting one.
+Undoing after a second change must give the value from before that change, which
+only holds because -setValueFrom: registers its own inverse every time it runs --
+during an undo the manager is recording onto the redo stack, so one method serves
+set, undo and redo.  Leave the registration out and undo works exactly once.
+
+:PROXY-REFUSED records a limitation rather than hiding it.
+-prepareWithInvocationTarget: returns a forwarding proxy, which this library
+cannot send to because it resolves the Method first; that is true of every
+-forwardInvocation: proxy, not just this one."
+  (with-runtime
+    (let ((result (objc/examples:test-undo)))
+      (is (equal '(42 0 42 7 42) (getf result :values))
+          "set, undo, redo, set again, undo -- each step ran the Lisp method")
+      (is (string= "Set Value" (getf result :action-name))
+          "the group's action name came back from the manager")
+      (is-true (getf result :can-redo-after-undo)
+               "the undo registered its own inverse, so there is something to redo")
+      (is-true (getf result :proxy-refused)
+               "a forwarding proxy is invisible to CAN-INVOKE-P and INVOKE"))))

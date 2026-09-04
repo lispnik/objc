@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-855 checks, green on a clean GitHub runner as well as locally. Behaviour the
+867 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -407,6 +407,11 @@ unchanged:
 - `examples/collections.lisp` — a Lisp object Cocoa deduplicates, copies, keys a
   dictionary by and sorts. See
   [A Lisp object Cocoa owns](#a-lisp-object-cocoa-owns).
+- `examples/browser.lisp` — a class browser: point it at a class name and it
+  prints the methods and their signatures, read from the runtime. See
+  [A class browser](#a-class-browser).
+- `examples/undo.lisp` — `NSUndoManager` with Lisp methods as the undo
+  operations. See [Undo](#undo).
 
 ### Running them
 
@@ -735,6 +740,24 @@ The test round-trips: it generates a QR code with Core Image and reads it back
 with Vision, insisting the payload matches. That is the difference between
 "plausible PNG bytes" and "a QR code".
 
+It is also where `define-objc-struct` earns its place. Outside the manual's own
+two-float `pair`, nothing used it; a `CGAffineTransform` is the natural case —
+six doubles that mean something individually, passed by value to a real
+framework method:
+
+```lisp
+(with-transform (m :a 2 :d 2)
+  (image-extent (transform (checkerboard) m)))   ; => #(0 0 128 128)
+```
+
+The library needs no layout-table entry for this. The encoding the runtime hands
+back carries the field list inline — `{CGAffineTransform=dddddd}` — which is
+true of any structure a framework's own method signature mentions;
+`*struct-layout-overrides*` is for the ones whose layout the runtime elides.
+`-imageByApplyingTransform:` is not the same as scaling, either: a transform
+moves the sampling grid and leaves the chain to interpolate, where
+`CILanczosScaleTransform` resamples.
+
 ### Watching the filesystem
 
 ```lisp
@@ -1054,13 +1077,86 @@ and if they don't, an `NSSet` simply contains both and a lookup simply misses.
 Nothing raises. That's the failure the test asserts against, because it's the one
 you'd otherwise ship.
 
+### A class browser
+
+```lisp
+(describe-objc-class "NSDate")
+(describe-objc-class "CIImage" :containing "crop")
+(class-chain "NSString")                            ; => ("NSString" "NSObject")
+(describe-selector "NSString" "substringFromIndex:")
+```
+
+Every other example calls a framework; this one interrogates one. It is the
+thing you actually want at a REPL when the documentation is a header you haven't
+got: the methods a class implements, what each one takes and returns, and where
+it came from — all read from the runtime, so it is accurate for the machine
+you're on rather than for the documentation you found.
+
+It exists because the library's own introspection was the part no example used.
+`can-invoke-p`, `objc-class-method-signature`, `objc-class-name` and
+`trace-invoke` were exported, documented, and called by nothing but the test
+suite — while `natural-language.lisp` hand-rolled its own selector listing out of
+`class_copyMethodList` rather than reaching for what was already there.
+
+The division of labour is not arbitrary. `class_copyMethodList` is the only way
+to *enumerate*, and the library does not wrap it — nothing in the LispWorks
+manual does either, so the raw call stays here, in an example.
+`objc-class-method-signature` answers the harder question, and answers it
+parsed: given a class and a selector, what does the call look like? The argument
+list always starts with the receiver and the selector, which is the single most
+useful thing to see when a send isn't doing what you expect.
+
+### Undo
+
+```lisp
+(let* ((manager (make-undo-manager))
+       (counter (make-counter :manager manager)))
+  (with-undo-group (manager "Set to 42")
+    (set-counter counter 42))
+  (undo manager)                        ; => 0
+  (redo manager))                       ; => 42
+
+(report-undo)
+```
+
+An undo manager is a stack of "how to put it back": register a target, a
+selector and an argument, and `-undo` sends that message. Since the target can
+be a Lisp object and the selector a Lisp-implemented method, **the undo
+operations are ordinary Lisp code that Cocoa decides when to run.**
+
+Two things bite immediately. `-groupsByEvent` defaults to YES, which means the
+manager expects a run loop to open and close a group around each event; from a
+REPL, a script or a test there is no such loop, the first registration raises
+`NSInternalInconsistencyException`, and an `NSException` here ends the process.
+Turn it off and manage the groups yourself.
+
+And **an undo operation must register its own inverse**, or there is no redo.
+That reads like a curiosity and is the whole design: while `-undo` is running,
+the manager records registrations onto the *redo* stack instead of the undo one,
+so a method that always registers the inverse of what it is about to do gives
+you undo and redo out of one piece of code. Leave it out and undo works exactly
+once, `-canRedo` answers NO, and nothing tells you why.
+
+**One thing cannot be done from here.** `-prepareWithInvocationTarget:` is the
+other registration style — it hands back a proxy, you send the proxy the message
+you want undone, and it records the `NSInvocation`. It does not work with this
+library and cannot be made to: the proxy does not *implement* the selector, it
+forwards it, and this library resolves the `Method` before sending. That
+resolution is the thing that turns an unimplemented selector into a Lisp error
+instead of an `NSException`, and the price is that a forwarding object is
+invisible — `can-invoke-p` answers NIL and `invoke` signals `no-such-method`.
+
+That is not really about undo. It is true of every proxy built on
+`-forwardInvocation:`, which includes `NSXPCConnection`'s remote object and
+`NSDistantObject`. Worth knowing before reaching for one.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 855 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 867 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

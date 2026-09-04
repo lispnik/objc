@@ -218,5 +218,5 @@ drains.  Those two hooks are the reason this example exists."
     (format t "the points were deallocated: ~A~%" (getf result :destroyed))
     (format t "~%lifecycle:~%")
     (loop for (event x y) in (lifecycle-events)
-          do (format t "  ~-10A (~D, ~D)~%" event x y))
+          do (format t "  ~10A (~D, ~D)~%" event x y))
     result))

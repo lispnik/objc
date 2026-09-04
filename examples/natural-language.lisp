@@ -21,8 +21,9 @@
 ;;;; likewise -enumerateNeighborsForString:... rather than ...ForWord:.  Writing
 ;;;; the documented name gets a Lisp error naming the selector -- which is worth
 ;;;; something, since the alternative in C is a runtime exception that takes the
-;;;; process out -- but the way to settle it is to ask, so CLASS-SELECTORS below
-;;;; is part of the example rather than a debugging leftover.
+;;;; process out -- but the way to settle it is to ask.  CLASS-SELECTORS was
+;;;; written here for that, and now lives in browser.lisp with the rest of the
+;;;; introspection.
 
 (in-package #:objc/examples)
 
@@ -32,31 +33,9 @@
 (defun ensure-natural-language ()
   (objc:ensure-objc-initialized :modules (list +natural-language-framework+)))
 
-;;; Asking the runtime what a class can do -------------------------------------
-
-(cffi:defcfun ("class_copyMethodList" %class-copy-method-list) :pointer
-  (class :pointer) (count :pointer))
-(cffi:defcfun ("method_getName" %method-get-name) :pointer (method :pointer))
-(cffi:defcfun ("sel_getName" %sel-get-name) :string (selector :pointer))
-
-(defun class-selectors (class &key (containing nil))
-  "Every instance method CLASS implements, as selector strings.
-
-    (class-selectors \"NLEmbedding\" :containing \"eighbor\")
-
-The header is documentation; this is the fact.  Useful whenever a documented
-selector does not exist -- see the note at the top of this file -- and generally
-whenever exploring a framework from the REPL beats reading about one."
-  (let ((class (objc:coerce-to-objc-class class)))
-    (cffi:with-foreign-object (count :uint)
-      (let ((methods (%class-copy-method-list class count)))
-        (unwind-protect
-             (loop for i below (cffi:mem-ref count :uint)
-                   for name = (%sel-get-name
-                               (%method-get-name (cffi:mem-aref methods :pointer i)))
-                   when (or (null containing) (search containing name))
-                     collect name)
-          (unless (cffi:null-pointer-p methods) (cffi:foreign-free methods)))))))
+;;; Asking the runtime what a class can do is in browser.lisp -- CLASS-SELECTORS
+;;; and DESCRIBE-OBJC-CLASS live there now.  They were written here first, for
+;;; the reason below, and belong with the rest of the introspection.
 
 ;;; Constants ------------------------------------------------------------------
 ;;;

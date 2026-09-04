@@ -208,7 +208,7 @@ than the first sentence did.")))
     (format t "~&~D voices installed, ~D of them English~%"
             (length (voices)) (length english))
     (loop for voice in (subseq english 0 (min 5 (length english)))
-          do (format t "  ~-12A ~A~%" (getf voice :language) (getf voice :name))))
+          do (format t "  ~12A ~A~%" (getf voice :language) (getf voice :name))))
   (multiple-value-bind (samples rate)
       (speak-to-samples "Lisp is a programmable programming language.")
     (write-wav samples path :rate (round rate))

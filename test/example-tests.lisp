@@ -365,3 +365,31 @@ SKIPS without a Metal device."
             (is-true (getf result :animates) "and time changes the picture")
             (is-true (getf result :bounds-respected)
                      "a size that is not a multiple of the threadgroup is fine"))))))
+
+(test the-map-example-renders-a-real-place
+  "examples/map.lisp turns a pair of coordinates into a PNG: MKMapSnapshotter
+fetches tiles and draws them into an image, with no window and no MKMapView.
+
+:DIFFERENT-PLACES is the assertion worth having.  The region crosses as a
+32-byte structure BY VALUE, and a snapshotter that ignored it would return the
+same picture for every coordinate and satisfy every other check here.
+
+SKIPS without a network, which is a fact about the machine and not this library.
+
+Not assertable, and worth stating: -startWithCompletionHandler: answers on the
+MAIN queue, so waiting for it on the main thread deadlocks -- the snapshot
+finishes and the block queues behind the thread waiting for it.  Measured at
+thirty seconds with no callback and no error.  The example uses
+-startWithQueue:completionHandler: for that reason, and a test of the deadlock
+would simply hang."
+  (with-runtime
+    (let ((result (objc/examples:test-map)))
+      (if (not (getf result :available))
+          (skip "no network, so no map tiles")
+          (progn
+            (is-true (getf result :png) "both coordinates produced a PNG")
+            (is (equal '(600 400) (getf result :pixels)) "at the size asked for")
+            (is-true (getf result :different-places)
+                     "two coordinates give two different maps")
+            (is-true (getf result :types-differ)
+                     "and satellite does not look like standard"))))))

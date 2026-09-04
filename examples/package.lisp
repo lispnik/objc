@@ -92,7 +92,10 @@
            #:make-audio-engine #:test-audio #:report-audio
            ;; A shader playground (examples/shader.lisp).
            #:shader-png #:shader-file #:shader-bytes #:run-shader #:draw-shader
-           #:*shader* #:test-shader #:report-shader))
+           #:*shader* #:test-shader #:report-shader
+           ;; MapKit, headless (examples/map.lisp).
+           #:map-snapshot #:map-file #:map-available-p #:coordinate-region
+           #:test-map #:report-map))
 
 (in-package #:fli)
 

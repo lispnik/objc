@@ -420,7 +420,7 @@ Each of these is a bug that actually happened here.
 
 ## The examples
 
-`examples/` is twenty-six files and half the repository. Each headless one has a
+`examples/` is twenty-seven files and half the repository. Each headless one has a
 `test-<thing>` entry point returning a plist of what happened, asserted by the
 `examples` suite in `test/example-tests.lisp`; the windowed ones are in
 `gui-tests.lisp` and skip without a window server.
@@ -451,6 +451,7 @@ those are the ones not to rewrite casually:
 | `scene-kit` | 3D rendered offscreen | a third struct-by-value shape, and no window |
 | `audio` | sound from a Lisp closure | a real-time thread, and offline vs live testing |
 | `shader` | a live shader playground | `-bitmapData` needs `invoke-into :pointer` |
+| `map` | a map of a real place | a completion handler that answers on the MAIN queue |
 
 Two of today's library bugs were found by an example rather than by the suite —
 the BOOL argument path by `predicates`, the re-arm ordering by `file-watcher` —

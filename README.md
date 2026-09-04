@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-835 checks, green on a clean GitHub runner as well as locally. Behaviour the
+839 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -389,6 +389,8 @@ unchanged:
 - `examples/shader.lisp` — a shader playground: one expression per pixel,
   rendered to a PNG or animated in a window. See
   [A shader playground](#a-shader-playground).
+- `examples/map.lisp` — coordinates in, a PNG of a real place out, with no
+  window. See [Maps](#maps).
 
 ### Running them
 
@@ -922,13 +924,46 @@ string, so plain `invoke` hands back a Lisp string — `""`, since the buffer
 begins with a zero byte. `invoke-into` with `:pointer` is what the manual
 provides for this, and this is the only example that needs it.
 
+### Maps
+
+```lisp
+(map-snapshot 51.5007 -0.1246)                        ; => PNG bytes
+(map-file 37.8199 -122.4783 #p"/tmp/bridge.png" :type :satellite)
+(report-map)
+```
+
+`MKMapSnapshotter` fetches tiles and draws them into an image, so a pair of
+coordinates becomes a PNG with no window and no `MKMapView`. The only example
+here whose output is a picture of somewhere real.
+
+**The deadlock is the lesson, and it is a new one** — none of the other
+completion-handler examples can hit it.
+`-startWithCompletionHandler:` delivers on the **main queue**. Waiting for it on
+the main thread, which is what a REPL call does, means the thread that would run
+the handler is the thread blocked waiting for it: the snapshot completes, the
+block queues behind you, and you wait for ever. Measured at thirty seconds, no
+callback and no error.
+
+`-startWithQueue:completionHandler:` takes the queue to answer on, so a serial
+queue puts the handler somewhere that isn't blocked — the same one-line move
+`url-session.lisp` makes for the same underlying reason. A callback needs a
+thread free to run it; `NSURLSession` lets you configure that, Quick Look picks
+its own, and MapKit defaults to the worst choice for a REPL while offering a
+better one in a second selector.
+
+Two smaller things it records. `MKCoordinateRegion` is four doubles — centre and
+span — passed by value, a buffer like every other non-Cocoa structure. And there
+is no `:scale`, though there obviously should be: `-setScale:` exists on iOS and
+not on macOS, which the runtime settled by raising a Lisp error naming the
+selector.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 835 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 839 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

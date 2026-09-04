@@ -26,7 +26,7 @@ Lisp method can take and return C structs by value like any other."
   :maintainer "Matthew Kennedy <burnsidemk@gmail.com>"
   :mailto "burnsidemk@gmail.com"
   :license "MIT"
-  :version "0.3.0"
+  :version "0.3.1"
   :homepage "https://github.com/lispnik/objc"
   :source-control (:git "https://github.com/lispnik/objc.git")
   :bug-tracker "https://github.com/lispnik/objc/issues"
@@ -73,7 +73,7 @@ Lisp method can take and return C structs by value like any other."
   :maintainer "Matthew Kennedy <burnsidemk@gmail.com>"
   :mailto "burnsidemk@gmail.com"
   :license "MIT"
-  :version "0.3.0"
+  :version "0.3.1"
   :homepage "https://github.com/lispnik/objc"
   :serial t
   :depends-on (#:objc)
@@ -113,7 +113,7 @@ Lisp method can take and return C structs by value like any other."
   :maintainer "Matthew Kennedy <burnsidemk@gmail.com>"
   :mailto "burnsidemk@gmail.com"
   :license "MIT"
-  :version "0.3.0"
+  :version "0.3.1"
   :homepage "https://github.com/lispnik/objc"
   :serial t
   :depends-on (#:objc #:objc/examples #:fiveam)

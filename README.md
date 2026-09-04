@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-820 checks, green on a clean GitHub runner as well as locally. Behaviour the
+835 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -928,7 +928,7 @@ provides for this, and this is the only example that needs it.
 make test
 ```
 
-The suite runs 820 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 835 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

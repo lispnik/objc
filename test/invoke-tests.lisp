@@ -347,3 +347,65 @@ print receivers as opaque pointers."
     (is (cffi:pointerp (objc:alloc-init-object "NSObject")))
     (is (cffi:pointerp (objc:alloc-init-object
                         (objc:coerce-to-objc-class "NSObject"))))))
+
+;;; Every scalar type, both directions ----------------------------------------
+;;;
+;;; NSNumber is the oracle the suite was missing.  Each entry passes a value IN
+;;; as a method argument and reads it back OUT as a result, so one table covers
+;;; both halves of the scalar path for a type -- which is exactly the asymmetry
+;;; that let a real bug through: BOOL results were tested and correct, BOOL
+;;; arguments were untested and always arrived as NO.
+
+(defparameter +scalar-round-trips+
+  '(("numberWithBool:"              "boolValue"              1
+     "the bug this table exists because of")
+    ("numberWithChar:"              "charValue"              -42
+     "negative, so a sign extension fault shows")
+    ("numberWithUnsignedChar:"      "unsignedCharValue"      200
+     "above the signed maximum for its width")
+    ("numberWithShort:"             "shortValue"             -12345 nil)
+    ("numberWithUnsignedShort:"     "unsignedShortValue"     54321
+     "above 32767")
+    ("numberWithInt:"               "intValue"               -1234567 nil)
+    ("numberWithUnsignedInt:"       "unsignedIntValue"       4000000000
+     "above 2^31")
+    ("numberWithLong:"              "longValue"              -123456789012
+     "needs more than 32 bits, so truncation cannot hide")
+    ("numberWithUnsignedLong:"      "unsignedLongValue"      12345678901234 nil)
+    ("numberWithLongLong:"          "longLongValue"          -1234567890123 nil)
+    ("numberWithUnsignedLongLong:"  "unsignedLongLongValue"  18000000000000000000
+     "above 2^63 -- the signed/unsigned question at 64 bits")
+    ("numberWithInteger:"           "integerValue"           -9007199254740993
+     "past exact integer representation in a double")
+    ("numberWithUnsignedInteger:"   "unsignedIntegerValue"   9007199254740993 nil)
+    ("numberWithFloat:"             "floatValue"             1.5
+     "exact in binary, so a mismatch is conversion and not rounding")
+    ("numberWithDouble:"            "doubleValue"            1.25d0 nil))
+  "Constructor, accessor, value, and why that value.
+
+The values are chosen to fail rather than to pass.  Anything above a type's
+signed maximum catches signed/unsigned confusion; anything past 32 bits catches
+truncation; -9007199254740993 catches a value routed through a double; and the
+floats are exactly representable so a mismatch cannot be rounding.")
+
+(test every-scalar-type-survives-a-round-trip
+  "Pass each scalar type in as an argument and read it back out as a result.
+
+Nothing here is subtle, and that is the point: the BOOL argument path was broken
+for as long as this library has existed, and was found by an example rather than
+by the suite, because the suite tested every scalar RESULT and no scalar
+ARGUMENT.  A hole that shape does not announce itself; it needs a table.
+
+Verified to CATCH that bug rather than merely to accompany it, by reintroducing
+it: with the fix reverted this reports 14 of 15 and names the BOOL row.  Worth
+knowing for anyone repeating that -- the fix was three lines in three files, and
+reverting only the ALIEN-TYPE one still looks correct, because then the argument
+path sends NO and the old result path reads NO back as 1.  Two faults cancelling
+is how this survived so long, and it is why half a revert proves nothing."
+  (with-runtime
+    (objc:with-autorelease-pool ()
+      (loop for (constructor accessor value reason) in +scalar-round-trips+
+            for number = (objc:invoke "NSNumber" constructor value)
+            do (is (= value (objc:invoke number accessor))
+                   "~A -> ~A did not round trip ~S~@[ (~A)~]"
+                   constructor accessor value reason)))))

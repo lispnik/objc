@@ -5,9 +5,13 @@
 # CONCURRENT-BLOCKS-WORK-OR-REFUSE-ACCORDING-TO-THE-BUILD, have no coverage
 # there at all.  This workflow builds such an SBCL and runs the suite on it.
 #
-# Why it is separate, and not another leg of the matrix: building SBCL takes
-# fifteen minutes or so, which is too much to pay on every push for a question
-# that changes only when the block or GCD code does.  Weekly, plus on demand.
+# It runs on every push, because building SBCL turns out to be cheap: the whole
+# job is under five minutes on a macos-latest runner, of which the build is
+# about three.  It was weekly at first, on my guess of fifteen -- and the guess
+# cost something, because the first hand-dispatched run found a mistake in this
+# file that a per-push run would have caught on the commit that introduced it.
+# Weekly is still here as a floor, so a month of quiet Decembers does not let
+# the workflow rot unnoticed.
 #
 # THE TRAP THIS WORKFLOW IS BUILT AROUND.  The gated test passes on a stock
 # build too -- there it asserts the refusal instead -- so a run that quietly
@@ -18,8 +22,8 @@
 #
 # arm64 only.  The limit is about how SBCL stops the world and how Darwin treats
 # libdispatch's worker threads, neither of which differs between the two
-# architectures, so a second leg would cost another fifteen-minute build to
-# re-answer a question that is not architecture-specific.
+# architectures, so a second leg would cost another build to re-answer a
+# question that is not architecture-specific.
 #
 # Note the step order: SBCL is built BEFORE ocicl is set up.  An SBCL contrib
 # build calls UPGRADE-ASDF, so a source registry that has any ASDF or UIOP
@@ -29,9 +33,14 @@
 name: safepoint
 
 on:
+  push:
+    branches: [master, main]
+  pull_request:
   workflow_dispatch:
   schedule:
     # Mondays, 04:17 UTC.  Off the hour because everything is scheduled on it.
+    # A floor rather than the main trigger: it catches the case where nobody has
+    # pushed for a while and macOS, SBCL or libdispatch has moved underneath.
     - cron: '17 4 * * 1'
 
 jobs:

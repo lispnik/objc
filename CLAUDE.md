@@ -411,12 +411,62 @@ Each of these is a bug that actually happened here.
   `invoke-bool` returns `T` and `NIL`. This was checked against LispWorks
   precisely because the opposite was the natural guess on Apple silicon.
 
+## The examples
+
+`examples/` is twenty-two files and half the repository. Each headless one has a
+`test-<thing>` entry point returning a plist of what happened, asserted by the
+`examples` suite in `test/example-tests.lisp`; the windowed ones are in
+`gui-tests.lisp` and skip without a window server.
+
+Ported from the LispWorks manual: `manual`, `appkit`, `area-calculator`,
+`pdf-view`, `movie-view`, `web-kit`, `standalone`.
+
+Written here, and what each one is *for* — several exist to record a trap, and
+those are the ones not to rewrite casually:
+
+| file | subject | why it exists |
+|---|---|---|
+| `canvas` | a live `NSView` you redraw from the REPL | struct-by-value in both directions |
+| `vision` | OCR, and `read-barcodes` | a framework returning a `CGRect` by value |
+| `status-item` | a menu-bar item | target/action, and AppKit's own run loop |
+| `gcd` | Grand Central Dispatch | what block creation bought; the concurrency limit |
+| `url-session` | completion handlers | the *practical* answer to that limit, in one line |
+| `natural-language` | tagging, embeddings | `NSRange` by value **into** a block |
+| `core-image` | filter graphs, headless | infinite extent; constants read not guessed |
+| `file-watcher` | dispatch sources | a vnode source watches a descriptor, not a path |
+| `kvo` | key-value observing | the easiest way to end the image |
+| `data-detector` | dates, links, addresses | a second `NSRange`-by-value block |
+| `predicates` | `NSPredicate`, sorting | the only worked **variadic** send |
+| `pdf-document` | PDFKit without a window | writes the PDF it reads |
+| `thumbnail` | Quick Look previews | a service that is absent on some machines |
+| `workspace` | `NSWorkspace` | what is asserted vs merely reported |
+
+Two of today's library bugs were found by an example rather than by the suite —
+the BOOL argument path by `predicates`, the re-arm ordering by `file-watcher` —
+which is the argument for examples that *do* something rather than demonstrate
+something.
+
+**An example that reaches a system service must skip, not fail.** Three
+assertions in two days were really assertions about the machine: Quick Look does
+not answer on GitHub's Intel runner, this process is not a "running application"
+until something registers it, and WKWebView's content process can be slow to
+spawn. A red build should mean the library broke. `thumbnailing-available-p` and
+`objc.runloop:window-server-p` are the shape to copy.
+
 ## Tests
 
 Suites: `encoding` and `types` are pure and run anywhere; `runtime`, `invoke`,
 `memory`, `cocoa`, `classes`, `methods`, `manual` and `oracle` need a live
-Objective-C runtime; `gui` needs a window server and skips without one; `seam`
-greps the sources; `dump` spawns a subprocess.
+Objective-C runtime; `examples` runs the headless examples; `gui` needs a window
+server and skips without one; `seam` greps the sources; `dump` spawns a
+subprocess.
+
+Two workflows. `macOS` runs the suite on stock SBCL on both architectures.
+`safepoint` builds an SBCL `--with-sb-safepoint` and runs it there, because
+`parallel-map` and `dispatch-apply` cannot run at all on a stock build — it is
+per-push, since the build is about three minutes. Its "verify the build really
+has safepoints" step is load-bearing: the gated test passes on either build, so
+without it a run that came out stock would be green having tested nothing new.
 
 `examples/manual.lisp` is a near-verbatim port of the file LispWorks ships at
 `Library/lib/8-1-0-0/examples/objc/manual.lisp` — every `objc:` form in it is

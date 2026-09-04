@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-848 checks, green on a clean GitHub runner as well as locally. Behaviour the
+855 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -404,6 +404,9 @@ unchanged:
 - `examples/file-coordinator.lisp` — `NSFilePresenter`, the other way to watch a
   file, and the contrast that explains `file-watcher`. See
   [Watching a file the other way](#watching-a-file-the-other-way).
+- `examples/collections.lisp` — a Lisp object Cocoa deduplicates, copies, keys a
+  dictionary by and sorts. See
+  [A Lisp object Cocoa owns](#a-lisp-object-cocoa-owns).
 
 ### Running them
 
@@ -1023,13 +1026,41 @@ It is also the only example whose Lisp class adopts a framework **protocol**,
 with `-presentedItemURL` and `-presentedItemOperationQueue` answered from the
 instance's own CLOS slots.
 
+### A Lisp object Cocoa owns
+
+```lisp
+(point-set (points 1 2  1 2  3 4))       ; an NSSet of 2, not 3
+(point-sorted (points 3 4  1 5  1 2))    ; Cocoa sorts, Lisp compares
+(report-collections)
+```
+
+Every other example calls into Cocoa, or has Cocoa call a Lisp function back.
+This one is about a Lisp object being a **first-class participant in Cocoa's own
+data structures** — asked `-hash`, `-isEqual:` and `-description`, and answering
+from CLOS slots. It exercises the half of the library the others ignore: not the
+calling machinery but `standard-objc-object`, the identity map and the two
+lifecycle hooks.
+
+**An `NSDictionary` copies its keys.** That is not an optimisation you can
+ignore: a key that cannot be copied raises, and one that copies badly gives a
+dictionary you can't look anything up in. The library installs `-copyWithZone:`
+on every Lisp-defined class and copies the CLOS slots by default, so this works
+unasked — and `objc-object-copied` is where you hook it when the default is
+wrong. Putting a point in a dictionary fires it, which is how you can see it at
+all. `objc-object-destroyed` fires when the pool drains.
+
+**A wrong `-hash` is silent.** Two objects that are `-isEqual:` must hash alike,
+and if they don't, an `NSSet` simply contains both and a lookup simply misses.
+Nothing raises. That's the failure the test asserts against, because it's the one
+you'd otherwise ship.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 848 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 855 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

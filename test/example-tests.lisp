@@ -439,3 +439,34 @@ the required members answered from the instance's own CLOS slots."
                "and so was a write to the file that replaced it, with no re-arming")
       (is-true (getf result :coordinated-write-seen)
                "a coordinated write was reported too"))))
+
+(test the-collections-example-makes-a-lisp-object-a-cocoa-citizen
+  "examples/collections.lisp is about the half of this library the other
+examples ignore.  They exercise the calling machinery; this exercises
+STANDARD-OBJC-OBJECT -- the CLOS integration, the identity map, and the two
+lifecycle hooks, none of which any other example touches.
+
+:SET-COUNT is what the file is for.  Three points go into an NSSet and two come
+out, because Cocoa asked our -hash and -isEqual: and believed the answers.  A
+wrong hash does not raise: the set would quietly hold all three, and a lookup
+would quietly miss.
+
+:KEYS-WERE-COPIED and :DESTROYED are the hooks.  An NSDictionary copies its
+keys, so OBJC-OBJECT-COPIED fires on the way in; OBJC-OBJECT-DESTROYED fires
+when the pool drains."
+  (with-runtime
+    (let ((result (objc/examples:test-collections)))
+      (is (= 2 (getf result :set-count))
+          "three points, two distinct, deduplicated by our own hash and equality")
+      (is (string= "first" (getf result :equal-key-found))
+          "and looked up by a different object that is merely EQUAL to the key")
+      (is-true (getf result :keys-were-copied)
+               "OBJC-OBJECT-COPIED fired -- an NSDictionary copies its keys")
+      (is (equal '((1 2) (1 5) (3 4)) (getf result :sorted))
+          "Cocoa sorted Lisp objects through a Lisp comparator")
+      (is (string= "(1, 2)" (getf result :description))
+          "-description answers from Lisp")
+      (is-true (getf result :destroyed)
+               "OBJC-OBJECT-DESTROYED fired when the pool drained")
+      (is-true (getf result :foreign-not-equal)
+               "and an object that is not one of ours is not EQUAL to one that is"))))

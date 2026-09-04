@@ -102,7 +102,11 @@
            ;; NSFileCoordinator (examples/file-coordinator.lisp).
            #:watch-coordinated #:unwatch-coordinated #:with-coordinated-watch
            #:coordinated-write #:file-presenter
-           #:test-file-coordinator #:report-file-coordinator))
+           #:test-file-coordinator #:report-file-coordinator
+           ;; Lisp objects in Cocoa collections (examples/collections.lisp).
+           #:point #:point-x #:point-y #:make-point #:points #:point-set
+           #:point-sorted #:point-keyed-table #:lifecycle-events
+           #:test-collections #:report-collections))
 
 (in-package #:fli)
 

@@ -432,7 +432,7 @@ Each of these is a bug that actually happened here.
 
 ## The examples
 
-`examples/` is twenty-nine files and half the repository. Each headless one has a
+`examples/` is thirty files and half the repository. Each headless one has a
 `test-<thing>` entry point returning a plist of what happened, asserted by the
 `examples` suite in `test/example-tests.lisp`; the windowed ones are in
 `gui-tests.lisp` and skip without a window server.
@@ -466,6 +466,15 @@ those are the ones not to rewrite casually:
 | `map` | a map of a real place | a completion handler that answers on the MAIN queue |
 | `speech` | text to samples, or out loud | a callback with NO queue variant: you must pump |
 | `file-coordinator` | `NSFilePresenter` | a presenter watches a PATH, a vnode source an INODE |
+| `collections` | a Lisp object Cocoa owns | the CLOS half: identity map, copy and dealloc hooks |
+
+The examples were measured against the library's exported operators, and the
+gap they left was the CLOS half: `objc-object-copied`, `objc-object-destroyed`,
+`define-objc-class-method` and `standard-objc-object` had no example at all
+until `collections`. Still thin, if another is wanted: `define-objc-struct` and
+`define-objc-typedef` (only the manual's `pair`), and the introspection API —
+`can-invoke-p`, `objc-class-method-signature`, `trace-invoke` — which no example
+uses.
 
 Two of today's library bugs were found by an example rather than by the suite —
 the BOOL argument path by `predicates`, the re-arm ordering by `file-watcher` —

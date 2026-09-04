@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-867 checks, green on a clean GitHub runner as well as locally. Behaviour the
+879 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -412,6 +412,8 @@ unchanged:
   [A class browser](#a-class-browser).
 - `examples/undo.lisp` — `NSUndoManager` with Lisp methods as the undo
   operations. See [Undo](#undo).
+- `examples/memory.lisp` — retain counts, autorelease pools, and observing when
+  an object actually dies. See [Memory](#memory).
 
 ### Running them
 
@@ -1150,13 +1152,65 @@ That is not really about undo. It is true of every proxy built on
 `-forwardInvocation:`, which includes `NSXPCConnection`'s remote object and
 `NSDistantObject`. Worth knowing before reaching for one.
 
+### Memory
+
+```lisp
+(ownership-walk)     ; => (:FRESH 1 :RETAINED 2 :RELEASED 1 :DIED-ON-LAST-RELEASE T)
+(deaths-during-loop) ; => 0     -- one pool around the loop
+(deaths-during-loop :per-iteration t)   ; => 200
+(report-memory)
+```
+
+There is no ARC here — calling through a foreign function interface puts you in
+manual retain/release whatever the surrounding code does — and yet every other
+example gets away with never thinking about it, because `with-autorelease-pool`
+is doing the work. This file is what it is doing.
+
+Deaths are **observed rather than inferred**. A Lisp-defined class gets an
+`objc-object-destroyed` hook, so "the object was deallocated" is a recorded fact
+rather than a claim about what a retain count implies — which matters, because
+the count is a worse witness than it looks:
+
+**`-retainCount` on a tagged pointer is nonsense, and not even consistent
+nonsense.** A short `NSString` is not a heap object at all — the characters live
+in the pointer — and asking one for its retain count gives
+`18446744073709551615`. A tagged `NSNumber` gives `9223372036854775807`. Both
+mean "never deallocate me", spelled differently by different classes, and
+neither is a number to compare against anything. A short literal string is
+exactly what someone reaches for when writing a memory test.
+
+**A count of 1 does not mean you own it.** `+dataWithLength:` returns an object
+with a count of 1 that is already registered with the current pool; the pending
+release is nowhere in the number. Ownership follows from the call you made —
+`+alloc`, `-copy`, `-mutableCopy`, or a name containing "create" — and is not a
+runtime property you can measure.
+
+**Draining a pool on a thread that did not create it is a memory fault.** Not a
+diagnostic: `Memory fault at 0x10` inside `-drain`, backtrace in libobjc,
+process gone. That is why `with-autorelease-pool` is the default and
+`make-autorelease-pool` is the sharp tool — and why the example documents this
+one rather than demonstrating it.
+
+**Without a pool there is no diagnostic either.** The autorelease simply does
+not happen, and nothing is logged, on stderr or anywhere else, even under
+`OBJC_DEBUG_MISSING_POOLS=YES`. On the main thread of a plain SBCL process the
+object then lives until the process exits; on a thread you started, the runtime
+pops the thread's pool page during teardown, so it dies at a moment unrelated to
+anything in your code.
+
+The measurement that justifies `make-autorelease-pool` being exported at all is
+`deaths-during-loop`: 200 autoreleased objects, and at the end of the loop
+**none** of them have died under a single enclosing pool against **all** of them
+under one pool per iteration. For a loop over a large directory that is the
+difference between a working program and one that grows until it is killed.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 867 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 879 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

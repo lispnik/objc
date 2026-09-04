@@ -92,6 +92,7 @@ Lisp method can take and return C structs by value like any other."
                  (:file "status-item")
                  (:file "gcd")
                  (:file "url-session")
+                 (:file "memory")
                  (:file "browser")
                  (:file "undo")
                  (:file "natural-language")

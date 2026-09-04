@@ -432,7 +432,7 @@ Each of these is a bug that actually happened here.
 
 ## The examples
 
-`examples/` is thirty-one files and half the repository. Each headless one has a
+`examples/` is thirty-two files and half the repository. Each headless one has a
 `test-<thing>` entry point returning a plist of what happened, asserted by the
 `examples` suite in `test/example-tests.lisp`; the windowed ones are in
 `gui-tests.lisp` and skip without a window server.
@@ -469,6 +469,7 @@ those are the ones not to rewrite casually:
 | `collections` | a Lisp object Cocoa owns | the CLOS half: identity map, copy and dealloc hooks |
 | `browser` | asking the runtime what a class can do | the library's own introspection, put to use |
 | `undo` | `NSUndoManager` running Lisp methods | a forwarding proxy is invisible to this library |
+| `memory` | retain counts and pools | what `with-autorelease-pool` is doing for everyone else |
 
 The examples were measured against the library's exported operators, and the
 gap they left was the CLOS half: `objc-object-copied`, `objc-object-destroyed`,
@@ -476,9 +477,18 @@ gap they left was the CLOS half: `objc-object-copied`, `objc-object-destroyed`,
 until `collections`; `can-invoke-p`, `objc-class-method-signature`,
 `objc-class-name` and `trace-invoke` had none until `browser`; and
 `define-objc-struct` had only the manual's `pair` until `core-image` grew a
-`CGAffineTransform`. Still thin, if another is wanted: `define-objc-typedef`,
-`define-objc-protocol`, `objc-object-var-value`, `make-autorelease-pool` and
-`string-to-ns-string`.
+`CGAffineTransform`; and `retain-count`, `make-autorelease-pool` and the
+retain/release pair had none until `memory`. Still thin, if another is wanted:
+`define-objc-typedef`, `define-objc-protocol`, `string-to-ns-string`, and eight
+of `COCOA`'s eleven symbols — `add-observer`, `remove-observer`, `ns-not-found`,
+`ns-point`, `ns-size` and the four `set-ns-*` setters. `kvo.lisp` does KVO
+through raw `invoke` rather than `cocoa:add-observer`, so the package that
+carries the compatibility promise is the one least exercised.
+
+Three of the type descriptors — `objc-unknown`, `objc-at-question-mark`,
+`objc-c++-bool` — are not an example's job. They appear in signatures the
+runtime *hands you*, never in code you write; the oracle tests are where they
+belong.
 
 `undo` records a limitation worth knowing before reaching for a proxy:
 `-prepareWithInvocationTarget:` returns an object that *forwards* rather than

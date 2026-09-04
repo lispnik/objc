@@ -523,3 +523,43 @@ cannot send to because it resolves the Method first; that is true of every
                "the undo registered its own inverse, so there is something to redo")
       (is-true (getf result :proxy-refused)
                "a forwarding proxy is invisible to CAN-INVOKE-P and INVOKE"))))
+
+(test the-memory-example-observes-deallocation
+  "examples/memory.lisp is the only one that thinks about ownership, which every
+other example gets away with ignoring because WITH-AUTORELEASE-POOL does it.
+
+Deaths are observed through OBJC-OBJECT-DESTROYED rather than inferred from a
+retain count, and :TAGGED-COUNT-IS-ABSURD is why.  A short NSString is a tagged
+pointer -- the characters are in the pointer, there is no heap object -- and it
+answers -retainCount with 18446744073709551615, while a tagged NSNumber answers
+9223372036854775807.  Both pass any \"the count went up\" check, before and
+after, so a memory test written with a short literal string measures nothing.
+
+:DEATHS-IN-LOOP is the argument for MAKE-AUTORELEASE-POOL existing at all: with
+one pool around the loop, none of the 200 objects have died by the time it ends;
+with one pool per iteration, all of them have."
+  (with-runtime
+    (let ((result (objc/examples:test-memory)))
+      (let ((ownership (getf result :ownership)))
+        (is (= 1 (getf ownership :fresh)) "+alloc gives a count of one")
+        (is (= 2 (getf ownership :retained)))
+        (is (= 1 (getf ownership :released)))
+        (is-true (getf ownership :died-on-last-release)
+                 "-dealloc ran, which is the only observable form of reaching zero"))
+      (is (equal '(:dead-inside nil :dead-after (:pooled))
+                 (getf result :autorelease))
+          "an autoreleased object outlives the expression, and dies at the drain")
+      (is (eq :tagged (getf result :tagged-string))
+          "a short NSString is a tagged pointer, so the count question is void")
+      (is (= 1 (getf result :heap-string)) "and a long one is an ordinary object")
+      (is-true (getf result :tagged-count-is-absurd)
+               "the count a tagged pointer reports would pass any comparison")
+      (is (= 0 (getf result :deaths-in-loop))
+          "one pool around the loop holds all 200 until it ends")
+      (is (= 200 (getf result :deaths-in-loop-with-pools))
+          "one pool per iteration frees them as it goes")
+      (let ((no-pool (getf result :no-pool)))
+        (is (null (getf no-pool :main-thread))
+            "with no pool the autorelease simply does not happen, and is not logged")
+        (is (equal '(:thread) (getf no-pool :secondary-thread))
+            "on a thread that exits, the runtime pops the page during teardown")))))

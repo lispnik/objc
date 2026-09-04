@@ -31,7 +31,14 @@ documentation, and this increments, as -retain does."
   pointer)
 
 (defun retain-count (pointer)
-  "Return POINTER's reference count."
+  "Return POINTER's reference count.
+
+Meaningless for a tagged pointer, and not meaningless in a way you will notice:
+a short NSString answers 18446744073709551615 and a tagged NSNumber answers
+9223372036854775807, so any comparison you write passes.  A count of 1 does not
+mean you own the object either -- an autoreleased one reports 1, with the
+pending release nowhere in the number.  Ownership follows from the call you
+made, not from this.  See examples/memory.lisp."
   (invoke pointer "retainCount"))
 
 (defun make-autorelease-pool ()
@@ -39,8 +46,14 @@ documentation, and this increments, as -retain does."
 
 Cocoa provides a pool on the main thread of an application that is running an
 event loop, but a plain SBCL process has none, and any thread you start has
-none.  Without a pool, every autoreleased object leaks and Foundation logs about
-it."
+none.  Without a pool the autorelease simply does not happen, silently: nothing
+is logged, on stderr or anywhere else, even under OBJC_DEBUG_MISSING_POOLS.
+
+The pool must be drained on the thread that created it.  Draining one from
+another thread is a memory fault inside -drain rather than a diagnostic, which
+is why WITH-AUTORELEASE-POOL is the one to reach for and this is for the case
+it cannot serve -- a pool whose extent is not a lexical scope, such as one
+drained per iteration inside a long loop."
   (invoke (invoke "NSAutoreleasePool" "alloc") "init"))
 
 (defmacro with-autorelease-pool ((&rest options) &body body)

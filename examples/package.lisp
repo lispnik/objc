@@ -109,6 +109,11 @@
            #:point #:point-x #:point-y #:make-point #:points #:point-set
            #:point-sorted #:point-keyed-table #:lifecycle-events
            #:test-collections #:report-collections
+           ;; Reference counting and pools (examples/memory.lisp).
+           #:tracked #:tracked-tag #:make-tracked #:tracked-deaths #:reset-tracked
+           #:tagged-pointer-p #:count-of #:ownership-walk #:autorelease-walk
+           #:deaths-during-loop #:leak-without-a-pool
+           #:test-memory #:report-memory
            ;; A class browser (examples/browser.lisp).
            #:class-selectors #:class-chain #:describe-selector #:describe-objc-class
            #:responds-p #:class-of-object #:with-traced

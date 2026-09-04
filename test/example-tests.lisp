@@ -563,3 +563,100 @@ with one pool per iteration, all of them have."
             "with no pool the autorelease simply does not happen, and is not logged")
         (is (equal '(:thread) (getf no-pool :secondary-thread))
             "on a thread that exits, the runtime pops the page during teardown")))))
+
+(defun example-definition-name (line)
+  "The name defined by LINE if it is a top-level DEFUN or DEFMACRO, else NIL."
+  (let ((prefix (find-if (lambda (prefix)
+                           (and (<= (length prefix) (length line))
+                                (string= prefix line :end2 (length prefix))))
+                         '("(defun " "(defmacro "))))
+    (when prefix
+      (let* ((rest (subseq line (length prefix)))
+             (end (or (position-if (lambda (character)
+                                     (member character '(#\Space #\Tab #\()))
+                                   rest)
+                      (length rest))))
+        (and (plusp end) (subseq rest 0 end))))))
+
+(test no-two-example-files-define-the-same-function
+  "examples/ is one flat package, so a name defined in two files is the later
+file silently replacing the earlier one's definition.
+
+Not hypothetical: notifications.lisp arrived with OBSERVE and STOP-OBSERVING,
+which kvo.lisp already had.  ASDF loads kvo.lisp second, so kvo's definitions
+won -- and the only symptom was an arity error from a caller inside
+notifications.lisp, pointing at a function whose source looked perfectly
+correct.  Reading either file told you nothing.
+
+A grep rather than DO-SYMBOLS, because by the time the image is loaded the
+evidence is gone: there is one function left and nothing records that there
+were two.
+
+UIOP:DIRECTORY-FILES rather than DIRECTORY, for the reason spelled out in
+ONLY-ABI-LISP-KNOWS-ABOUT-SB-ALIEN -- which had been scanning nothing, and which
+this test was written in the image of before that was noticed."
+  (let ((definitions (make-hash-table :test #'equal)))
+    (dolist (path (uiop:directory-files
+                   (asdf:system-relative-pathname :objc "examples/") "*.lisp"))
+      (with-open-file (stream path)
+        (loop for line = (read-line stream nil)
+              while line
+              do (let ((name (example-definition-name line)))
+                   (when name
+                     (pushnew (file-namestring path) (gethash name definitions)
+                              :test #'string=))))))
+    (let ((clashes '()))
+      (maphash (lambda (name files)
+                 (when (rest files)
+                   (push (format nil "~A in ~{~A~^ and ~}" name (reverse files))
+                         clashes)))
+               definitions)
+      (is (null clashes) "defined in more than one example file:~%~{  ~A~%~}"
+          (sort clashes #'string<)))))
+
+(test the-notifications-example-knows-where-it-runs
+  "examples/notifications.lisp is NSNotificationCenter through COCOA:ADD-OBSERVER
+and COCOA:REMOVE-OBSERVER -- two of the eleven symbols that package promises,
+and both of which had no example, while every notification in this repository
+was done by hand through INVOKE instead.
+
+:HANDLER-THREAD is the assertion nothing else here would catch.  Delivery is a
+synchronous message send inside -postNotificationName:, so the handler runs on
+the thread that POSTED, not the one that registered.  The listener registers on
+the main thread, a thread named \"poster\" posts, and the handler -- which
+records its own thread, because asking afterwards would only report where the
+test was standing -- says \"poster\".  An observer that touches AppKit is
+therefore only as safe as every caller that posts to it.
+
+:TASK-WITH-SLEEPING is the other one, and it is speech.lisp's lesson somewhere
+much less expected.  Both halves run /bin/echo identically and differ only in
+how they wait; NSTaskDidTerminateNotification goes onto the run loop of the
+launching thread, so sleeping never hears it however long the child has been
+dead, and pumping hears it at once.
+
+:RETAINED-BY-CENTER records that the center does not retain its observers.
+Keeping one alive is the caller's job -- though on modern macOS failing to is no
+longer the crash the folklore promises: the selector-based registration zeroes
+its reference, and a post to a deallocated observer does nothing at all.  That
+is measured in the file header, and it is emphatically NOT true of KVO, which
+still ends the image; see kvo.lisp."
+  (with-runtime
+    (let ((result (objc/examples:test-notifications)))
+      (let ((first (first (getf result :received))))
+        (is (string= "ExampleNote" (getf first :name)))
+        (is (equal '("who" "a value") (getf first :info))
+            "the userInfo dictionary came back unpacked")
+        (is (string= "main thread" (getf first :thread))
+            "posted from this thread, so handled on this thread"))
+      (is-true (getf result :wrong-sender-ignored)
+               "an :OBJECT registration filters on the sender")
+      (is-true (getf result :right-sender-heard)
+               "and hears that sender")
+      (is (null (getf result :retained-by-center))
+          "the center does not retain the observer")
+      (is (string= "poster" (getf result :handler-thread))
+          "the handler runs on the posting thread, not the registering one")
+      (is-true (getf result :task-with-pumping)
+               "NSTaskDidTerminateNotification arrives when the run loop is served")
+      (is (null (getf result :task-with-sleeping))
+          "and never arrives when it is not, however long you sleep"))))

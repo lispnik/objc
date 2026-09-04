@@ -432,7 +432,7 @@ Each of these is a bug that actually happened here.
 
 ## The examples
 
-`examples/` is thirty-two files and half the repository. Each headless one has a
+`examples/` is thirty-three files and half the repository. Each headless one has a
 `test-<thing>` entry point returning a plist of what happened, asserted by the
 `examples` suite in `test/example-tests.lisp`; the windowed ones are in
 `gui-tests.lisp` and skip without a window server.
@@ -470,6 +470,7 @@ those are the ones not to rewrite casually:
 | `browser` | asking the runtime what a class can do | the library's own introspection, put to use |
 | `undo` | `NSUndoManager` running Lisp methods | a forwarding proxy is invisible to this library |
 | `memory` | retain counts and pools | what `with-autorelease-pool` is doing for everyone else |
+| `notifications` | `NSNotificationCenter` | the handler runs on the POSTING thread |
 
 The examples were measured against the library's exported operators, and the
 gap they left was the CLOS half: `objc-object-copied`, `objc-object-destroyed`,
@@ -478,12 +479,16 @@ until `collections`; `can-invoke-p`, `objc-class-method-signature`,
 `objc-class-name` and `trace-invoke` had none until `browser`; and
 `define-objc-struct` had only the manual's `pair` until `core-image` grew a
 `CGAffineTransform`; and `retain-count`, `make-autorelease-pool` and the
-retain/release pair had none until `memory`. Still thin, if another is wanted:
-`define-objc-typedef`, `define-objc-protocol`, `string-to-ns-string`, and eight
-of `COCOA`'s eleven symbols — `add-observer`, `remove-observer`, `ns-not-found`,
-`ns-point`, `ns-size` and the four `set-ns-*` setters. `kvo.lisp` does KVO
-through raw `invoke` rather than `cocoa:add-observer`, so the package that
-carries the compatibility promise is the one least exercised.
+retain/release pair had none until `memory`; and `cocoa:add-observer` and
+`cocoa:remove-observer` had none until `notifications` — which are
+`NSNotificationCenter`, *not* KVO, a distinction easy to lose because `kvo.lisp`
+reaches `-addObserver:forKeyPath:` through raw `invoke` and the `COCOA` package
+does not cover it at all.
+
+Still thin, if another is wanted: `define-objc-typedef`, `define-objc-protocol`,
+`string-to-ns-string`, `objc-c-string`, `objc-block-live-p`, and six of
+`COCOA`'s eleven symbols — `ns-not-found`, `ns-point`, `ns-size` and the four
+`set-ns-*` setters.
 
 Three of the type descriptors — `objc-unknown`, `objc-at-question-mark`,
 `objc-c++-bool` — are not an example's job. They appear in signatures the
@@ -502,6 +507,14 @@ Two of today's library bugs were found by an example rather than by the suite �
 the BOOL argument path by `predicates`, the re-arm ordering by `file-watcher` —
 which is the argument for examples that *do* something rather than demonstrate
 something.
+
+**A test that enumerates files must be shown to enumerate some.**
+`asdf:system-relative-pathname` *quotes the wildcard*: `"src/*.lisp"` comes back
+as `#P"/…/src/\\*.lisp"`, which names one file that does not exist, so
+`directory` returns NIL. `only-abi-lisp-knows-about-sb-alien` had been green
+that way — putting `sb-alien:` in `src/cocoa.lisp` did not fail it. Use
+`uiop:directory-files`, and check a new file-scanning test by breaking
+something on purpose before trusting it.
 
 **An example that reaches a system service must skip, not fail.** Three
 assertions in two days were really assertions about the machine: Quick Look does

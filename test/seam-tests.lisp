@@ -20,9 +20,17 @@ rather than a foreign-ABI one and has no portable equivalent.")
 Everything implementation-specific about calling Objective-C lives there --
 building trampolines, building IMPs, masking floating point traps -- so that
 porting this library to another Lisp is one file's work rather than an
-archaeology exercise.  A seam nobody checks stops being a seam, so this checks."
+archaeology exercise.  A seam nobody checks stops being a seam, so this checks.
+
+UIOP:DIRECTORY-FILES rather than DIRECTORY on a merged wild pathname.
+ASDF:SYSTEM-RELATIVE-PATHNAME quotes the wildcard -- \"src/*.lisp\" comes back as
+#P\"/.../src/\\\\*.lisp\", naming one file that does not exist -- so DIRECTORY
+returned NIL and this test passed by scanning nothing.  Verified by putting
+sb-alien: into src/cocoa.lisp: the test was green.  A seam nobody checks stops
+being a seam, and so does one whose check enumerates an empty list."
   (let ((offenders '()))
-    (dolist (path (directory (asdf:system-relative-pathname :objc "src/*.lisp")))
+    (dolist (path (uiop:directory-files
+                   (asdf:system-relative-pathname :objc "src/") "*.lisp"))
       (let ((name (file-namestring path)))
         (unless (or (string= name +seam-file+)
                     (member name +seam-exceptions+ :test #'string=))

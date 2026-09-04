@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-879 checks, green on a clean GitHub runner as well as locally. Behaviour the
+889 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -414,6 +414,9 @@ unchanged:
   operations. See [Undo](#undo).
 - `examples/memory.lisp` — retain counts, autorelease pools, and observing when
   an object actually dies. See [Memory](#memory).
+- `examples/notifications.lisp` — `NSNotificationCenter` through
+  `cocoa:add-observer`, and which thread the handler runs on. See
+  [Notifications](#notifications).
 
 ### Running them
 
@@ -1204,13 +1207,59 @@ The measurement that justifies `make-autorelease-pool` being exported at all is
 under one pool per iteration. For a loop over a large directory that is the
 difference between a working program and one that grows until it is killed.
 
+### Notifications
+
+```lisp
+(let ((listener (make-listener)))
+  (with-subscription (listener "ExampleNote")
+    (post-notification "ExampleNote" :info '(:who "a value"))
+    (notifications-received listener)))
+;; => ((:THREAD "main thread" :NAME "ExampleNote" :INFO ("who" "a value")))
+
+(run-briefly)             ; => (:TERMINATED T ...)
+(run-briefly :pump nil)   ; => (:TERMINATED NIL ...)
+```
+
+Foundation's one broadcast mechanism, and the half of the `COCOA` package that
+had no example: `add-observer` and `remove-observer` are two of the eleven
+symbols that package promises, and every notification in this repository was
+being done by hand through `invoke` instead.
+
+**This is not KVO.** `kvo.lisp` observes a key path with
+`-addObserver:forKeyPath:`, a different mechanism with different rules and a
+much sharper edge. The `COCOA` package covers only the notification centre.
+
+**The handler runs on the thread that posted, not the thread that registered.**
+Delivery is a synchronous message send inside `-postNotificationName:`, so
+posting from a worker runs your handler on that worker. Measured: register from
+the main thread, post from a thread named `poster`, and the handler reports
+`poster`. An observer that touches AppKit is only as safe as every caller that
+posts to it — which is not a property you can see by reading the observer.
+
+**The centre does not retain the observer**, so keeping it alive is yours. But
+**a dead observer is not a crash**, and this is where the advice you will find
+is out of date: deallocate an observer without removing it, post, and nothing
+happens — modern macOS zeroes the reference for the selector-based
+registration. Measured, not assumed, and worth knowing precisely because the
+folklore says otherwise. It is *not* true of
+`-addObserverForName:object:queue:usingBlock:`, which retains the block until
+you remove its token, and it is emphatically not true of KVO, which still ends
+the image.
+
+**A run-loop notification needs the run loop.** Everything above is synchronous.
+Foundation's own notifications mostly are not: `NSTaskDidTerminateNotification`
+is posted onto the run loop of the thread that launched the task, so sleeping
+never sees it however long the child has been dead, and pumping sees it at once.
+That is [Speech](#speech)'s lesson arriving somewhere far less expected — a
+notification feels passive, and this one is not.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 879 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 889 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

@@ -114,6 +114,11 @@
            #:tagged-pointer-p #:count-of #:ownership-walk #:autorelease-walk
            #:deaths-during-loop #:leak-without-a-pool
            #:test-memory #:report-memory
+           ;; NSNotificationCenter (examples/notifications.lisp).
+           #:listener #:listener-received #:make-listener #:notifications-received
+           #:forget-notifications #:notification-plist #:notification-center
+           #:subscribe #:unsubscribe #:with-subscription #:post-notification #:run-briefly
+           #:test-notifications #:report-notifications
            ;; A class browser (examples/browser.lisp).
            #:class-selectors #:class-chain #:describe-selector #:describe-objc-class
            #:responds-p #:class-of-object #:with-traced

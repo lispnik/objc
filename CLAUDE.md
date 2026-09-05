@@ -497,9 +497,12 @@ example**, and three of them should not — `objc-unknown`,
 belong. The real remainder is one: `objc-block-live-p`.
 
 Two of those four exist to record that a facility does less than its name says.
-`define-objc-protocol` **declares** a protocol; it does not create one — the
-runtime has forbidden that since 10.5, so `objc_getProtocol` still answers null
-for a name only you have declared, and nothing can conform to it. Conformance
+`define-objc-protocol` **declares** a protocol; it does not create one, so
+`objc_getProtocol` still answers null for a name only you have declared and
+nothing can conform to it. That is this library's choice, not a system limit —
+`objc_allocateProtocol` has worked since 10.7 and `src/protocol.lisp` records
+verifying it; what such a protocol cannot carry is clang's extended method
+signatures, which is why XPC stays out of reach. Conformance
 goes the other way, through `define-objc-class`'s `:objc-protocols`, and that
 registration is real. `define-objc-typedef` is a name for the reader: a method
 declared `time-interval` encodes as `d` and its signature reads back `:double`,

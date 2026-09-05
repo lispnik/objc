@@ -1356,11 +1356,15 @@ the runtime has it, a `probe-file` where it does not.
 
 The last two defining macros, and neither does what its name suggests.
 
-**`define-objc-protocol` does not create a protocol.** The runtime has not
-allowed that since macOS 10.5. It records a *declaration* — the methods you
-expect a protocol to have — for protocols that already exist. Measured:
-`objc_getProtocol` still answers null for a name only you have declared, so
-nothing can conform to it. Conformance goes the other way, through
+**`define-objc-protocol` does not create a protocol.** It records a
+*declaration* — the methods you expect a protocol to have — for protocols that
+already exist. Measured: `objc_getProtocol` still answers null for a name only
+you have declared, so nothing can conform to it. The manual's reason for this
+("impossible on 10.5 and later") is stale — `objc_allocateProtocol` has worked
+since 10.7, and `src/protocol.lisp` records this repository verifying it — so
+the restriction is the library's choice. What a runtime-created protocol still
+cannot carry is the extended method signatures clang emits, which is why
+`NSXPCInterface` refuses one. Conformance goes the other way, through
 `define-objc-class`'s `:objc-protocols`, and that registration is real —
 `-conformsToProtocol:` reads it back from the runtime.
 

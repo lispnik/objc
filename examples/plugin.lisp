@@ -4,12 +4,20 @@
 ;;;; DEFINE-OBJC-TYPEDEF.  Both are worth using and neither does what its name
 ;;;; suggests, which is the reason this file exists.
 ;;;;
-;;;; DEFINE-OBJC-PROTOCOL DOES NOT CREATE A PROTOCOL.  The runtime has not
-;;;; allowed that since macOS 10.5, and this library says so in the docstring.
-;;;; What it records is a DECLARATION -- the methods you expect a protocol to
-;;;; have -- for protocols that already exist.  Measured, so the distinction is
-;;;; not theoretical: after declaring "LispOnlyProtocol", objc_getProtocol still
-;;;; returns null for it, and no class can be made to conform.
+;;;; DEFINE-OBJC-PROTOCOL DOES NOT CREATE A PROTOCOL.  What it records is a
+;;;; DECLARATION -- the methods you expect a protocol to have -- for protocols
+;;;; that already exist.  Measured, so the distinction is not theoretical: after
+;;;; declaring "LispPluginProtocol", objc_getProtocol still returns null for it,
+;;;; and no class can be made to conform.
+;;;;
+;;;; Note WHY, because the obvious reason is wrong and the manual gives it.  The
+;;;; manual says creating a protocol is impossible on 10.5 and later; that has
+;;;; not been true since 10.7, when objc_allocateProtocol and
+;;;; objc_registerProtocol arrived, and src/protocol.lisp records this repository
+;;;; verifying it -- allocated, registered, and found again under its own name.
+;;;; So this is a library DECISION, not a system limit.  What a runtime-created
+;;;; protocol still cannot carry is the extended method signatures clang emits,
+;;;; which is why NSXPCInterface refuses one; see src/protocol.lisp.
 ;;;;
 ;;;; So conformance goes the other way.  A class adopts an EXISTING protocol
 ;;;; through DEFINE-OBJC-CLASS's :OBJC-PROTOCOLS option, and that registration is
@@ -100,7 +108,10 @@ class that does not adopt it."
                      ("startupTime" time-interval)))
 
 (defun declared-protocol-is-real-p (name)
-  "Whether declaring NAME put an actual protocol into the runtime.  It does not."
+  "Whether declaring NAME put an actual protocol into the runtime.  It does not.
+
+Not because the runtime refuses -- objc_allocateProtocol has worked since 10.7 --
+but because DEFINE-OBJC-PROTOCOL declares rather than creates.  See the header."
   (and (find-protocol name) t))
 
 ;;; A worked example -------------------------------------------------------------------------
@@ -122,8 +133,9 @@ adopt.
 
 :DECLARED-PROTOCOL-IS-REAL is the one that matters.  DEFINE-OBJC-PROTOCOL
 records a declaration and the runtime still has no such protocol, so nothing can
-conform to it and nothing can be checked against it.  It is a declaration, as
-the docstring says, and this is what that costs.
+conform to it and nothing can be checked against it.  That is the library's
+choice rather than the system's limit -- objc_allocateProtocol has worked since
+10.7 -- and the header says what the choice costs.
 
 :SIGNATURE shows the typedef erased: -startupTime is declared TIME-INTERVAL and
 reads back as :DOUBLE with the encoding \"d@:\"."

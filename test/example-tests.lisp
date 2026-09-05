@@ -784,10 +784,12 @@ to become a Lisp error before it becomes an exception."
 neither does what its name suggests.
 
 :DECLARED-PROTOCOL-IS-REAL is the finding.  DEFINE-OBJC-PROTOCOL records a
-declaration; the runtime has not allowed creating a protocol since macOS 10.5,
-so objc_getProtocol still answers null for a name only we have declared, and
-nothing can conform to it or be checked against it.  The docstring says as much;
-this measures it.
+declaration, so objc_getProtocol still answers null for a name only we have
+declared and nothing can conform to it.  Not because the runtime forbids
+creating one -- objc_allocateProtocol has worked since macOS 10.7, and
+src/protocol.lisp records this repository verifying it -- but because the
+library declines to expose that.  The manual's "impossible since 10.5" is stale;
+the behaviour it describes is still what happens.
 
 Conformance therefore goes the other way, through DEFINE-OBJC-CLASS's
 :OBJC-PROTOCOLS option, and :CONFORMS-TO-NSCOPYING is Cocoa's own answer read

@@ -675,3 +675,143 @@ still ends the image; see kvo.lisp."
                "NSTaskDidTerminateNotification arrives when the run loop is served")
       (is (null (getf result :task-with-sleeping))
           "and never arrives when it is not, however long you sleep"))))
+
+(test the-geometry-example-crosses-both-ways
+  "examples/geometry.lisp is six of the eleven symbols COCOA exports -- the four
+NS-* structure types and the four SET-NS-* writers -- none of which had an
+example beyond canvas.lisp naming NS-RECT as a method argument type.
+
+:BUFFER-AS-ARGUMENT is what gives the writers a purpose.  It fills an NSRect in
+foreign memory with SET-NS-RECT*, hands the POINTER to a method that wants a
+structure by value, and gets the same four numbers back -- so a filled buffer
+and the #(x y width height) vector really are interchangeable.
+
+:LONG-VECTOR-TRUNCATED records a trap rather than a feature.  A vector with too
+many components is accepted where a structure is expected and the extras are
+dropped in silence; too few signals from inside the conversion, naming an index
+rather than the call.  Neither is checked, and they are not symmetric."
+  (with-runtime
+    (let ((result (objc/examples:test-geometry)))
+      (is (equalp #(3.0d0 4.0d0) (getf result :point)))
+      (is (equalp #(10.0d0 20.0d0) (getf result :size)))
+      (is (equalp #(1.0d0 2.0d0 3.0d0 4.0d0) (getf result :rect)))
+      (is (equal '(5 . 7) (getf result :range))
+          "an NSRange converts to a CONS, not a vector like the other three")
+      (is (equal '(1.0d0 2.0d0 3.0d0 4.0d0) (getf result :filled-buffer))
+          "SET-NS-RECT* wrote four doubles")
+      (is (equalp #(1.0d0 2.0d0 3.0d0 4.0d0) (getf result :buffer-as-argument))
+          "and the buffer was accepted where the vector is")
+      (is (equal '(9.0d0 8.0d0 7.0d0 6.0d0) (getf result :into-buffer))
+          "INVOKE-INTO copied a structure result into a buffer we supplied")
+      (is (equal '(5 . 7) (getf result :range-buffer))
+          "SET-NS-RANGE* wrote two unsigned 64-bit integers, not doubles")
+      (is (equalp #(10.0d0 18.0d0) (getf result :method-size))
+          "a Lisp method took an NS-POINT and returned an NS-SIZE by value")
+      (is (equalp #(0.0d0 0.0d0 10.0d0 20.0d0) (getf result :method-bounds)))
+      (is-true (getf result :long-vector-truncated)
+               "extra components are dropped without a word")
+      (is (equalp #(0 0 30 30) (getf result :union))
+          "the arithmetic is ours, because NSUnionRect is a C function taking ~
+structures by value and cannot be called"))))
+
+(test the-strings-example-finds-where-cocoa-and-lisp-disagree
+  "examples/strings.lisp is NSNotFound, STRING-TO-NS-STRING and OBJC-C-STRING,
+and the two places the string bridge stops being invisible.
+
+:MISS is NIL rather than a range at 9223372036854775807.  NSNotFound is
+NSIntegerMax, not -1, so a MINUSP test passes it straight through and the caller
+indexes a string at nine quintillion.
+
+:LISP-SUBSEQ-IS-WRONG is the assertion with teeth and it is deliberately not an
+error.  An NSString counts UTF-16 code units and a Lisp string counts
+characters, so one astral character shifts every later offset by one: SUBSEQ at
+the Cocoa offset returns \"ail \" instead of \"tail\".  In bounds, a string, and
+the wrong one.  -substringWithRange: is right, because there both the range and
+the string are Cocoa's."
+  (with-runtime
+    (let ((result (objc/examples:test-strings)))
+      (is (equal '(7 . 5) (getf result :hit)))
+      (is (null (getf result :miss))
+          "a failed search is NIL here, not a range located at NSNotFound")
+      (is (string= "made by hand" (getf result :round-trip))
+          "STRING-TO-NS-STRING and back")
+      (is (= 5 (getf result :utf8-bytes))
+          "read through the OBJC-C-STRING descriptor explicitly")
+      (is (string= "from Lisp" (getf result :c-string-method))
+          "a Lisp method declared to return char *")
+      (is (= 17 (getf result :lisp-length)) "Lisp counts characters")
+      (is (= 18 (getf result :ns-length)) "and NSString counts UTF-16 code units")
+      (is (= 1 (getf result :disagreement))
+          "one astral character, so every later offset is out by one")
+      (is-true (getf result :lisp-subseq-is-wrong)
+               "SUBSEQ at the Cocoa offset is in bounds and wrong")
+      (is (string= "tail" (getf result :cocoa-substring))
+          "-substringWithRange: is right, because Cocoa agrees with itself")
+      (is (string= "tail" (getf result :lisp-substring-with-lisp-index))
+          "and so is SUBSEQ, given a Lisp index"))))
+
+(test the-task-example-drains-the-pipe-before-it-waits
+  "examples/task.lisp runs a subprocess and reads it through an NSPipe.
+
+:LARGE-BYTES is the assertion that means anything.  A macOS pipe holds about
+64KB; past that a child blocks in write(2) until something reads, so calling
+-waitUntilExit before draining the pipe deadlocks -- the parent waiting for the
+child, the child waiting for the parent, no error and no timeout.  196608 bytes
+is comfortably past the buffer, so the wrong order would HANG this test rather
+than fail it, which is why the right order is worth asserting.
+
+The deadlock itself is documented in the file and not demonstrated, for the
+reason memory.lisp gives about draining a pool on the wrong thread: an example
+that hangs the suite is not an example.
+
+:BAD-PATH-REPORTED matters for a different reason.  -launch raises on a path
+that does not exist and an NSException ends the process, so a launch failure has
+to become a Lisp error before it becomes an exception."
+  (with-runtime
+    (let ((result (objc/examples:test-task)))
+      (is (string= "hello" (getf result :output)))
+      (is (= 0 (getf result :status)))
+      (is (= 3 (getf result :failing-status)) "a non-zero exit is reported")
+      (is (string= "" (getf result :empty)))
+      (is (equal '("one" "two") (getf result :lines)))
+      (is (= 196608 (getf result :large-bytes))
+          "three times the pipe buffer, read to the end before waiting")
+      (is-true (getf result :bad-path-reported)
+               "a bad launch path is a Lisp error, not an NSException"))))
+
+(test the-plugin-example-separates-declaring-from-creating
+  "examples/plugin.lisp is the last two defining macros without an example, and
+neither does what its name suggests.
+
+:DECLARED-PROTOCOL-IS-REAL is the finding.  DEFINE-OBJC-PROTOCOL records a
+declaration; the runtime has not allowed creating a protocol since macOS 10.5,
+so objc_getProtocol still answers null for a name only we have declared, and
+nothing can conform to it or be checked against it.  The docstring says as much;
+this measures it.
+
+Conformance therefore goes the other way, through DEFINE-OBJC-CLASS's
+:OBJC-PROTOCOLS option, and :CONFORMS-TO-NSCOPYING is Cocoa's own answer read
+back with -conformsToProtocol: rather than our bookkeeping.  :CONFORMS-TO-NSCODING
+is the control.
+
+:SIGNATURE shows a typedef erased at the boundary: -startupTime is declared
+TIME-INTERVAL and reads back as :DOUBLE with the encoding \"d@:\".  That is what a
+typedef is -- a name for the reader, and no type checking at all."
+  (with-runtime
+    (let ((result (objc/examples:test-plugin)))
+      (is-true (getf result :conforms-to-nscopying)
+               ":OBJC-PROTOCOLS registered the conformance with the runtime")
+      (is (null (getf result :conforms-to-nscoding))
+          "and did not register one it was not given")
+      (is (null (getf result :unknown-protocol))
+          "a protocol that does not exist is not conformed to")
+      (is (null (getf result :declared-protocol-is-real))
+          "DEFINE-OBJC-PROTOCOL declares; it does not create")
+      (is (= -1.0d0 (getf result :before-start)))
+      (is (= 0.25d0 (getf result :after-start)))
+      (is (= 21.0d0 (getf result :scaled)) "a typedef'd argument and result")
+      (is (equal '((objc:objc-object-pointer objc:sel) :double "d@:")
+                 (getf result :signature))
+          "the typedef is erased: the runtime sees a double")
+      (is-true (getf result :copy-works)
+               "NSCopying conformance is honest -- -copy gives a working copy"))))

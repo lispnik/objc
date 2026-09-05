@@ -119,6 +119,25 @@
            #:forget-notifications #:notification-plist #:notification-center
            #:subscribe #:unsubscribe #:with-subscription #:post-notification #:run-briefly
            #:test-notifications #:report-notifications
+           ;; The COCOA geometry types (examples/geometry.lisp).
+           #:box-point #:box-size #:box-rect #:box-range #:unbox
+           #:with-ns-point #:with-ns-size #:with-ns-rect #:with-ns-range
+           #:rect-buffer-values #:range-buffer-values #:placement #:make-placement
+           #:union-rect #:point-in-rect-p
+           #:test-geometry #:report-geometry
+           ;; NSString (examples/strings.lisp).
+           #:ns-string #:lisp-string #:utf8-bytes #:find-substring
+           #:substring-by-range #:index-disagreement #:ns-length
+           #:labeller #:labeller-label #:make-labeller
+           #:test-strings #:report-strings
+           ;; NSTask and NSPipe (examples/task.lisp).
+           #:make-shell-task #:launch-task #:run-command #:data-to-string
+           #:command-output-lines
+           #:test-task #:report-task
+           ;; Protocols and typedefs (examples/plugin.lisp).
+           #:plugin #:plugin-name #:plugin-started-p #:make-plugin
+           #:find-protocol #:conforms-p #:declared-protocol-is-real-p
+           #:test-plugin #:report-plugin
            ;; A class browser (examples/browser.lisp).
            #:class-selectors #:class-chain #:describe-selector #:describe-objc-class
            #:responds-p #:class-of-object #:with-traced

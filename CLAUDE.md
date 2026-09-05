@@ -432,7 +432,7 @@ Each of these is a bug that actually happened here.
 
 ## The examples
 
-`examples/` is thirty-three files and half the repository. Each headless one has a
+`examples/` is thirty-seven files and half the repository. Each headless one has a
 `test-<thing>` entry point returning a plist of what happened, asserted by the
 `examples` suite in `test/example-tests.lisp`; the windowed ones are in
 `gui-tests.lisp` and skip without a window server.
@@ -471,6 +471,10 @@ those are the ones not to rewrite casually:
 | `undo` | `NSUndoManager` running Lisp methods | a forwarding proxy is invisible to this library |
 | `memory` | retain counts and pools | what `with-autorelease-pool` is doing for everyone else |
 | `notifications` | `NSNotificationCenter` | the handler runs on the POSTING thread |
+| `geometry` | the four `COCOA` structure types | a filled buffer passes where the vector does |
+| `strings` | `NSString` search and conversion | UTF-16 offsets into a string Lisp is not holding |
+| `task` | `NSTask` and `NSPipe` | read the pipe BEFORE you wait, or deadlock |
+| `plugin` | protocols and typedefs | declaring a protocol is not creating one |
 
 The examples were measured against the library's exported operators, and the
 gap they left was the CLOS half: `objc-object-copied`, `objc-object-destroyed`,
@@ -485,15 +489,21 @@ retain/release pair had none until `memory`; and `cocoa:add-observer` and
 reaches `-addObserver:forKeyPath:` through raw `invoke` and the `COCOA` package
 does not cover it at all.
 
-Still thin, if another is wanted: `define-objc-typedef`, `define-objc-protocol`,
-`string-to-ns-string`, `objc-c-string`, `objc-block-live-p`, and six of
-`COCOA`'s eleven symbols — `ns-not-found`, `ns-point`, `ns-size` and the four
-`set-ns-*` setters.
+`geometry`, `strings`, `task` and `plugin` closed the rest: `COCOA` is fully
+covered, and so is every defining macro. **Four exported symbols still have no
+example**, and three of them should not — `objc-unknown`,
+`objc-at-question-mark` and `objc-c++-bool` appear in signatures the runtime
+*hands you*, never in code you write, and the oracle tests are where they
+belong. The real remainder is one: `objc-block-live-p`.
 
-Three of the type descriptors — `objc-unknown`, `objc-at-question-mark`,
-`objc-c++-bool` — are not an example's job. They appear in signatures the
-runtime *hands you*, never in code you write; the oracle tests are where they
-belong.
+Two of those four exist to record that a facility does less than its name says.
+`define-objc-protocol` **declares** a protocol; it does not create one — the
+runtime has forbidden that since 10.5, so `objc_getProtocol` still answers null
+for a name only you have declared, and nothing can conform to it. Conformance
+goes the other way, through `define-objc-class`'s `:objc-protocols`, and that
+registration is real. `define-objc-typedef` is a name for the reader: a method
+declared `time-interval` encodes as `d` and its signature reads back `:double`,
+with no type checking anywhere.
 
 `undo` records a limitation worth knowing before reaching for a proxy:
 `-prepareWithInvocationTarget:` returns an object that *forwards* rather than

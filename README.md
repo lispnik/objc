@@ -53,7 +53,7 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-892 checks, green on a clean GitHub runner as well as locally. Behaviour the
+931 checks, green on a clean GitHub runner as well as locally. Behaviour the
 manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
 recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
@@ -417,6 +417,14 @@ unchanged:
 - `examples/notifications.lisp` — `NSNotificationCenter` through
   `cocoa:add-observer`, and which thread the handler runs on. See
   [Notifications](#notifications).
+- `examples/geometry.lisp` — the four `COCOA` structure types, by value and
+  through a foreign buffer. See [Geometry](#geometry).
+- `examples/strings.lisp` — `NSString` search and conversion, and where its
+  indices stop matching Lisp's. See [Strings](#strings).
+- `examples/task.lisp` — running a subprocess through an `NSPipe`. See
+  [Subprocesses](#subprocesses).
+- `examples/plugin.lisp` — protocols and typedefs, and what each one is not. See
+  [Protocols and typedefs](#protocols-and-typedefs).
 
 ### Running them
 
@@ -1253,13 +1261,123 @@ never sees it however long the child has been dead, and pumping sees it at once.
 That is [Speech](#speech)'s lesson arriving somewhere far less expected — a
 notification feels passive, and this one is not.
 
+### Geometry
+
+```lisp
+(unbox (box-rect 1 2 3 4) :rect)     ; => #(1.0d0 2.0d0 3.0d0 4.0d0)
+(unbox (box-range 5 7) :range)       ; => (5 . 7)   -- a cons, not a vector
+
+(with-ns-rect (r 0 0 320 200)
+  (objc:invoke "NSValue" "valueWithRect:" r))   ; a filled buffer works too
+```
+
+`ns-point`, `ns-size`, `ns-rect` and `ns-range` with the four `set-ns-*`
+writers — six of the eleven symbols `COCOA` exports, and the part of it with no
+example until now.
+
+A structure crosses in one of two shapes. As a **Lisp value**: `#(x y)`,
+`#(width height)`, `#(x y width height)` — and `ns-range` as a **cons**,
+`(location . length)`, which is the manual's asymmetry and catches people. Or as
+a **pointer** to memory you filled, which is what the `set-ns-*` writers are
+for; a filled buffer is accepted anywhere the vector is.
+
+**A vector of the wrong length is not checked**, and the two failures are not
+symmetric: too few components signal from inside the conversion, naming an index
+rather than your call, and too many are **silently dropped**.
+
+**Foundation's own geometry functions are out of reach.** `NSUnionRect`,
+`NSIntersectionRect` and `NSPointInRect` are plain C functions taking structures
+by value, not messages — no encoding to read, no trampoline to build, and CFFI
+signals `COMPILED-PROGRAM-ERROR` without libffi. Anything reachable by *message*
+is fine, which is why the `NSValue` boxing route works; the arithmetic here is
+in Lisp because there is no alternative.
+
+### Strings
+
+```lisp
+(find-substring "hello, world" "world")   ; => (7 . 5)
+(find-substring "hello, world" "zzz")     ; => NIL, not a range at NSNotFound
+(report-strings)
+```
+
+Strings cross constantly and mostly invisibly. This is the two places that stops
+being true, both of which fail quietly.
+
+**A failed search returns `NSNotFound`, which is not −1.** It is `NSIntegerMax`,
+9223372036854775807, arriving as the location of a zero-length range. Test it
+against `cocoa:ns-not-found`; test it with `minusp` and you have a program that
+indexes a string at nine quintillion.
+
+**An `NSString` counts UTF-16 code units and a Lisp string counts characters.**
+They agree until a character outside the basic plane appears, and then they
+differ by one per such character, silently:
+
+```
+"a😀b tail and more"   Lisp LENGTH 17, -length 18
+-rangeOfString: "tail"  location 5
+POSITION of "tail"      4
+(subseq text 5 9)       "ail "   -- in bounds, no error, wrong answer
+```
+
+An `NSRange` is an offset into a string Lisp is not holding. Keep ranges on the
+Cocoa side — `-substringWithRange:` is right because Cocoa is consistent with
+itself — and search Lisp strings with Lisp functions.
+
+### Subprocesses
+
+```lisp
+(run-command "sw_vers -productVersion")   ; => "26.6.2", 0
+(command-output-lines "printf 'one\ntwo\n'")
+```
+
+`NSTask` and `NSPipe`. `notifications.lisp` already launches a task to watch its
+termination notification; this is the pipe half, and the pipe is where the trap
+is.
+
+**`-waitUntilExit` before draining the pipe deadlocks**, and only once the child
+writes more than the buffer holds — about 64KB on macOS. Under that the obvious
+order works; over it the child blocks in `write(2)` waiting for a reader and the
+parent blocks waiting for the child, with no error and no timeout. Read to the
+end *first*: `-readDataToEndOfFile` returns when the child closes its end, which
+is what `-waitUntilExit` was going to wait for anyway. The test moves 196608
+bytes, so the wrong order would hang it rather than fail it.
+
+**`-launch` raises on a bad path**, and an `NSException` ends the process, so the
+failure has to be turned into a Lisp error first — `-launchAndReturnError:` where
+the runtime has it, a `probe-file` where it does not.
+
+### Protocols and typedefs
+
+```lisp
+(conforms-p (make-plugin "example") "NSCopying")   ; => T
+(conforms-p (make-plugin "example") "NSCoding")    ; => NIL
+(report-plugin)
+```
+
+The last two defining macros, and neither does what its name suggests.
+
+**`define-objc-protocol` does not create a protocol.** The runtime has not
+allowed that since macOS 10.5. It records a *declaration* — the methods you
+expect a protocol to have — for protocols that already exist. Measured:
+`objc_getProtocol` still answers null for a name only you have declared, so
+nothing can conform to it. Conformance goes the other way, through
+`define-objc-class`'s `:objc-protocols`, and that registration is real —
+`-conformsToProtocol:` reads it back from the runtime.
+
+**`define-objc-typedef` is for the reader, not the runtime.** A method declared
+to return `time-interval` encodes as `"d@:"` and its signature reads back
+`:double`; the name is erased at the boundary exactly as a C typedef is. That
+buys code that reads like the headers, and no type checking whatsoever —
+`NSTimeInterval` and `CGFloat` are both doubles and nothing will stop you
+confusing them.
+
 ## Testing
 
 ```
 make test
 ```
 
-The suite runs 892 checks. Behaviour that the manual leaves ambiguous was
+The suite runs 931 checks. Behaviour that the manual leaves ambiguous was
 settled by running the real thing: `test/oracle/answers.lisp` records what
 LispWorks Personal 8.1 actually does, and `test/oracle-tests.lisp` asserts
 against it. The answers were gathered by hand because LispWorks Personal cannot

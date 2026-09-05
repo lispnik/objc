@@ -509,6 +509,11 @@ process exits as soon as the form returns.
 
 ### The live canvas
 
+There is a four-minute screen-recording script for this in
+[`doc/demo.md`](doc/demo.md) — staged, timed, and run end to end, including the
+one thing that will ruin a take (AppKit needs thread 1, so it is a plain
+terminal `sbcl` and not SLY).
+
 From a **plain `sbcl` REPL** (thread 1), open the canvas and then reshape what it
 draws without closing it:
 

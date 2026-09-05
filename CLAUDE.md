@@ -446,6 +446,7 @@ those are the ones not to rewrite casually:
 | file | subject | why it exists |
 |---|---|---|
 | `canvas` | a live `NSView` you redraw from the REPL | struct-by-value in both directions |
+| — | `doc/demo.md` scripts `canvas` + `shader` as a recorded demo | every form in it has been run |
 | `vision` | OCR, and `read-barcodes` | a framework returning a `CGRect` by value |
 | `status-item` | a menu-bar item | target/action, and AppKit's own run loop |
 | `gcd` | Grand Central Dispatch | what block creation bought; the concurrency limit |

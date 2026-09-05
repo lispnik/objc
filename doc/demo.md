@@ -173,15 +173,29 @@ Objective-C runtime:
 
 ```
 LispCanvasView : NSView : NSResponder : NSObject
-2 instance methods
+4 instance methods
+  copyWithZone:
+      (POINTER VOID) -> OBJC-OBJECT-POINTER
+  dealloc
+      (no arguments) -> VOID
   drawRect:
-      (:STRUCT COCOA:NS-RECT) -> :VOID
+      (STRUCT NS-RECT) -> VOID
   isFlipped
-      (no arguments) -> OBJC-BOOL
+      (no arguments) -> OBJC-C++-BOOL
 ```
 
-The superclass chain is the runtime's, and so is that argument type: `-drawRect:`
-really does take an `NSRect` by value.
+Three things in that output are worth a sentence each, and they are the best
+thirty seconds in the demo:
+
+- **Four methods, and you wrote two.** `-copyWithZone:` and `-dealloc` are
+  installed on every Lisp-defined class by the library, which is what makes a
+  Lisp object safe to put in an `NSDictionary` — see `examples/collections.lisp`.
+- **`(STRUCT NS-RECT) -> VOID`** is read out of the runtime, not out of your
+  source. `-drawRect:` really is taking a C struct by value on every repaint you
+  just watched.
+- **`OBJC-C++-BOOL`**, not `OBJC-BOOL`. That is `B` in the encoding, which is how
+  `BOOL` spells itself on Apple silicon; on Intel the same method reads back as
+  `c`. Nobody wrote that type anywhere — the runtime handed it over.
 
 > "That's not a wrapper object. Objective-C has a real class here, with real
 > method implementations, and they are Lisp functions. The runtime cannot tell

@@ -91,7 +91,8 @@
            #:test-scene-kit #:report-scene-kit
            ;; Audio synthesis (examples/audio.lisp).
            #:synthesize #:play #:sine #:fm #:chord #:write-wav
-           #:make-audio-engine #:test-audio #:report-audio
+           #:make-audio-engine #:render-block-usable-p
+           #:test-audio #:report-audio
            ;; A shader playground (examples/shader.lisp).
            #:shader-png #:shader-file #:shader-bytes #:run-shader #:draw-shader
            #:*shader* #:test-shader #:report-shader

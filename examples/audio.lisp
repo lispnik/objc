@@ -65,6 +65,23 @@ Each channel is its own AudioBuffer for a non-interleaved format, which is what
 apart."
   (cffi:mem-ref buffer-list :pointer (+ +buffer-list-data-offset+ (* channel 16))))
 
+(defun render-block-usable-p (block)
+  "Whether BLOCK can still be handed to an engine.
+
+OBJC-BLOCK-LIVE-P, which answers NIL in two situations and it is worth knowing
+both.  The obvious one is that FREE-OBJC-BLOCK has been called -- and calling it
+twice is a no-op rather than a double free, so a wrapper you still hold is safe
+to ask about but not to use.
+
+The other is an image dump.  Nothing block-related survives SAVE-LISP-AND-DIE:
+the invoke functions are alien callables and the descriptors are malloc'd, so
+they are all dangling in a restored image.  Rather than hand out a stale
+pointer, the restore hook marks every live record freed -- so a block made
+before the dump answers NIL here instead of crashing when something calls it.
+A program that keeps a long-lived block across a dump has to make a new one, and
+this is how it finds out."
+  (objc:objc-block-live-p block))
+
 (defun make-render-block (instrument rate channels)
   "A block that fills each buffer by calling INSTRUMENT with the time in seconds.
 
@@ -91,7 +108,13 @@ It runs on the audio thread; see the header."
 
 Returns (VALUES ENGINE FORMAT BLOCK).  The block must outlive the engine, so the
 caller keeps it and frees it after stopping -- an engine that is still running
-will call it."
+will call it.
+
+This is the case WITH-OBJC-BLOCK cannot serve, and the reason MAKE-OBJC-BLOCK is
+exported at all: the storage has to outlive the form that made it, so freeing is
+the caller's job and there is a window in which the wrapper is held but the
+storage is gone.  OBJC-BLOCK-LIVE-P is the question to ask in that window; see
+RENDER-BLOCK-USABLE-P below."
   (ensure-audio)
   (let* ((engine (objc:alloc-init-object "AVAudioEngine"))
          (format (objc:invoke (objc:invoke "AVAudioFormat" "alloc")
@@ -172,6 +195,8 @@ closure."
   (ensure-audio)
   (multiple-value-bind (engine format block) (make-audio-engine instrument :rate rate)
     (declare (ignore format))
+    (unless (render-block-usable-p block)
+      (error "The render block is not live; it cannot be given to an engine."))
     (unwind-protect
          (progn
            (cffi:with-foreign-object (error-out :pointer)
@@ -247,7 +272,10 @@ is the point of having rendered offline at all."
 
     (objc/examples:test-audio)
     => (:FRAMES 4410 :STARTS-AT-ZERO T :IN-RANGE T :PEAK 0.3536
-        :ZERO-CROSSINGS 43 :FM-DIFFERS T :WAV-HEADER T)
+        :ZERO-CROSSINGS 43 :FM-DIFFERS T
+        :BLOCK-LIFETIME (:LIVE-WHEN-MADE T :DEAD-AFTER-FREE NIL
+                         :SECOND-FREE-IS-A-NO-OP T)
+        :WAV-HEADER T)
 
 :ZERO-CROSSINGS is the assertion with teeth: it is a claim about the FREQUENCY
 of what came back rather than about some numbers having arrived.  A 440Hz tone
@@ -262,7 +290,13 @@ took a moment to believe: 0.5 divided by the square root of two, exactly.  The
 main mixer attenuates by that much on the way through -- consistent with the
 equal-power pan law a mono source gets when it is spread across a stereo output,
 though that explanation is inference and the 1/sqrt(2) is the measurement.  The
-assertion is on the measured figure, so it will notice if it ever changes."
+assertion is on the measured figure, so it will notice if it ever changes.
+
+:BLOCK-LIFETIME is here rather than anywhere else because this is the only
+example whose block outlives the form that made it.  Freeing twice is a no-op,
+not a double free, so a wrapper you still hold stays safe to ask about after the
+storage is gone -- which is what OBJC-BLOCK-LIVE-P is for, and what the restore
+hook uses to answer honestly after an image dump."
   (ensure-audio)
   (let* ((rate +default-sample-rate+)
          (seconds 1/10)
@@ -278,6 +312,15 @@ assertion is on the measured figure, so it will notice if it ever changes."
           :peak peak
           :zero-crossings crossings
           :fm-differs (not (equalp samples fm-samples))
+          :block-lifetime
+          ;; The one place a block's storage outlives the form that made it, so
+          ;; the only place OBJC-BLOCK-LIVE-P has anything to say.
+          (let ((block (make-render-block (sine 440) rate 1)))
+            (list :live-when-made (render-block-usable-p block)
+                  :dead-after-free (progn (objc:free-objc-block block)
+                                          (render-block-usable-p block))
+                  :second-free-is-a-no-op
+                  (progn (objc:free-objc-block block) t)))
           :wav-header
           (uiop:with-temporary-file (:pathname path :type "wav")
             (write-wav samples path)

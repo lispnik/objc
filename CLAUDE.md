@@ -494,7 +494,9 @@ covered, and so is every defining macro. **Four exported symbols still have no
 example**, and three of them should not — `objc-unknown`,
 `objc-at-question-mark` and `objc-c++-bool` appear in signatures the runtime
 *hands you*, never in code you write, and the oracle tests are where they
-belong. The real remainder is one: `objc-block-live-p`.
+belong. `objc-block-live-p` closed in `audio.lisp`, which is the only example
+whose block outlives the form that made it — so **every exported symbol that
+should have an example now has one.**
 
 Two of those four exist to record that a facility does less than its name says.
 `define-objc-protocol` **declares** a protocol; it does not create one, so

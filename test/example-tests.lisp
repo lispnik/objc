@@ -336,6 +336,14 @@ zero upward once each, and the last may fall past the final sample."
           "the tone came back at the frequency it was asked for")
       (is (< 0.35 (getf result :peak) 0.36)
           "amplitude 0.5 arrives as 0.5/sqrt(2); the mixer attenuates")
+      (let ((lifetime (getf result :block-lifetime)))
+        (is-true (getf lifetime :live-when-made)
+                 "a block whose storage outlives the form that made it")
+        (is (null (getf lifetime :dead-after-free))
+            "OBJC-BLOCK-LIVE-P answers NIL once it is freed -- the same answer ~
+the restore hook gives for a block that did not survive an image dump")
+        (is-true (getf lifetime :second-free-is-a-no-op)
+                 "and freeing twice is a no-op rather than a double free"))
       (is-true (getf result :fm-differs) "a different instrument gives a different wave")
       (is-true (getf result :wav-header) "and the WAV written from it is well formed"))))
 

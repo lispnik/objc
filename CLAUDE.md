@@ -513,8 +513,13 @@ something.
 as `#P"/…/src/\\*.lisp"`, which names one file that does not exist, so
 `directory` returns NIL. `only-abi-lisp-knows-about-sb-alien` had been green
 that way — putting `sb-alien:` in `src/cocoa.lisp` did not fail it. Use
-`uiop:directory-files`, and check a new file-scanning test by breaking
-something on purpose before trusting it.
+`uiop:directory-files`, **and put a floor under the count** —
+`+minimum-source-files+` / `+minimum-example-files+`, asserted before anything
+else. "No offenders" is true of an empty scan, so the count assertion is what
+makes the real one mean something. Check a new file-scanning test by breaking
+something on purpose before trusting it. The same shape appeared in
+`no-package-exports-an-undefined-name`, which skipped a package it could not
+find; it fails now instead.
 
 **An example that reaches a system service must skip, not fail.** Three
 assertions in two days were really assertions about the machine: Quick Look does

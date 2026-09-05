@@ -49,6 +49,14 @@ jobs:
   test:
     name: sbcl · ${{ matrix.os }} (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
+    # The legs take about 3 minutes on arm64 and 5 on Intel, so 25 is loose
+    # enough never to fire on a slow runner and tight enough to be useful.
+    # Without it an Intel leg once sat in "Run tests" for 52 minutes and ended
+    # with "the hosted runner lost communication with the server" -- no logs, no
+    # failing check, and nothing to tell a hung test from a sick machine.  The
+    # same commit passed in 4m33s on the next push, so it was the runner; a cap
+    # is what makes that diagnosable rather than a mystery.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:

@@ -564,6 +564,13 @@ with one pool per iteration, all of them have."
         (is (equal '(:thread) (getf no-pool :secondary-thread))
             "on a thread that exits, the runtime pops the page during teardown")))))
 
+(defparameter +minimum-example-files+ 30
+  "A floor under the file count examples/ must produce, well below the real one.
+
+A tripwire, not a count to keep current; see +MINIMUM-SOURCE-FILES+ in
+seam-tests.lisp, which exists because a test greped an empty directory for
+months and reported that it found no problems.")
+
 (defun example-definition-name (line)
   "The name defined by LINE if it is a top-level DEFUN or DEFMACRO, else NIL."
   (let ((prefix (find-if (lambda (prefix)
@@ -594,10 +601,18 @@ were two.
 
 UIOP:DIRECTORY-FILES rather than DIRECTORY, for the reason spelled out in
 ONLY-ABI-LISP-KNOWS-ABOUT-SB-ALIEN -- which had been scanning nothing, and which
-this test was written in the image of before that was noticed."
-  (let ((definitions (make-hash-table :test #'equal)))
-    (dolist (path (uiop:directory-files
-                   (asdf:system-relative-pathname :objc "examples/") "*.lisp"))
+this test was written in the image of before that was noticed.  The count
+assertion is from the same lesson and comes first: "no clashes" is true of an
+empty scan, so without a floor this test would go quiet the day examples/ moved
+and would not say so."
+  (let ((definitions (make-hash-table :test #'equal))
+        (paths (uiop:directory-files
+                (asdf:system-relative-pathname :objc "examples/") "*.lisp")))
+    (is (<= +minimum-example-files+ (length paths))
+        "expected at least ~D files in examples/, found ~D -- this test is ~
+scanning nothing and its other assertion is vacuous"
+        +minimum-example-files+ (length paths))
+    (dolist (path paths)
       (with-open-file (stream path)
         (loop for line = (read-line stream nil)
               while line

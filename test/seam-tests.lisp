@@ -14,6 +14,15 @@
   "runloop.lisp uses SB-THREAD:MAIN-THREAD-P, which is a threading question
 rather than a foreign-ABI one and has no portable equivalent.")
 
+(defparameter +minimum-source-files+ 20
+  "A floor under the file count src/ must produce, well below the real number.
+
+Not a count to keep current -- it is a tripwire.  A test that greps a directory
+reports \"no offenders\" just as happily when the directory came back empty, and
+this project has already shipped one that did exactly that for want of this
+line.  Deliberately loose: it should fire when the scan finds nothing, and never
+because somebody added or removed a file.")
+
 (test only-abi-lisp-knows-about-sb-alien
   "src/abi.lisp is the only file that may mention sb-alien: or sb-sys:.
 
@@ -27,10 +36,21 @@ ASDF:SYSTEM-RELATIVE-PATHNAME quotes the wildcard -- \"src/*.lisp\" comes back a
 #P\"/.../src/\\\\*.lisp\", naming one file that does not exist -- so DIRECTORY
 returned NIL and this test passed by scanning nothing.  Verified by putting
 sb-alien: into src/cocoa.lisp: the test was green.  A seam nobody checks stops
-being a seam, and so does one whose check enumerates an empty list."
-  (let ((offenders '()))
-    (dolist (path (uiop:directory-files
-                   (asdf:system-relative-pathname :objc "src/") "*.lisp"))
+being a seam, and so does one whose check enumerates an empty list.
+
+Hence the count assertion, which comes FIRST.  \"No offenders in nothing\" is a
+true statement and a useless one, and it is what this reported for however long
+the bug was there.  Any test that draws its evidence from the filesystem needs a
+floor under it, or the day the directory moves is the day it stops testing and
+does not say so."
+  (let* ((paths (uiop:directory-files
+                 (asdf:system-relative-pathname :objc "src/") "*.lisp"))
+         (offenders '()))
+    (is (<= +minimum-source-files+ (length paths))
+        "expected at least ~D files in src/, found ~D -- this test is scanning ~
+nothing and its other assertion is vacuous"
+        +minimum-source-files+ (length paths))
+    (dolist (path paths)
       (let ((name (file-namestring path)))
         (unless (or (string= name +seam-file+)
                     (member name +seam-exceptions+ :test #'string=))
@@ -118,12 +138,20 @@ accidental export through as soon as someone adjusted the number to match."
 else catches: it compiles, it loads, and it fails only when someone calls it.
 
 This caught OBJC/EXAMPLES:RUN-MANUAL-EXAMPLES, which was listed in the package's
-export list and never defined."
-  (let ((missing '()))
+export list and never defined.
+
+A package that cannot be found FAILS here rather than being skipped.  It was a
+WHEN, which meant a renamed or unloaded package quietly removed itself from the
+test's scope -- the same shape as the seam test that spent its life scanning an
+empty directory.  If a package on this list is genuinely gone, the list is what
+should change, visibly."
+  (let ((missing '())
+        (unfound '()))
     (dolist (package '(:objc :cocoa :objc.runloop :objc/examples))
-      (let ((package (find-package package)))
-        (when package
-          (do-external-symbols (symbol package)
+      (let ((found (find-package package)))
+        (if (null found)
+            (push package unfound)
+          (do-external-symbols (symbol found)
             (unless (or (fboundp symbol)
                         (boundp symbol)
                         (macro-function symbol)
@@ -138,6 +166,8 @@ export list and never defined."
                         ;; without this the test calls an exported struct type
                         ;; a broken promise.  Found by exporting one.
                         (gethash symbol objc::*struct-encodings*))
-              (push (format nil "~A:~A" (package-name package) (symbol-name symbol))
+              (push (format nil "~A:~A" (package-name found) (symbol-name symbol))
                     missing))))))
+    (is (null unfound) "no such package, so it was not checked: ~{~A~^, ~}"
+        (reverse unfound))
     (is (null missing) "exported but undefined: ~{~A~^, ~}" (reverse missing))))

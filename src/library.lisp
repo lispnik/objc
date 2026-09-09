@@ -150,5 +150,7 @@ Idempotent: whichever of the UIOP and SBCL hooks fires first does the work."
 ;;; cause.
 (uiop:register-image-dump-hook '%prepare-for-dump)
 (uiop:register-image-restore-hook '%reinitialize nil)
-(pushnew '%prepare-for-dump sb-ext:*save-hooks*)
-(pushnew '%reinitialize sb-ext:*init-hooks*)
+;; Image dump and restore hooks. SBCL only: ECL's image saving works
+;; differently, and an iOS application never dumps one anyway.
+#+sbcl (pushnew '%prepare-for-dump sb-ext:*save-hooks*)
+#+sbcl (pushnew '%reinitialize sb-ext:*init-hooks*)

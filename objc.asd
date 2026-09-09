@@ -48,7 +48,10 @@ Lisp method can take and return C structs by value like any other."
                  (:file "runtime")
                  (:file "encoding")
                  (:file "types")
-                 (:file "abi")
+                 ;; The implementation seam. abi.lisp is sb-alien; abi-ecl
+                 ;; is ECL's dynamic FFI, with a narrower reach.
+                 #+sbcl (:file "abi")
+                 #+ecl (:file "abi-ecl")
                  (:file "selectors")
                  (:file "classes")
                  (:file "dispatch")

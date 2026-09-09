@@ -60,8 +60,30 @@ the full framework paths from the manual verbatim rather than a library name."
                  (error 'library-not-found :name path :candidates (list path)))
                nil))))))
 
+(defun frameworks-are-linked-in-p ()
+  "True where the Objective-C runtime and Foundation are already in the image
+rather than something to dlopen.
+
+That is every iOS build: an app links them statically, there are no
+.framework bundles at the paths this file knows, and si:load-foreign-module is
+refused outright in a statically linked ECL. The runtime is nonetheless right
+there, so the question is answered by asking it for a class rather than by
+testing a feature -- a Mac that has already loaded Foundation gets the same
+fast path, correctly.
+
+The class asked for must come from FOUNDATION, not from libobjc. NSObject is
+defined by libobjc, which macOS maps into every process, so probing it answers
+yes on a Mac where Foundation has never been opened -- and then nothing loads
+it and every Foundation class is missing."
+  (handler-case
+      (not (cffi:null-pointer-p
+            (cffi:foreign-funcall "objc_getClass" :string "NSString" :pointer)))
+    (error () nil)))
+
 (defun ensure-libobjc ()
   "Open libobjc if it is not already open.  Signals LIBRARY-NOT-FOUND otherwise."
+  (when (frameworks-are-linked-in-p)
+    (return-from ensure-libobjc t))
   (unless (cffi:foreign-library-loaded-p 'libobjc)
     (handler-case (cffi:use-foreign-library libobjc)
       (error ()
@@ -73,7 +95,9 @@ the full framework paths from the manual verbatim rather than a library name."
 (defun ensure-foundation ()
   "Open Foundation.  Almost everything interesting needs it, including the
 NSGetSizeAndAlignment we use to check struct layouts."
-  (register-module +foundation-path+))
+  (if (frameworks-are-linked-in-p)
+      t
+      (register-module +foundation-path+)))
 
 (defun ensure-appkit ()
   "Open AppKit.  Separate from Foundation because a headless process should not

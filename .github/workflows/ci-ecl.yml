@@ -1,0 +1,141 @@
+# ECL, on macOS arm64.
+#
+# A separate workflow rather than a leg of ci-macos.yml, and deliberately so.
+# That file's matrix varies the runner; this varies the *implementation*, needs
+# a Lisp built from source, and has one known failure. Folding it in would make
+# the single badge mean "both, mostly", and the whole point of that badge is
+# that it means "both pass".
+#
+# What this can and cannot prove.  Everything ci-macos.yml says about the
+# headless runner applies here too: no window server, so the gui suite skips
+# itself.  Beyond that, one test is skipped on ECL for a real reason -- a block
+# invoked on a libdispatch worker never returns -- and iOS is not exercised at
+# all.  No hosted runner has a cross-compiled ECL and building one is a
+# twenty-minute job, so the iOS half of this backend stays a manual check on a
+# device.  A green badge here means ECL on macOS, and nothing about a phone.
+
+name: ECL
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    name: ecl · macos-latest (arm64)
+    runs-on: macos-latest
+    # Building ECL is the long pole at roughly six minutes cold, and nothing
+    # after it takes more than five.  Same reasoning as the sibling workflow:
+    # loose enough never to fire on a slow runner, tight enough that a hung
+    # test is diagnosable rather than a runner that "lost communication".
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # ---------------------------------------------------------------
+      # A stock ECL cannot run this library at all, and the reason is not iOS.
+      #
+      #     (si:find-foreign-symbol "strlen" :default :pointer-void 0)
+      #     => Could not load foreign symbol "strlen" from module :DEFAULT
+      #
+      # Not objc_getClass -- strlen.  ecl_library_symbol calls dlsym(0, ...)
+      # for the :default module, and on Darwin a null handle is not the global
+      # scope; RTLD_DEFAULT is (void *)-2.  CFFI's ECL backend resolves foreign
+      # functions by name, so on a stock build CFFI resolves nothing.
+      #
+      # Delete this whole job the day the fix is upstream and `brew install ecl`
+      # carries it.
+      # ---------------------------------------------------------------
+      - name: Cache the patched ECL
+        id: ecl-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/ecl
+          # The patch is in the key, not just the revision.  A changed patch
+          # against an unchanged revision would otherwise restore the old
+          # binary and test something that is not in the tree -- which is
+          # exactly how a stale build went unnoticed here once already.
+          key: ecl-${{ runner.os }}-${{ runner.arch }}-${{ env.ECL_REVISION }}-${{ hashFiles('ci/ecl-rtld-default.patch') }}
+        env:
+          ECL_REVISION: b7c401fc6
+
+      - name: Build ECL from source, patched
+        if: steps.ecl-cache.outputs.cache-hit != 'true'
+        env:
+          ECL_REVISION: b7c401fc6
+        run: |
+          set -euo pipefail
+          brew install gmp libffi automake autoconf libtool texinfo
+          git clone https://gitlab.com/embeddable-common-lisp/ecl.git "$RUNNER_TEMP/ecl"
+          cd "$RUNNER_TEMP/ecl"
+          git checkout "$ECL_REVISION"
+          # --check first: the day this lands upstream, the patch stops
+          # applying and that should be a clear message rather than a
+          # mysterious build failure.
+          if git apply --check "$GITHUB_WORKSPACE/ci/ecl-rtld-default.patch" 2>/dev/null; then
+            git apply "$GITHUB_WORKSPACE/ci/ecl-rtld-default.patch"
+            echo "applied ecl-rtld-default.patch"
+          elif git apply --check --reverse "$GITHUB_WORKSPACE/ci/ecl-rtld-default.patch" 2>/dev/null; then
+            echo "ecl-rtld-default.patch is already present -- upstream has it; delete this step"
+          else
+            echo "ecl-rtld-default.patch does not apply to $ECL_REVISION" >&2
+            exit 1
+          fi
+          ./configure --prefix="$HOME/.local/ecl" --enable-gmp=included
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+
+      - name: Put ECL on the path
+        run: echo "$HOME/.local/ecl/bin" >> "$GITHUB_PATH"
+
+      # ocicl's installer is an SBCL program, but what it produces is a
+      # directory of source and ocicl-runtime.lisp is implementation-agnostic.
+      # So it is installed with SBCL and used from ECL.
+      - name: Install SBCL, for ocicl only
+        run: brew install sbcl
+
+      - name: Install and configure ocicl
+        run: |
+          git clone --depth 1 https://github.com/ocicl/ocicl.git "$HOME/ocicl-src"
+          ( cd "$HOME/ocicl-src" && sbcl --non-interactive --load setup.lisp )
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Restore dependencies
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          ocicl setup
+          ocicl install
+
+      - name: Report the environment the tests will see
+        # The first line is the one that matters: if :default resolves nothing,
+        # every later failure is a consequence of that and not worth reading.
+        run: |
+          ecl --norc \
+            --eval '(require :asdf)' \
+            --eval '(asdf:initialize-source-registry (list :source-registry (list :directory (uiop:getcwd)) (list :tree (merge-pathnames "ocicl/" (uiop:getcwd))) :inherit-configuration))' \
+            --eval '(format t "~&:default resolves strlen: ~A~%" (and (ignore-errors (si:find-foreign-symbol "strlen" :default :pointer-void 0)) t))' \
+            --eval '(asdf:load-system :objc)' \
+            --eval '(objc:ensure-objc-initialized)' \
+            --eval '(format t "ECL ~A on ~A~%BOOL encodes as: ~C~%compiled trampolines: ~A~%window server: ~A~%" (lisp-implementation-version) (machine-type) objc::*bool-encoding-char* (objc::compiled-trampolines-available-p) (objc.runloop:window-server-p))' \
+            --eval '(ext:quit)'
+
+      - name: Check the manual's examples still run
+        run: |
+          ecl --norc \
+            --eval '(require :asdf)' \
+            --eval '(asdf:initialize-source-registry (list :source-registry (list :directory (uiop:getcwd)) (list :tree (merge-pathnames "ocicl/" (uiop:getcwd))) :inherit-configuration))' \
+            --eval '(asdf:load-system :objc/examples)' \
+            --eval '(ext:quit (if (objc/examples:run-manual-examples) 0 1))'
+
+      - name: Run tests
+        # RUN-TESTS returns the status and ASDF discards what a TEST-OP returns,
+        # so the exit code comes from here rather than from FIVEAM:RUN!, which
+        # is how a CI run goes green on a failing suite.
+        run: |
+          ecl --norc \
+            --eval '(require :asdf)' \
+            --eval '(asdf:initialize-source-registry (list :source-registry (list :directory (uiop:getcwd)) (list :tree (merge-pathnames "ocicl/" (uiop:getcwd))) :inherit-configuration))' \
+            --eval '(asdf:load-system :objc/test)' \
+            --eval '(ext:quit (if (objc/test:run-tests) 0 1))'

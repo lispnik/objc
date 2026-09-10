@@ -2,8 +2,8 @@
 
 [![macOS](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml)
 
-The badge is SBCL on macOS. ECL is run locally and not yet by CI; iOS is run on
-the simulator by hand — see [Status](#status).
+The badge is SBCL on macOS. ECL is run locally and not yet by CI; iOS is run by
+hand, on a device — see [Status](#status).
 
 The LispWorks Objective-C interface, reimplemented for SBCL and ECL on macOS,
 and for ECL on iOS, and extended.
@@ -77,23 +77,31 @@ real part of modern Cocoa. Skipped rather than left to hang, because a hanging
 test reports nothing and costs the whole run. Note that SBCL needs a safepoint
 build for the neighbouring problem; this area is hard on both.
 
-**iOS runs, on the simulator.** Cross-compiled with
-[asdf-ios-app](https://github.com/lispnik/asdf-ios-app) and launched on an
-arm64 simulator, with no C compiler anywhere in the picture:
+**iOS runs, on a device.** Cross-compiled with
+[asdf-ios-app](https://github.com/lispnik/asdf-ios-app), signed with an Apple
+Development identity, installed with `devicectl` and run on an iPhone 16e —
+with no C compiler anywhere in the picture:
 
 ```
 1. dispatch                    -length 11, NSNumber round trip 42
 2. a structure by value        rangeOfString: (6 . 5)
                                -[UIScreen mainScreen] bounds
-                                 #(0.0d0 0.0d0 402.0d0 874.0d0)
+                                 #(0.0d0 0.0d0 390.0d0 844.0d0)
 3. a Lisp class with real IMPs 6 x 7 through objc_msgSend => 42
                                a method returning NSRange => (3 . 6)
 4. a block from a Lisp closure 42
 ```
 
-Not yet run on a physical device — that needs a provisioning profile — but the
-simulator is the same ECL, the same arm64, the same ABI and the same absence of
-a compiler.
+390x844 is that phone's own screen; the simulator reports 402x874, which is one
+way to tell the two runs apart.
+
+Two defects only the device could surface, both now fixed in `asdf-ios-app`. A
+wildcard provisioning profile's `application-identifier` is a *pattern*, and
+copying `TEAMID.*` into the binary is rejected by the installer. And ECL's
+documentation pool holds the pathname `SYS:help.doc`, so an ordinary
+`(setf (documentation ...))` at load time — which this library does thirteen
+times — opens a file no bundle contains. Neither can happen on the simulator,
+where `SYS:` resolves to a readable directory on the Mac.
 
 ### What will bite you
 

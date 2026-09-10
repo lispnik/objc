@@ -151,6 +151,11 @@ Lisp method can take and return C structs by value like any other."
                  (:file "manual-tests")
                  (:file "gui-tests")
                  (:file "seam-tests")
+                 ;; The ECL backend's own obligations -- struct decomposition
+                 ;; above all, whose failure mode is a wrong number rather than
+                 ;; an error. Nothing to assert on SBCL, where abi.lisp hands
+                 ;; the whole question to the C compiler.
+                 #+ecl (:file "abi-ecl-tests")
                  (:file "oracle-tests")
                  (:file "thread-tests")
                  (:file "dump-tests"))))

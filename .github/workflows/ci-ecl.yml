@@ -20,11 +20,21 @@ on:
   push:
     branches: [master, main]
   pull_request:
+  # This one is hand-runnable.  The sibling workflows are not, because they
+  # only ever need to answer "does this commit pass"; this one also has to
+  # answer "did the ECL build step work yet", and iterating on that through
+  # empty commits is a poor way to spend a morning.
+  workflow_dispatch:
 
 jobs:
   test:
     name: ecl · macos-latest (arm64)
     runs-on: macos-latest
+    # The revision lives here, not on the two steps that use it: a cache key
+    # and the checkout that fills the cache must never disagree, and the surest
+    # way to keep them honest is to give them one place to read it from.
+    env:
+      ECL_REVISION: b7c401fc6
     # Building ECL is the long pole at roughly six minutes cold, and nothing
     # after it takes more than five.  Same reasoning as the sibling workflow:
     # loose enough never to fire on a slow runner, tight enough that a hung
@@ -58,13 +68,9 @@ jobs:
           # binary and test something that is not in the tree -- which is
           # exactly how a stale build went unnoticed here once already.
           key: ecl-${{ runner.os }}-${{ runner.arch }}-${{ env.ECL_REVISION }}-${{ hashFiles('ci/ecl-rtld-default.patch') }}
-        env:
-          ECL_REVISION: b7c401fc6
 
       - name: Build ECL from source, patched
         if: steps.ecl-cache.outputs.cache-hit != 'true'
-        env:
-          ECL_REVISION: b7c401fc6
         run: |
           set -euo pipefail
           brew install gmp libffi automake autoconf libtool texinfo

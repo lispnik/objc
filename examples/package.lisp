@@ -184,3 +184,20 @@ Each binding is (var type), where TYPE is an Objective-C type descriptor."
               collect `(,var :uint8 ,(objc::node-size-and-alignment
                                       (objc::node-for-fli-type type))))
      ,@body))
+
+(in-package #:objc/examples)
+
+;;; RENAME-FILE over an existing file is not portable -- SBCL replaces the
+;;; target, ECL signals a FILE-ERROR -- and two examples rename a temporary over
+;;; a file something else is watching, which is exactly the atomic-save pattern
+;;; an editor uses.  rename(2) is what an editor actually calls, and it is
+;;; atomic on every Unix.
+
+(cffi:defcfun ("rename" %rename) :int (from :string) (to :string))
+
+(defun %rename-over (from to)
+  "Rename FROM onto TO, replacing TO if it exists.  Returns TO."
+  (let ((code (%rename (uiop:native-namestring from) (uiop:native-namestring to))))
+    (unless (zerop code)
+      (error "Could not rename ~A onto ~A." from to))
+    to))

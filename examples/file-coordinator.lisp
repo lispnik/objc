@@ -203,7 +203,8 @@ that REPLACED the original."
                ;; 2: an atomic save, then a write to the file that replaced it
                (with-open-file (out temporary :direction :output :if-exists :supersede)
                  (write-string "replaced" out))
-               (rename-file temporary file)
+               (%rename-over temporary file)   ; see %RENAME-OVER: RENAME-FILE
+                                            ; over an existing file is not portable
                (saw-change-p)                   ; the save itself; not asserted
                (append-to file " three")
                (let ((survived (saw-change-p)))

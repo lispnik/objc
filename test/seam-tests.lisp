@@ -76,6 +76,14 @@ compatibility, and someone porting code will ask DESCRIBE what it is."
                     (documentation symbol 'structure)
                     (and (find-class symbol nil) (documentation (find-class symbol) t)))
           (push symbol undocumented))))
+    ;; ECL discards (SETF (DOCUMENTATION x 'FUNCTION)) -- measured on 26.5.5,
+    ;; for an ordinary DEFUN as well as for a structure accessor, where the
+    ;; setter returns the string and DOCUMENTATION then answers NIL. The
+    ;; library attaches a docstring that way for the one exported name
+    ;; DEFSTRUCT gives nowhere to put one, so the symbol is documented in the
+    ;; source and unreachable at run time on that implementation. Asserted
+    ;; where it can be, rather than deleted or quietly weakened everywhere.
+    #+ecl (setf undocumented (remove 'objc:objc-block-pointer undocumented))
     (is (null undocumented) "undocumented exported symbols: ~S" (reverse undocumented))))
 
 (defparameter +lispworks-objc-symbols+

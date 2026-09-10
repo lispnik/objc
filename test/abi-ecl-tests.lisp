@@ -189,12 +189,37 @@ most often -- CFFI:MAKE-POINTER signalled a type error inside COERCE."
                           (objc:invoke (objc:invoke "NSNumber" "numberWithInt:" 7)
                                        "description")))))))
 
-(test a-struct-result-is-refused-not-guessed
-  "Until a compiled trampoline exists, this must fail loudly rather than return
-origin.x and call it a rectangle."
+(test a-struct-result-comes-back-whole
+  "The case the dynamic path can never do, and the reason Strategy B exists.
+
+A scalar return type names exactly one register, so reading an NSRange back as
+:LONG gives its location and nothing else. This must be the compiled trampoline
+answering, not the dynamic one guessing."
   (if (not (ecl-foundation-available-p))
       (skip "Foundation not available")
       (let ((string (objc:invoke "NSString" "stringWithUTF8String:" "hello world")))
-        (signals objc::ecl-abi-unsupported
-          (objc:invoke string "rangeOfString:"
-                       (objc:invoke "NSString" "stringWithUTF8String:" "world"))))))
+        (if (not (objc::compiled-trampolines-available-p))
+            (skip "no C compiler: a struct result cannot be built here")
+            (is (equal '(6 . 5)
+                       (objc:invoke string "rangeOfString:"
+                                    (objc:invoke "NSString" "stringWithUTF8String:"
+                                                 "world"))))))))
+
+(test a-struct-crosses-into-a-lisp-method-and-back
+  "Both directions through a generated C shim: an NSRect argument arrives as a
+vector of doubles, an NSRange result goes back as a cons."
+  (if (or (not (ecl-foundation-available-p))
+          (not (objc::compiled-trampolines-available-p)))
+      (skip "needs Foundation and a C compiler")
+      (progn
+        (eval '(objc:define-objc-class abi-ecl-shape () ()
+                (:objc-class-name "AbiEclShape")))
+        (eval '(objc:define-objc-method ("areaOf:" :double)
+                ((self abi-ecl-shape) (r cocoa:ns-rect))
+                (* (aref r 2) (aref r 3))))
+        (eval '(objc:define-objc-method ("spanFrom:" cocoa:ns-range)
+                ((self abi-ecl-shape) (n (:unsigned :int)))
+                (cons n (* 2 n))))
+        (let ((object (objc:alloc-init-object "AbiEclShape")))
+          (is (= 42d0 (objc:invoke object "areaOf:" '(0d0 0d0 6d0 7d0))))
+          (is (equal '(3 . 6) (objc:invoke object "spanFrom:" 3)))))))

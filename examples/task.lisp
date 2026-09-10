@@ -119,7 +119,7 @@ most of the time -- so it is read as counted bytes, deliberately."
         (let ((octets (make-array length :element-type '(unsigned-byte 8))))
           (dotimes (i length)
             (setf (aref octets i) (cffi:mem-aref bytes :unsigned-char i)))
-          (sb-ext:octets-to-string octets :external-format :utf-8)))))
+          (babel:octets-to-string octets :encoding :utf-8)))))
 
 (defun command-output-lines (command)
   "Run COMMAND and return its output as a list of lines."

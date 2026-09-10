@@ -69,7 +69,7 @@
 ;;; were standing, not where Foundation ran the method.
 (objc:define-objc-method ("noted:" :void)
     ((self listener) (notification objc:objc-object-pointer))
-  (push (list* :thread (sb-thread:thread-name sb-thread:*current-thread*)
+  (push (list* :thread (bt:thread-name (bt:current-thread))
                (notification-plist notification))
         (listener-received self)))
 
@@ -255,8 +255,8 @@ anything at all."
       ;; records its own thread, so the answer is Foundation's, not ours.
       (forget-notifications listener)
       (with-subscription (listener "ThreadedNote")
-        (sb-thread:join-thread
-         (sb-thread:make-thread
+        (bt:join-thread
+         (bt:make-thread
           (lambda () (objc:with-autorelease-pool () (post-notification "ThreadedNote")))
           :name "poster"))
         (setf handler-thread

@@ -411,6 +411,258 @@ values, which is why every expander returns a list."
                          (si:call-cfun entry result-type types frame))))
               (if void-result-p nil raw))))))))
 
+
+;;; Strategy B: compiled trampolines ------------------------------------------
+;;;
+;;; ECL's compiler emits C and shells out to a C compiler, so on a machine that
+;;; has one this can do what the dynamic path cannot: hand the ABI to the C
+;;; compiler, which is the only thing that reliably knows it. Structs by value
+;;; in both directions, homogeneous float aggregates, x8 indirect returns and
+;;; genuine variadic calls all come free, because none of them is our problem
+;;; any more.
+;;;
+;;; The cost is a subprocess per distinct call signature. dispatch.lisp already
+;;; memoises trampolines by canonical signature, so that is once per shape for
+;;; the life of the image -- the same bargain abi.lisp strikes on SBCL, which
+;;; JITs per signature and caches too.
+;;;
+;;; Not available on iOS: there is no C compiler on a phone, and ECL's COMPILE
+;;; there yields bytecode. That is what Strategy C is for.
+
+(defvar *compiled-trampolines-available* :unknown
+  "T, NIL, or :UNKNOWN before the first attempt. See COMPILED-TRAMPOLINES-AVAILABLE-P.")
+
+(defvar *trampoline-directory* nil)
+
+(defvar *trampoline-counter* 0)
+
+(defparameter *trampoline-linker-libs* "-lobjc -framework Foundation"
+  "What a generated trampoline has to be linked against.
+
+A STRING, not a list, because that is what C::*USER-LINKER-LIBS* is despite
+defaulting to '() -- a list reaches CHAR and dies. Without it the C compiles
+cleanly and the LINK fails on objc_msgSend, which ECL's default link line does
+not mention.")
+
+(defun %trampoline-directory ()
+  (or *trampoline-directory*
+      (setf *trampoline-directory*
+            (ensure-directories-exist
+             (merge-pathnames (format nil "objc-trampolines-~36r/" (random (expt 36 8)))
+                              (uiop:temporary-directory))))))
+
+;;; C type names --------------------------------------------------------------
+
+(defun %c-scalar-name (node)
+  "The C spelling of a scalar node."
+  (ecase node
+    ((:void :unknown) "void")
+    (:char "signed char")
+    (:uchar "unsigned char")
+    (:short "short")
+    (:ushort "unsigned short")
+    (:int "int")
+    (:uint "unsigned int")
+    ;; 'l' and 'L' are 32 bits by definition of the encoding.
+    (:long "int32_t")
+    (:ulong "uint32_t")
+    (:long-long "long long")
+    (:ulong-long "unsigned long long")
+    (:float "float")
+    (:double "double")
+    ;; One byte holding 1 or 0, matching the manual's contract at both ends.
+    (:bool "unsigned char")
+    ((:id :class :sel :cstring :block) "void *")))
+
+(defun %c-type-name (node definitions)
+  "The C spelling of NODE, pushing any struct typedefs it needs onto DEFINITIONS.
+
+Structs are emitted as real nested C structs rather than flattened to their
+leaves. Flattening happens to be layout-identical for the shapes the dynamic
+path accepts and is not in general -- padding depends on the member types --
+and here there is no reason to take the risk: the C compiler will lay it out
+correctly if simply told the truth."
+  (etypecase node
+    (keyword (values (%c-scalar-name node) definitions))
+    (cons
+     (ecase (first node)
+       (:pointer (values "void *" definitions))
+       (:qualified (%c-type-name (third node) definitions))
+       (:array
+        ;; Only ever inside a struct, where C needs the element type and count.
+        (multiple-value-bind (element definitions)
+            (%c-type-name (third node) definitions)
+          (values (format nil "~a [~d]" element (second node)) definitions)))
+       ((:struct :union)
+        (let* ((resolved (if (third node) node (resolve-struct-layout node)))
+               (fields (third resolved))
+               (name (format nil "objc_aggregate_~d" (incf *trampoline-counter*)))
+               (members '()))
+          (unless fields
+            (%unsupported "BUILD-TRAMPOLINE"
+                          (format nil "~s has no layout; it cannot be described to C"
+                                  node)))
+          (loop for field in fields
+                for index from 0
+                do (multiple-value-bind (type more) (%c-type-name field definitions)
+                     (setf definitions more)
+                     ;; An array type's brackets belong after the member name.
+                     (let ((bracket (position #\[ type)))
+                       (push (if bracket
+                                 (format nil "  ~a m~d~a;"
+                                         (string-right-trim " " (subseq type 0 bracket))
+                                         index (subseq type bracket))
+                                 (format nil "  ~a m~d;" type index))
+                             members))))
+          (values name
+                  (cons (format nil "typedef ~a {~%~{~a~%~}} ~a;"
+                                (if (eq (first resolved) :union) "union" "struct")
+                                (nreverse members) name)
+                        definitions))))))))
+
+;;; Source generation ---------------------------------------------------------
+
+(defun %trampoline-source (kind result-node arg-nodes n-fixed function-name)
+  "The Lisp source for one compiled trampoline, as a string."
+  (let* ((*trampoline-counter* 0)
+         (definitions '())
+         (structp (struct-node-p result-node))
+         (result-c (multiple-value-bind (type more)
+                       (%c-type-name (if structp
+                                         (resolve-struct-layout result-node)
+                                         result-node)
+                                     definitions)
+                     (setf definitions more)
+                     type))
+         (arg-cs (loop for node in arg-nodes
+                       collect (multiple-value-bind (type more)
+                                   (%c-type-name node definitions)
+                                 (setf definitions more)
+                                 type)))
+         (entry (ecase kind (:send "objc_msgSend") (:super "objc_msgSendSuper")))
+         (lisp-args (loop for i from 0 below (length arg-nodes)
+                          collect (format nil "a~d" i)))
+         ;; Struct arguments reach us as SAPs and are dereferenced in the C.
+         (ecl-arg-types (loop for node in arg-nodes
+                              collect (if (struct-node-p node)
+                                          :pointer-void
+                                          (ecl-foreign-type node))))
+         ;; #0 is OUT, so the call's own arguments start at #1. Getting this
+         ;; wrong passes the result buffer as the receiver, which segfaults on
+         ;; the first send rather than failing to compile.
+         (call-args (loop for node in arg-nodes
+                          for i from 1
+                          for c-type in arg-cs
+                          collect (if (struct-node-p node)
+                                      (format nil "*(~a *)#~d" c-type i)
+                                      (format nil "(~a)#~d" c-type i))))
+         ;; The prototype. n-fixed marks where the variadic part begins, and
+         ;; splicing the ellipsis in is what makes this a genuine Darwin arm64
+         ;; variadic call -- without it the arguments go in registers and the
+         ;; callee reads the stack.
+         (prototype-args
+           (if n-fixed
+               (format nil "~{~a~^,~}~@[,...~]"
+                       (subseq arg-cs 0 (min n-fixed (length arg-cs))) t)
+               (format nil "~{~a~^,~}" arg-cs))))
+    (with-output-to-string (out)
+      (format out ";;;; Generated by objc for one call signature. Not for editing.~%")
+      (format out "(in-package #:objc)~%~%")
+      (format out "(ffi:clines~%  \"#include <objc/runtime.h>\"~%~
+                   ~2t\"#include <objc/message.h>\"~%  \"#include <stdint.h>\"")
+      (dolist (definition (reverse definitions))
+        (format out "~%  ~s" definition))
+      (format out ")~%~%")
+      ;; The OUT parameter is the struct result buffer; for a scalar result it
+      ;; is a null pointer and unused, which keeps one contract for both.
+      (format out "(defun ~a (out~{ ~a~})~%" function-name lisp-args)
+      (format out "  (ffi:c-inline (out~{ ~a~}) (:pointer-void~{ ~s~}) ~s \"{~%"
+              lisp-args ecl-arg-types
+              (cond (structp :object)
+                    ((member result-node '(:void :unknown)) :void)
+                    (t (ecl-foreign-type result-node))))
+      (cond
+        (structp
+         (format out "    ~a r = ((~a(*)(~a))~a)(~{~a~^, ~});~%"
+                 result-c result-c prototype-args entry call-args)
+         (format out "    *(~a *)#0 = r;~%" result-c)
+         (format out "    @(return) = ECL_NIL;~%"))
+        ((member result-node '(:void :unknown))
+         (format out "    ((void(*)(~a))~a)(~{~a~^, ~});~%"
+                 prototype-args entry call-args))
+        (t
+         (format out "    @(return) = ((~a(*)(~a))~a)(~{~a~^, ~});~%"
+                 result-c prototype-args entry call-args)))
+      (format out "  }\" :one-liner nil :side-effects t))~%"))))
+
+;;; Compilation ---------------------------------------------------------------
+
+(defun %compile-and-load (source function-name)
+  "Compile SOURCE and return the function it defines, or NIL."
+  (let* ((stem (format nil "objc-tramp-~a" function-name))
+         (lisp (make-pathname :name stem :type "lisp"
+                             :defaults (%trampoline-directory)))
+         (fasl (make-pathname :name stem :type "fas"
+                             :defaults (%trampoline-directory))))
+    (with-open-file (out lisp :direction :output :if-exists :supersede)
+      (write-string source out))
+    (handler-case
+        (let (;; FFI::*USE-DFFI* NIL or FFI:DEFCALLBACK emits a libffi closure
+              ;; rather than a C function. Harmless for a trampoline and
+              ;; essential for an IMP, so it is bound for both.
+              (ffi::*use-dffi* nil)
+              (c::*user-linker-libs* *trampoline-linker-libs*)
+              (c::*suppress-compiler-warnings* t)
+              (c::*suppress-compiler-notes* t)
+              (*compile-verbose* nil)
+              (*compile-print* nil))
+          (multiple-value-bind (output warnings failure)
+              (compile-file lisp :output-file fasl)
+            (declare (ignore warnings))
+            (when (or failure (null output))
+              (return-from %compile-and-load nil))
+            (load output)
+            (fdefinition (find-symbol (string-upcase function-name) '#:objc))))
+      (error () nil))))
+
+(defun compiled-trampolines-available-p ()
+  "Whether this image can compile a trampoline, decided by compiling one.
+
+Asked rather than assumed. A C compiler is not a property of the platform: it
+is present on a developer's Mac and absent on a phone, and on a Mac it can also
+be absent until the command line tools are installed. The answer is cached
+because finding it out costs a subprocess."
+  (when (eq *compiled-trampolines-available* :unknown)
+    (setf *compiled-trampolines-available*
+          (and (find-package "C")
+               (handler-case
+                   (let ((probe (%compile-and-load
+                                 (format nil ";;;; capability probe~%~
+                                              (in-package #:objc)~%~
+                                              (defun objc-tramp-probe (x)~%~
+                                                (ffi:c-inline (x) (:int) :int~%~
+                                                  \"@(return) = #0 + 1;\"~%~
+                                                  :one-liner nil))~%")
+                                 "objc-tramp-probe")))
+                     (and probe (eql 2 (funcall probe 1))))
+                 (error () nil)))))
+  *compiled-trampolines-available*)
+
+(defun %compiled-trampoline (kind result-node arg-nodes n-fixed)
+  "A trampoline compiled for this exact signature, or NIL."
+  (when (compiled-trampolines-available-p)
+    (let* ((name (format nil "objc-tramp-~d" (incf *trampoline-counter*)))
+           (source (handler-case
+                       (%trampoline-source kind result-node arg-nodes n-fixed name)
+                     (error () nil))))
+      (when source
+        (let ((function (%compile-and-load source name)))
+          (when function
+            ;; The compiled function already has the contract's shape: OUT
+            ;; first, a struct result written through it, NIL returned.
+            (lambda (&rest args)
+              (with-fp-traps-masked (apply function args)))))))))
+
 (defun build-trampoline (kind result-node arg-nodes &optional n-fixed)
   "Compile a function that sends one exact call signature.
 
@@ -423,10 +675,13 @@ compiler and reaches every scalar and pointer signature, which is most of
 Cocoa; the rest -- struct results, variadics, and the struct arguments AAPCS64
 does not pass like separate scalars -- needs a compiled trampoline."
   (or (%dynamic-trampoline kind result-node arg-nodes n-fixed)
+      (%compiled-trampoline kind result-node arg-nodes n-fixed)
       (%unsupported
        "BUILD-TRAMPOLINE"
-       (format nil "~a result~@[, ~a~] -- needs a compiled trampoline"
-               (if (struct-node-p result-node) "a struct" "this")
+       (format nil "~a~@[ ~a~] and no C compiler is available to build one"
+               (if (struct-node-p result-node)
+                   "a struct result"
+                   "this signature")
                (and n-fixed "variadic")))))
 
 (defun build-block-caller (result-node arg-nodes invoke-offset)

@@ -79,7 +79,10 @@ Lisp method can take and return C structs by value like any other."
   :version "0.4.1"
   :homepage "https://github.com/lispnik/objc"
   :serial t
-  :depends-on (#:objc)
+  ;; BABEL is named rather than relied on through CFFI: a few examples convert
+  ;; octets to text, and depending on a transitive dependency for that is how a
+  ;; build breaks when the intermediate stops needing it.
+  :depends-on (#:objc #:babel)
   :components ((:module "examples"
                 :serial t
                 :components
@@ -158,7 +161,12 @@ Lisp method can take and return C structs by value like any other."
                  #+ecl (:file "abi-ecl-tests")
                  (:file "oracle-tests")
                  (:file "thread-tests")
-                 (:file "dump-tests"))))
+                 ;; Image dumping, which ECL does not do at all: there is no
+                 ;; SAVE-LISP-AND-DIE, and the platform this backend exists for
+                 ;; forbids re-executing a dumped image in the first place.
+                 ;; Excluded rather than skipped, because the file cannot be
+                 ;; read there -- SB-EXT does not exist.
+                 #+sbcl (:file "dump-tests"))))
   ;; FIVEAM:RUN! prints its report and returns NIL when anything failed, and
   ;; ASDF discards what a TEST-OP returns.  Reporting by return value is how a
   ;; CI run goes green on a suite that failed, so signal instead.

@@ -20,6 +20,12 @@
            #:register-module
            #:with-dynamic-foreign-objects))
 
+;;; A handful of examples turn octets into text and back.  SB-EXT is not the
+;;; place to reach for that: it is the one thing in examples/ that would not
+;;; compile on any implementation but SBCL, and the library itself is careful
+;;; not to do it.  BABEL is already in the dependency graph under CFFI and says
+;;; the same thing portably.
+
 (defpackage #:objc/examples
   (:use #:cl #:objc)
   (:export #:run-manual-examples

@@ -38,6 +38,17 @@
 (cffi:defcfun ("sel_getName" %selector-name) :string (selector :pointer))
 (cffi:defcfun ("object_getClass" %object-class) :pointer (object :pointer))
 
+;; class_copyMethodList hands back memory the Objective-C runtime malloc'd, and
+;; malloc'd memory is freed with free.  CFFI:FOREIGN-FREE is documented to pair
+;; with CFFI:FOREIGN-ALLOC, and on SBCL the two allocators happen to be the same
+;; one, so using it here worked and was still wrong.  On ECL they are not, and
+;; the result is heap corruption reported some distance away as
+;;
+;;     Detected write access to the environment while interrupts were disabled
+;;
+;; followed by a segmentation fault.
+(cffi:defcfun ("free" %free) :void (pointer :pointer))
+
 (defun class-selectors (class &key containing (class-methods nil))
   "Every method CLASS implements itself, as selector strings.
 
@@ -62,7 +73,7 @@ library exports.  An example is the right place for it."
                          when (or (null containing) (search containing name))
                            collect name)
                    #'string<)
-          (unless (cffi:null-pointer-p methods) (cffi:foreign-free methods)))))))
+          (unless (cffi:null-pointer-p methods) (%free methods)))))))
 
 (defun class-chain (class)
   "CLASS and everything it inherits from, as names, most derived first."

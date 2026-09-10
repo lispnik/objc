@@ -48,7 +48,10 @@ Lisp method can take and return C structs by value like any other."
                  (:file "runtime")
                  (:file "encoding")
                  (:file "types")
-                 (:file "abi")
+                 ;; The implementation seam. abi.lisp is sb-alien; abi-ecl
+                 ;; is ECL's dynamic FFI, with a narrower reach.
+                 #+sbcl (:file "abi")
+                 #+ecl (:file "abi-ecl")
                  (:file "selectors")
                  (:file "classes")
                  (:file "dispatch")
@@ -76,7 +79,10 @@ Lisp method can take and return C structs by value like any other."
   :version "0.4.1"
   :homepage "https://github.com/lispnik/objc"
   :serial t
-  :depends-on (#:objc)
+  ;; BABEL is named rather than relied on through CFFI: a few examples convert
+  ;; octets to text, and depending on a transitive dependency for that is how a
+  ;; build breaks when the intermediate stops needing it.
+  :depends-on (#:objc #:babel)
   :components ((:module "examples"
                 :serial t
                 :components
@@ -148,9 +154,19 @@ Lisp method can take and return C structs by value like any other."
                  (:file "manual-tests")
                  (:file "gui-tests")
                  (:file "seam-tests")
+                 ;; The ECL backend's own obligations -- struct decomposition
+                 ;; above all, whose failure mode is a wrong number rather than
+                 ;; an error. Nothing to assert on SBCL, where abi.lisp hands
+                 ;; the whole question to the C compiler.
+                 #+ecl (:file "abi-ecl-tests")
                  (:file "oracle-tests")
                  (:file "thread-tests")
-                 (:file "dump-tests"))))
+                 ;; Image dumping, which ECL does not do at all: there is no
+                 ;; SAVE-LISP-AND-DIE, and the platform this backend exists for
+                 ;; forbids re-executing a dumped image in the first place.
+                 ;; Excluded rather than skipped, because the file cannot be
+                 ;; read there -- SB-EXT does not exist.
+                 #+sbcl (:file "dump-tests"))))
   ;; FIVEAM:RUN! prints its report and returns NIL when anything failed, and
   ;; ASDF discards what a TEST-OP returns.  Reporting by return value is how a
   ;; CI run goes green on a suite that failed, so signal instead.

@@ -610,7 +610,7 @@ were two.
 UIOP:DIRECTORY-FILES rather than DIRECTORY, for the reason spelled out in
 ONLY-ABI-LISP-KNOWS-ABOUT-SB-ALIEN -- which had been scanning nothing, and which
 this test was written in the image of before that was noticed.  The count
-assertion is from the same lesson and comes first: "no clashes" is true of an
+assertion is from the same lesson and comes first: \"no clashes\" is true of an
 empty scan, so without a floor this test would go quiet the day examples/ moved
 and would not say so."
   (let ((definitions (make-hash-table :test #'equal))
@@ -669,7 +669,11 @@ still ends the image; see kvo.lisp."
         (is (string= "ExampleNote" (getf first :name)))
         (is (equal '("who" "a value") (getf first :info))
             "the userInfo dictionary came back unpacked")
-        (is (string= "main thread" (getf first :thread))
+        ;; The thread this is running on, not the literal "main thread", which
+        ;; is only SBCL's name for it.  What the assertion means is that
+        ;; delivery is a synchronous send inside -postNotificationName:, so the
+        ;; handler runs wherever the post did -- and that is what this says.
+        (is (string= (bt:thread-name (bt:current-thread)) (getf first :thread))
             "posted from this thread, so handled on this thread"))
       (is-true (getf result :wrong-sender-ignored)
                "an :OBJECT registration filters on the sender")
@@ -796,7 +800,7 @@ declaration, so objc_getProtocol still answers null for a name only we have
 declared and nothing can conform to it.  Not because the runtime forbids
 creating one -- objc_allocateProtocol has worked since macOS 10.7, and
 src/protocol.lisp records this repository verifying it -- but because the
-library declines to expose that.  The manual's "impossible since 10.5" is stale;
+library declines to expose that.  The manual's \"impossible since 10.5\" is stale;
 the behaviour it describes is still what happens.
 
 Conformance therefore goes the other way, through DEFINE-OBJC-CLASS's

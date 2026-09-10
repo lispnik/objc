@@ -205,8 +205,8 @@ not died by the time this returns, and that is all this can honestly claim."
     ;; watch a variable nothing ever pushes to and report a leak that is not
     ;; happening.
     (setf *deaths* '())
-    (sb-thread:join-thread
-     (sb-thread:make-thread
+    (bt:join-thread
+     (bt:make-thread
       (lambda () (objc:autorelease (make-tracked :thread)) :done)))
     ;; The pool page is popped during teardown, which JOIN-THREAD does not wait
     ;; for; two seconds is far longer than it takes and reports honestly if not.

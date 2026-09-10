@@ -76,6 +76,14 @@ compatibility, and someone porting code will ask DESCRIBE what it is."
                     (documentation symbol 'structure)
                     (and (find-class symbol nil) (documentation (find-class symbol) t)))
           (push symbol undocumented))))
+    ;; ECL discards (SETF (DOCUMENTATION x 'FUNCTION)) -- measured on 26.5.5,
+    ;; for an ordinary DEFUN as well as for a structure accessor, where the
+    ;; setter returns the string and DOCUMENTATION then answers NIL. The
+    ;; library attaches a docstring that way for the one exported name
+    ;; DEFSTRUCT gives nowhere to put one, so the symbol is documented in the
+    ;; source and unreachable at run time on that implementation. Asserted
+    ;; where it can be, rather than deleted or quietly weakened everywhere.
+    #+ecl (setf undocumented (remove 'objc:objc-block-pointer undocumented))
     (is (null undocumented) "undocumented exported symbols: ~S" (reverse undocumented))))
 
 (defparameter +lispworks-objc-symbols+
@@ -99,7 +107,7 @@ compatibility, and someone porting code will ask DESCRIBE what it is."
 The manual has 43 reference pages: OBJC-OBJECT-POINTER gets two of them, one for
 the reader function and one for the FLI type descriptor, and it is one symbol.")
 
-(defparameter +sbcl-additions+
+(defparameter +objc-additions+
   '("DEFINE-OBJC-BLOCK-TYPE" "MAKE-OBJC-BLOCK" "FREE-OBJC-BLOCK" "WITH-OBJC-BLOCK"
     "CALL-OBJC-BLOCK" "OBJC-BLOCK" "OBJC-BLOCK-POINTER" "OBJC-BLOCK-LIVE-P")
   "Block creation, which LispWorks has no OBJC interface for at all.
@@ -108,7 +116,21 @@ There it lives in the FLI -- ALLOCATE-FOREIGN-BLOCK and
 DEFINE-FOREIGN-BLOCK-CALLABLE-TYPE -- and there is no FLI here.  Exported from
 OBJC rather than a sibling package because a block is Objective-C's own notion
 and belongs beside INVOKE, and listed separately here so the line between what
-LispWorks promises and what this library adds stays legible.")
+LispWorks promises and what this library adds stays legible.
+
+Named for the library rather than for SBCL, which it was when SBCL was the only
+implementation.")
+
+(defparameter +ecl-additions+
+  '("DEFINE-OBJC-TRAMPOLINE" "DEFINE-OBJC-CALLABLE-POOL")
+  "Ahead-of-time trampolines, which only ECL needs.
+
+A call shape the dynamic FFI cannot express -- a struct result above all -- is
+built by the C compiler at run time on a Mac and cannot be built at all on a
+phone, where ECL's COMPILE yields bytecode. So on iOS it has to be in the image
+before it ships, and these are how a user asks for one -- DEFINE-OBJC-TRAMPOLINE
+for calling out, DEFINE-OBJC-CALLABLE-POOL for the IMPs a Lisp-defined class
+needs. SBCL is not given symbols it could do nothing with.")
 
 (test the-exported-surface-is-the-lispworks-one-plus-the-block-api
   "OBJC exports the 42 documented LispWorks symbols and the 8 block symbols, and
@@ -122,7 +144,8 @@ accidental export through as soon as someone adjusted the number to match."
                    names)
                  #'string<)))
     (let ((expected (sort (append (copy-list +lispworks-objc-symbols+)
-                                  (copy-list +sbcl-additions+))
+                                  (copy-list +objc-additions+)
+                                  #+ecl (copy-list +ecl-additions+))
                           #'string<))
           (actual (exported :objc)))
       (is (null (set-difference actual expected :test #'string=))

@@ -73,7 +73,7 @@ runtime does not have, not a thing to write every day."
 
 (defun babel-length (string)
   "The number of bytes STRING takes in UTF-8."
-  (length (sb-ext:string-to-octets string :external-format :utf-8)))
+  (length (babel:string-to-octets string :encoding :utf-8)))
 
 ;;; Searching, and where the offsets live ---------------------------------------------------
 

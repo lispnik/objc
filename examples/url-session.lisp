@@ -166,7 +166,7 @@ gcd.lisp draws."
     (values (when content
               (ecase as
                 (:bytes content)
-                (:string (sb-ext:octets-to-string content :external-format :utf-8))))
+                (:string (babel:octets-to-string content :encoding :utf-8))))
             status
             failure)))
 
@@ -194,8 +194,8 @@ overlapping handlers would end the process."
                                       (list (when bytes
                                               (ecase as
                                                 (:bytes bytes)
-                                                (:string (sb-ext:octets-to-string
-                                                          bytes :external-format :utf-8))))
+                                                (:string (babel:octets-to-string
+                                                          bytes :encoding :utf-8))))
                                             code error))
                                 (bt:with-lock-held (lock)
                                   (when (zerop (decf remaining))

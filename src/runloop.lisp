@@ -51,7 +51,11 @@ AppKit requires thread 1, and SBCL's REPL already runs there -- which is why
 LispWorks' MP:INITIALIZE-MULTIPROCESSING has no equivalent here and needs none:
 its whole purpose is to hand thread 1 over to Cocoa, and on SBCL Cocoa already
 has it."
-  (sb-thread:main-thread-p))
+  #+sbcl (sb-thread:main-thread-p)
+  ;; ECL has no equivalent predicate. MP:*CURRENT-PROCESS* is named SI:TOP-LEVEL
+  ;; on the initial thread, but that is a REPL detail and an embedded image need
+  ;; not honour it. Asking pthread is what the docstring above actually means.
+  #+ecl (= 1 (cffi:foreign-funcall "pthread_main_np" :int)))
 
 (defun check-main-thread (&optional operation)
   (unless (main-thread-p)

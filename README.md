@@ -2,7 +2,11 @@
 
 [![macOS](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml)
 
-The LispWorks Objective-C interface, reimplemented for SBCL on macOS and extended.
+The badge is SBCL on macOS. ECL is run locally and not yet by CI; iOS is run by
+hand, on a device — see [Status](#status).
+
+The LispWorks Objective-C interface, reimplemented for SBCL and ECL on macOS,
+and for ECL on iOS, and extended.
 
 The packages are literally named `OBJC` and `COCOA`, the exported symbols have
 the LispWorks names and lambda lists, and code written against the *LispWorks
@@ -53,10 +57,51 @@ Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
 [Blocks](#blocks).
 
-934 checks, green on a clean GitHub runner as well as locally. Behaviour the
-manual leaves ambiguous was settled by running LispWorks Personal 8.1 and
-recording what it actually did; those answers are committed and asserted
+934 checks on SBCL, green on a clean GitHub runner as well as locally.
+Behaviour the manual leaves ambiguous was settled by running LispWorks Personal
+8.1 and recording what it actually did; those answers are committed and asserted
 against, so the differential tests run without LispWorks installed.
+
+### ECL
+
+989 of 990 checks. Everything above works there: `invoke`, real IMPs, blocks
+from Lisp closures, and structures by value in both directions. One test is
+skipped, and one platform is unverified.
+
+**A block invoked on a libdispatch worker hangs.** The generated callable calls
+`ecl_import_current_thread` before touching Lisp, which is the documented way in
+and is not sufficient — the callback never returns. Everything synchronous is
+fine: a block called from Lisp runs, carries structures, and contains its own
+errors. What is affected is `dispatch_async` and completion handlers, which is a
+real part of modern Cocoa. Skipped rather than left to hang, because a hanging
+test reports nothing and costs the whole run. Note that SBCL needs a safepoint
+build for the neighbouring problem; this area is hard on both.
+
+**iOS runs, on a device.** Cross-compiled with
+[asdf-ios-app](https://github.com/lispnik/asdf-ios-app), signed with an Apple
+Development identity, installed with `devicectl` and run on an iPhone 16e —
+with no C compiler anywhere in the picture:
+
+```
+1. dispatch                    -length 11, NSNumber round trip 42
+2. a structure by value        rangeOfString: (6 . 5)
+                               -[UIScreen mainScreen] bounds
+                                 #(0.0d0 0.0d0 390.0d0 844.0d0)
+3. a Lisp class with real IMPs 6 x 7 through objc_msgSend => 42
+                               a method returning NSRange => (3 . 6)
+4. a block from a Lisp closure 42
+```
+
+390x844 is that phone's own screen; the simulator reports 402x874, which is one
+way to tell the two runs apart.
+
+Two defects only the device could surface, both now fixed in `asdf-ios-app`. A
+wildcard provisioning profile's `application-identifier` is a *pattern*, and
+copying `TEAMID.*` into the binary is rejected by the installer. And ECL's
+documentation pool holds the pathname `SYS:help.doc`, so an ordinary
+`(setf (documentation ...))` at load time — which this library does thirteen
+times — opens a file no bundle contains. Neither can happen on the simulator,
+where `SYS:` resolves to a readable directory on the Mac.
 
 ### What will bite you
 
@@ -66,6 +111,10 @@ against, so the differential tests run without LispWorks installed.
   a selector the class does not implement is a Lisp error raised before anything
   is sent. A genuine `NSException` from inside a method that *does* exist will
   take the image down.
+- **On ECL, a block invoked on a libdispatch worker hangs.** Not the same
+  problem as the SBCL one below, and worse in one way: it does not fail, it
+  stops. `dispatch_async` and completion handlers are what this affects;
+  everything synchronous works. See [Status](#ecl).
 - **Running Lisp on two libdispatch threads at once needs a safepoint SBCL.** A
   block runs on a thread SBCL did not create; a garbage collection stops the
   world by signalling every other thread in Lisp, and Darwin refuses to signal a
@@ -112,7 +161,8 @@ against, so the differential tests run without LispWorks installed.
 
 ## Requirements
 
-SBCL on macOS. Dependencies come from [ocicl](https://github.com/ocicl/ocicl):
+SBCL or ECL on macOS; ECL also for iOS. Dependencies come from
+[ocicl](https://github.com/ocicl/ocicl):
 
 ```
 ocicl install
@@ -132,6 +182,30 @@ running:
 ```
 ./make.sh --with-sb-safepoint --prefix=$HOME/.local && sh install.sh
 ```
+
+### ECL
+
+**A stock ECL will not do, and the reason is not iOS.** `ecl_library_symbol`
+calls `dlsym(0, …)` for the `:default` module, and on Darwin a null handle is
+not the global scope — `RTLD_DEFAULT` is `(void *)-2` — so nothing resolves at
+all:
+
+```lisp
+;; Homebrew ECL 26.5.5
+(si:find-foreign-symbol "strlen" :default :pointer-void 0)
+=> FIND-FOREIGN-SYMBOL: Could not load foreign symbol "strlen"
+   from module :DEFAULT
+```
+
+Not `objc_getClass` — `strlen`. CFFI's ECL backend resolves foreign functions by
+name, so on a stock build CFFI resolves nothing and this library cannot load.
+Build ECL with the one-line fix in `src/c/ffi/libraries.d` until it is upstream.
+
+An iOS build additionally needs `-DENABLE_DLOPEN=1`, because `configure` ties
+that to `--enable-shared` and an app must link statically while still being able
+to `dlsym`.
+
+
 
 Nothing else needs it, and the suite is green either way. `objc/examples:concurrent-blocks-supported-p`
 is the runtime predicate, and the calls that require it refuse with an
@@ -156,6 +230,62 @@ Dispatch resolves the `Method` before sending, which is how the call signature i
 discovered and also what makes an unimplemented selector a Lisp error rather than
 an Objective-C exception. That matters because there is no `@try/@catch` here —
 and none in LispWorks either.
+
+Everything implementation-specific lives in one file, and a test enforces that:
+`src/abi.lisp` for SBCL, `src/abi-ecl.lisp` for ECL. Nothing above the seam
+knows which is loaded.
+
+### Three ways to reach `objc_msgSend`, on ECL
+
+SBCL JITs a trampoline per signature. ECL runs on a platform where nothing can
+be compiled at all, so it tries three strategies in order of what they cost.
+
+| | needs | reaches |
+|---|---|---|
+| **dynamic** — `si:call-cfun` | nothing | every scalar and pointer signature, and struct *arguments* AAPCS64 passes like separate scalars |
+| **compiled** — generated `ffi:c-inline`, cached per shape | a C compiler at run time | everything: struct results, variadics, IMPs, blocks |
+| **pooled** — built before the image shipped | a declaration | whatever was declared |
+
+The first needs no compiler, which is why it works in an interpreted image and
+therefore at a REPL attached to a phone. The second is what a Mac uses and is
+the same bargain SBCL strikes — one subprocess per distinct call shape, for the
+life of the image. The third is what iOS uses, because there is no C compiler on
+a phone and ECL's `compile` yields bytecode there.
+
+**Only one shape actually needs the pool: a structure returned by value.** A
+scalar return type names exactly one register, so an `NSRange` read back as a
+`long` gives its location and nothing else, and a `CGRect` gives `origin.x` —
+which is `-bounds` returning a quarter of an answer, silently. Struct
+*arguments* mostly come free: decomposing one into its fields is right exactly
+when the ABI would have put them where that many separate scalars go, which
+covers `CGRect`, `CGPoint`, `CGSize` and `NSRange`. It is wrong for a mixed
+16-byte struct and for anything over 16 bytes that is not a float aggregate, and
+those are refused rather than attempted, because the failure is a plausible
+wrong number rather than an error.
+
+Calling *in* needs the same treatment and cannot share it. A trampoline is
+looked up and called, so one serves every method that looks like it; an IMP is a
+bare function pointer handed to `class_addMethod` and carries nothing saying
+which Lisp function it stands for, so one address is one method. The pool
+therefore holds several interchangeable shims per shape and a definition claims
+one. Redefining a method does not spend another — the body is reached through an
+index, and rebinding it is the whole of a redefinition.
+
+`src/pool-ecl.lisp` carries the shapes that ship;
+`objc:define-objc-trampoline` and `objc:define-objc-callable-pool` add more,
+in a file of your own named by `:bundle-trampolines`. When a shape is missing
+the error says which of the two it needs and what to paste:
+
+```
+no trampoline for this call shape, and none can be built here --
+there is no C compiler on this platform.
+
+Add this to a file listed in :BUNDLE-TRAMPOLINES:
+
+  (objc:define-objc-trampoline
+     (:result (:struct cocoa:ns-range)
+      :arguments (objc:objc-object-pointer objc:sel objc:objc-object-pointer)))
+```
 
 ## Differences from LispWorks
 

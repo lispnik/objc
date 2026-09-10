@@ -282,7 +282,8 @@ gone silent while still answering WATCHER-LIVE with true.  Measured with
              ;; Exactly what an editor does: write elsewhere, rename over.
              (with-open-file (out temporary :direction :output :if-exists :supersede)
                (write-string "replaced" out))
-             (rename-file temporary file)
+             (%rename-over temporary file)   ; see %RENAME-OVER: RENAME-FILE
+                                            ; over an existing file is not portable
              (bt:wait-on-semaphore saved :timeout timeout)
              (setf replaced t)
              ;; The write only a re-armed watch can see.

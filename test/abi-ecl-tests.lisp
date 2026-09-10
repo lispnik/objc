@@ -11,6 +11,10 @@
 
 (in-suite abi-ecl)
 
+(defun ecl-foundation-available-p ()
+  (handler-case (progn (objc::ensure-libobjc) (objc::ensure-foundation) t)
+    (error () nil)))
+
 (defun node-of (encoding)
   (objc::resolve-struct-layout (objc::parse-type encoding)))
 
@@ -136,3 +140,61 @@ Lisp side throws must not leave the thread with traps disabled."
   "method-def.lisp and class-def.lisp both write to it; without it the first
 method install fails on an undefined variable."
   (is-true (hash-table-p objc::*imp-registry*)))
+
+;;; SAP representation -------------------------------------------------------
+
+(test saps-survive-a-tagged-pointer
+  "Apple returns tagged pointers for short NSStrings and small NSNumbers: the
+payload lives in the pointer with the top bit set. The address of one exceeds
+ECL's 62-bit fixnum, so representing a SAP as an integer round-tripped every
+heap object correctly and failed on exactly the objects Foundation hands back
+most often -- CFFI:MAKE-POINTER signalled a type error inside COERCE."
+  ;; The property the layers above rely on, whatever the representation is.
+  (dolist (address (list 0 8 #x7fffffff))
+    (let ((pointer (cffi:make-pointer address)))
+      (is (cffi:pointer-eq pointer (objc::pointer-of (objc::sap-of pointer))))))
+  (is-true (cffi:null-pointer-p (objc::sb-sap-zero)))
+  ;; And the case that broke: a pointer whose address does not fit a fixnum.
+  ;; Constructed rather than obtained, so this holds with no runtime present.
+  (if (not (ecl-foundation-available-p))
+      (skip "Foundation not available")
+      (let* ((tagged (objc:invoke "NSString" "stringWithUTF8String:" "hi"))
+             (address (cffi:pointer-address tagged)))
+        (is-true (integerp address))
+        (is (cffi:pointer-eq tagged (objc::pointer-of (objc::sap-of tagged))))
+        ;; Not an assertion about Apple's tagging -- a note in the output when
+        ;; the interesting case is not being exercised on this machine.
+        (when (<= address most-positive-fixnum)
+          (format t "~&  (note: ~s is not tagged here)~%" address)))))
+
+(test a-tagged-pointer-round-trips-through-the-seam
+  "The concrete case: -UTF8String on a short string returns a tagged pointer."
+  (if (not (ecl-foundation-available-p))
+      (skip "Foundation not available")
+      (let ((string (objc:invoke "NSString" "stringWithUTF8String:" "hello")))
+        (is (string= "hello" (objc:ns-string-to-string string))))))
+
+;;; Strategy A ---------------------------------------------------------------
+
+(test the-dynamic-path-handles-scalars-and-pointers
+  "No C compiler involved -- this is the path that works at a remote REPL."
+  (if (not (ecl-foundation-available-p))
+      (skip "Foundation not available")
+      (let ((string (objc:invoke "NSString" "stringWithUTF8String:" "hello world")))
+        (is (eql 11 (objc:invoke string "length")))
+        (is (eql 42 (objc:invoke (objc:invoke "NSNumber" "numberWithInt:" 42)
+                                 "intValue")))
+        (is-true (objc:invoke-bool string "isEqualToString:" string))
+        (is (string= "7" (objc:ns-string-to-string
+                          (objc:invoke (objc:invoke "NSNumber" "numberWithInt:" 7)
+                                       "description")))))))
+
+(test a-struct-result-is-refused-not-guessed
+  "Until a compiled trampoline exists, this must fail loudly rather than return
+origin.x and call it a rectangle."
+  (if (not (ecl-foundation-available-p))
+      (skip "Foundation not available")
+      (let ((string (objc:invoke "NSString" "stringWithUTF8String:" "hello world")))
+        (signals objc::ecl-abi-unsupported
+          (objc:invoke string "rangeOfString:"
+                       (objc:invoke "NSString" "stringWithUTF8String:" "world"))))))

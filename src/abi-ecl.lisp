@@ -66,23 +66,37 @@ scope SBCL's equivalent has."
 
 ;;; Pointers -----------------------------------------------------------------
 ;;;
-;;; ECL has no system-area-pointer.  The layers above only ever carry the value
-;;; from SAP-OF back into an ABI function, so the representation is opaque to
-;;; them and an address integer serves.
+;;; ECL has no system-area-pointer, and the CFFI pointer is already the opaque
+;;; object the layers above want: they only ever carry the value from SAP-OF
+;;; back into an ABI function, so SAP-OF and POINTER-OF are the identity and
+;;; (POINTER-OF (SAP-OF p)) is p by construction.
+;;;
+;;; This used to be an address integer, which is the obvious representation and
+;;; is wrong on Darwin. Apple returns TAGGED POINTERS for short NSStrings and
+;;; small NSNumbers -- the payload lives in the pointer with the top bit set --
+;;; so the address of one exceeds ECL's 62-bit fixnum and CFFI:MAKE-POINTER
+;;; cannot take it back:
+;;;
+;;;     In function COERCE, the value 10501465289614004243
+;;;     is not of the expected type FIXNUM
+;;;
+;;; measured on -[NSString UTF8String] for "hello". The integer round trip
+;;; worked for every heap object and failed for exactly the objects Foundation
+;;; hands back most often.
 
 (declaim (inline sap-of pointer-of))
 
 (defun sap-of (pointer)
-  "The address of a CFFI pointer."
-  (cffi:pointer-address pointer))
+  "The SAP for a CFFI pointer. They are the same thing here."
+  pointer)
 
 (defun pointer-of (sap)
-  "The CFFI pointer for an address."
-  (cffi:make-pointer sap))
+  "The CFFI pointer for a SAP. They are the same thing here."
+  sap)
 
 (defun sb-sap-zero ()
-  "A null address, for the OUT argument of a non-struct send."
-  0)
+  "A null pointer, for the OUT argument of a non-struct send."
+  (cffi:null-pointer))
 
 ;;; Type nodes ---------------------------------------------------------------
 
@@ -255,6 +269,12 @@ instead; this is where it does that.")
         (and pointer (cffi:pointer-address pointer)))))
 
 (defun ensure-dispatch-addresses ()
+  "Resolve the dispatch entry points, once.
+
+The variables hold CFFI pointers rather than the integers %SYMBOL-ADDRESS
+returns, because a call needs a pointer and these are resolved once while a
+send happens constantly. %SYMBOL-ADDRESS keeps its integer contract, which is
+what *DISPATCH-ADDRESS-HOOK* is documented to supply."
   (unless *msgsend-address*
     (let ((send (%symbol-address "objc_msgSend"))
           (super (%symbol-address "objc_msgSendSuper")))
@@ -262,8 +282,8 @@ instead; this is where it does that.")
         (error 'library-not-found
                :name "objc_msgSend"
                :candidates +libobjc-candidates+))
-      (setf *msgsend-address* send
-            *msgsend-super-address* super
+      (setf *msgsend-address* (cffi:make-pointer send)
+            *msgsend-super-address* (cffi:make-pointer super)
             *msgsend-stret-address* nil
             *msgsend-super-stret-address* nil)))
   (values *msgsend-address* *msgsend-super-address*))
@@ -298,10 +318,116 @@ redefinition and is the right trade against crashing mid-session.")
 (defun %unsupported (operation &optional detail)
   (error 'ecl-abi-unsupported :operation operation :detail detail))
 
+;;; Strategy A: the dynamic path ---------------------------------------------
+;;;
+;;; SI:CALL-CFUN builds a call frame at run time through libffi, so this needs
+;;; no C compiler and works in an interpreted image -- which means a trampoline
+;;; built this way is available at a remote REPL on a phone, where nothing can
+;;; be compiled at all.
+;;;
+;;; What it cannot do is a struct RESULT (a scalar return type names exactly one
+;;; register) or a variadic call (arm64 passes variadic arguments on the stack,
+;;; and a fixed signature puts them in registers). Those fall through to a
+;;; compiled strategy.
+
+(defun %leaf-reader (node)
+  "A function of (address offset) returning NODE's value ready for SI:CALL-CFUN.
+
+Pointer-ish leaves come back as foreign objects rather than addresses, because
+that is what a :POINTER-VOID argument wants; everything above this file speaks
+addresses and the conversion happens here."
+  (etypecase node
+    (keyword
+     (ecase node
+       (:double (lambda (address offset) (cffi:mem-ref address :double offset)))
+       (:float  (lambda (address offset) (cffi:mem-ref address :float offset)))
+       (:long-long (lambda (address offset) (cffi:mem-ref address :int64 offset)))
+       (:ulong-long (lambda (address offset) (cffi:mem-ref address :uint64 offset)))
+       ((:id :class :sel :cstring :block)
+        (lambda (address offset) (cffi:mem-ref address :pointer offset)))))
+    (cons
+     (ecase (first node)
+       (:pointer (lambda (address offset)
+                   (cffi:mem-ref address :pointer offset)))))))
+
+(defun %struct-argument-expander (node)
+  "A function of one SAP returning the list of scalars NODE decomposes into.
+
+The offsets are a simple stride, and provably so: decomposition is only ever
+allowed for a homogeneous float aggregate or for fields of exactly eight bytes,
+and in both of those every member has the same size. A shape where that is not
+true is refused by DECOMPOSABLE-STRUCT-ARGUMENT-P before reaching here."
+  (let* ((leaves (struct-argument-scalars node))
+         (stride (node-size-and-alignment (first leaves)))
+         (readers (mapcar #'%leaf-reader leaves)))
+    (lambda (sap)
+      (loop for reader in readers
+            for offset from 0 by stride
+            collect (funcall reader sap offset)))))
+
+(defun %dynamic-argument-plan (arg-nodes)
+  "(VALUES TYPES EXPANDERS) for ARG-NODES, or NIL if the dynamic path cannot.
+
+EXPANDERS has one entry per argument: NIL for a scalar passed straight through,
+a function of the incoming value otherwise. A struct expands into several
+values, which is why every expander returns a list."
+  (let ((types '())
+        (expanders '()))
+    (dolist (node arg-nodes)
+      (cond
+        ((struct-node-p node)
+         (let ((leaves (struct-argument-scalars node)))
+           (unless leaves (return-from %dynamic-argument-plan nil))
+           (dolist (leaf leaves) (push (ecl-foreign-type leaf) types))
+           (push (%struct-argument-expander node) expanders)))
+        (t
+         (let ((type (ignore-errors (ecl-foreign-type node))))
+           (unless type (return-from %dynamic-argument-plan nil))
+           (push type types)
+           ;; A SAP is already the foreign object libffi wants.
+           (push nil expanders)))))
+    (values (nreverse types) (nreverse expanders))))
+
+(defun %dynamic-trampoline (kind result-node arg-nodes n-fixed)
+  "A trampoline built on SI:CALL-CFUN, or NIL if this signature is out of reach."
+  (when (or (struct-node-p result-node)   ; one register, one field
+            n-fixed)                      ; variadic: stack, not registers
+    (return-from %dynamic-trampoline nil))
+  (let ((result-type (ignore-errors (ecl-foreign-type result-node))))
+    (unless result-type (return-from %dynamic-trampoline nil))
+    (multiple-value-bind (types expanders) (%dynamic-argument-plan arg-nodes)
+      (unless (or types (null arg-nodes)) (return-from %dynamic-trampoline nil))
+      (ensure-dispatch-addresses)
+      (let ((entry (ecase kind
+                     (:send *msgsend-address*)
+                     (:super *msgsend-super-address*)))
+            (void-result-p (eq result-type :void)))
+        (lambda (out &rest args)
+          (declare (ignore out))         ; no struct result reaches here
+          (let ((frame (loop for arg in args
+                             for expander in expanders
+                             append (if expander (funcall expander arg) (list arg)))))
+            (let ((raw (with-fp-traps-masked
+                         (si:call-cfun entry result-type types frame))))
+              (if void-result-p nil raw))))))))
+
 (defun build-trampoline (kind result-node arg-nodes &optional n-fixed)
-  (declare (ignore kind result-node arg-nodes n-fixed))
-  (%unsupported "BUILD-TRAMPOLINE"
-                "outbound dispatch still has to be written on SI:CALL-CFUN"))
+  "Compile a function that sends one exact call signature.
+
+The contract is abi.lisp's, unchanged:
+
+    (out-sap arg...) => scalar-or-NIL
+
+Strategies are tried in order of what they cost. The dynamic one needs no
+compiler and reaches every scalar and pointer signature, which is most of
+Cocoa; the rest -- struct results, variadics, and the struct arguments AAPCS64
+does not pass like separate scalars -- needs a compiled trampoline."
+  (or (%dynamic-trampoline kind result-node arg-nodes n-fixed)
+      (%unsupported
+       "BUILD-TRAMPOLINE"
+       (format nil "~a result~@[, ~a~] -- needs a compiled trampoline"
+               (if (struct-node-p result-node) "a struct" "this")
+               (and n-fixed "variadic")))))
 
 (defun build-block-caller (result-node arg-nodes invoke-offset)
   (declare (ignore result-node arg-nodes invoke-offset))

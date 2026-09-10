@@ -223,3 +223,57 @@ vector of doubles, an NSRange result goes back as a cons."
         (let ((object (objc:alloc-init-object "AbiEclShape")))
           (is (= 42d0 (objc:invoke object "areaOf:" '(0d0 0d0 6d0 7d0))))
           (is (equal '(3 . 6) (objc:invoke object "spanFrom:" 3)))))))
+
+;;; The ahead-of-time pool ---------------------------------------------------
+;;;
+;;; What makes iOS work. These test the lookup and the refusal; that a pooled
+;;; trampoline actually calls correctly is the same generated code Strategy B
+;;; uses and is covered above.
+
+(test a-shape-is-what-the-abi-distinguishes-and-nothing-else
+  "One entry serves every method that looks like it, which is why a short pool
+covers most of Cocoa. Names do not enter into it: NSRect and CGRect are one
+shape, and so are NSPoint and NSSize -- both are two doubles."
+  (flet ((shape (encoding)
+           (objc::%abi-shape (objc::resolve-struct-layout (objc::parse-type encoding)))))
+    (is (equal (shape "{CGPoint=dd}") (shape "{CGSize=dd}")))
+    (is (equal (shape "{CGRect={CGPoint=dd}{CGSize=dd}}") (shape "{NSRect=dddd}")))
+    ;; And a difference the ABI does care about is kept.
+    (is (not (equal (shape "{CGPoint=dd}") (shape "{_NSRange=QQ}"))))
+    (is (not (equal (shape "{CGPoint=dd}") (shape "{CGRect=dddd}"))))))
+
+(test the-pool-is-consulted-before-the-compiler-is-asked
+  "The order matters on a Mac only for speed and on a phone for whether it works
+at all: a pooled trampoline needs no subprocess and no C compiler."
+  (let* ((objc::*trampoline-pool* (make-hash-table :test 'equal))
+         (result '(:struct "_NSRange" (:ulong-long :ulong-long)))
+         (args '(:id :sel))
+         (called nil))
+    (objc::register-trampoline :send result args nil
+                               (lambda (&rest ignored)
+                                 (declare (ignore ignored))
+                                 (setf called t)))
+    (let ((trampoline (objc::%pooled-trampoline :send result args nil)))
+      (is-true trampoline)
+      (funcall trampoline (objc::sb-sap-zero) (objc::sb-sap-zero) (objc::sb-sap-zero))
+      (is-true called))
+    ;; A shape that was never declared is a miss, not a wrong answer.
+    (is-false (objc::%pooled-trampoline :send result '(:id :sel :id) nil))
+    (is-false (objc::%pooled-trampoline :super result args nil))))
+
+(test a-missing-shape-names-the-declaration-that-fixes-it
+  "The failure a user meets on iOS. The shape is known here and the form to
+paste is a mechanical function of it, so the message ends the search rather
+than starting one."
+  (handler-case
+      (progn (objc::%no-trampoline
+              :send '(:struct "_NSRange" (:ulong-long :ulong-long)) '(:id :sel) nil)
+             (is-true nil "should have signalled"))
+    (objc::ecl-abi-unsupported (condition)
+      ;; Case-insensitively: whether a piece of the message is printed by ~(~s~)
+      ;; or written as a literal is not something a test should pin down.
+      (let ((text (string-downcase (princ-to-string condition))))
+        (is (search "define-objc-trampoline" text))
+        (is (search ":result" text))
+        (is (search ":arguments" text))
+        (is (search "bundle-trampolines" text))))))

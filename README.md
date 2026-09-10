@@ -2,8 +2,8 @@
 
 [![macOS](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml)
 
-The badge is SBCL on macOS. ECL is run locally and not yet by CI, and iOS is not
-run anywhere — see [Status](#status).
+The badge is SBCL on macOS. ECL is run locally and not yet by CI; iOS is run on
+the simulator by hand — see [Status](#status).
 
 The LispWorks Objective-C interface, reimplemented for SBCL and ECL on macOS,
 and for ECL on iOS, and extended.
@@ -77,11 +77,23 @@ real part of modern Cocoa. Skipped rather than left to hang, because a hanging
 test reports nothing and costs the whole run. Note that SBCL needs a safepoint
 build for the neighbouring problem; this area is hard on both.
 
-**iOS is unverified on a device.** The three dispatch strategies below are
-exercised on macOS, and the ahead-of-time path was tested by disabling the
-compiler in a live image — which is what a phone is — rather than by
-cross-compiling and running one. Treat iOS as designed-for and not yet
-demonstrated.
+**iOS runs, on the simulator.** Cross-compiled with
+[asdf-ios-app](https://github.com/lispnik/asdf-ios-app) and launched on an
+arm64 simulator, with no C compiler anywhere in the picture:
+
+```
+1. dispatch                    -length 11, NSNumber round trip 42
+2. a structure by value        rangeOfString: (6 . 5)
+                               -[UIScreen mainScreen] bounds
+                                 #(0.0d0 0.0d0 402.0d0 874.0d0)
+3. a Lisp class with real IMPs 6 x 7 through objc_msgSend => 42
+                               a method returning NSRange => (3 . 6)
+4. a block from a Lisp closure 42
+```
+
+Not yet run on a physical device — that needs a provisioning profile — but the
+simulator is the same ECL, the same arm64, the same ABI and the same absence of
+a compiler.
 
 ### What will bite you
 
@@ -243,8 +255,29 @@ covers `CGRect`, `CGPoint`, `CGSize` and `NSRange`. It is wrong for a mixed
 those are refused rather than attempted, because the failure is a plausible
 wrong number rather than an error.
 
-See `src/pool-ecl.lisp` for the shapes that ship and `objc:define-objc-trampoline`
-for adding one. When a shape is missing, the error says what to paste.
+Calling *in* needs the same treatment and cannot share it. A trampoline is
+looked up and called, so one serves every method that looks like it; an IMP is a
+bare function pointer handed to `class_addMethod` and carries nothing saying
+which Lisp function it stands for, so one address is one method. The pool
+therefore holds several interchangeable shims per shape and a definition claims
+one. Redefining a method does not spend another — the body is reached through an
+index, and rebinding it is the whole of a redefinition.
+
+`src/pool-ecl.lisp` carries the shapes that ship;
+`objc:define-objc-trampoline` and `objc:define-objc-callable-pool` add more,
+in a file of your own named by `:bundle-trampolines`. When a shape is missing
+the error says which of the two it needs and what to paste:
+
+```
+no trampoline for this call shape, and none can be built here --
+there is no C compiler on this platform.
+
+Add this to a file listed in :BUNDLE-TRAMPOLINES:
+
+  (objc:define-objc-trampoline
+     (:result (:struct cocoa:ns-range)
+      :arguments (objc:objc-object-pointer objc:sel objc:objc-object-pointer)))
+```
 
 ## Differences from LispWorks
 

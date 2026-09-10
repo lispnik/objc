@@ -82,3 +82,83 @@
 (define-objc-trampoline
   (:kind :super :result cocoa:ns-rect
    :arguments (objc:objc-object-pointer objc:sel)))
+
+;;; Inbound: IMPs for classes defined in Lisp ---------------------------------
+;;;
+;;; A trampoline is looked up and called, so one serves every method that looks
+;;; like it.  An IMP is a bare function pointer handed to class_addMethod and
+;;; carries nothing saying which Lisp function it stands for, so one address is
+;;; one method and these have to be counted rather than shared.
+;;;
+;;; :COUNT is how many methods of that shape an application may define.
+;;; Redefining one does not spend another -- the body is reached through an
+;;; index and rebinding it is the whole of a redefinition -- so these numbers
+;;; bound the size of a program, not the length of a session.
+
+;;; The three root methods DEFINE-OBJC-CLASS installs on every class it makes:
+;;; +allocWithZone:, -dealloc and -copyWithZone:.  Without these no Lisp class
+;;; can exist at all, so they are sized for several classes rather than one.
+
+(define-objc-callable-pool                          ; +allocWithZone:, -copyWithZone:
+  (:result objc:objc-object-pointer
+   :arguments (objc:objc-object-pointer objc:sel objc:objc-object-pointer)
+   :count 12))
+
+(define-objc-callable-pool                          ; -dealloc
+  (:result :void
+   :arguments (objc:objc-object-pointer objc:sel)
+   :count 8))
+
+;;; Ordinary methods, by shape.
+
+(define-objc-callable-pool                          ; -doSomething
+  (:result :void :arguments (objc:objc-object-pointer objc:sel) :count 8))
+
+(define-objc-callable-pool                          ; -handle: -observe: -fire:
+  (:result :void
+   :arguments (objc:objc-object-pointer objc:sel objc:objc-object-pointer)
+   :count 12))
+
+(define-objc-callable-pool                          ; -drawRect:
+  (:result :void
+   :arguments (objc:objc-object-pointer objc:sel cocoa:ns-rect)
+   :count 4))
+
+(define-objc-callable-pool                          ; -numberOfRowsInSection:
+  (:result (:signed :long-long)
+   :arguments (objc:objc-object-pointer objc:sel objc:objc-object-pointer
+               (:signed :long-long))
+   :count 6))
+
+(define-objc-callable-pool                          ; -cellForRowAtIndexPath:
+  (:result objc:objc-object-pointer
+   :arguments (objc:objc-object-pointer objc:sel objc:objc-object-pointer
+               objc:objc-object-pointer)
+   :count 6))
+
+(define-objc-callable-pool                          ; -textFieldShouldReturn:
+  (:result objc:objc-bool
+   :arguments (objc:objc-object-pointer objc:sel objc:objc-object-pointer)
+   :count 6))
+
+;;; Blocks. One hidden argument -- the block itself -- rather than two, which is
+;;; the whole of the difference from a method.
+
+(define-objc-callable-pool                          ; (:void ())
+  (:result :void :arguments (objc:objc-object-pointer) :hidden 1 :count 6))
+
+(define-objc-callable-pool                          ; (:void (id))
+  (:result :void
+   :arguments (objc:objc-object-pointer objc:objc-object-pointer)
+   :hidden 1 :count 6))
+
+;;; libclosure's copy and dispose helpers: exactly two per process, whatever
+;;; block types exist, and no signature to vary.
+
+(define-objc-callable-pool
+  (:result :void
+   :arguments (objc:objc-object-pointer objc:objc-object-pointer)
+   :hidden 0 :count 2))
+
+(define-objc-callable-pool
+  (:result :void :arguments (objc:objc-object-pointer) :hidden 0 :count 2))

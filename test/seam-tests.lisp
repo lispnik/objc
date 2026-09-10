@@ -122,14 +122,15 @@ Named for the library rather than for SBCL, which it was when SBCL was the only
 implementation.")
 
 (defparameter +ecl-additions+
-  '("DEFINE-OBJC-TRAMPOLINE")
+  '("DEFINE-OBJC-TRAMPOLINE" "DEFINE-OBJC-CALLABLE-POOL")
   "Ahead-of-time trampolines, which only ECL needs.
 
 A call shape the dynamic FFI cannot express -- a struct result above all -- is
 built by the C compiler at run time on a Mac and cannot be built at all on a
 phone, where ECL's COMPILE yields bytecode. So on iOS it has to be in the image
-before it ships, and this is how a user asks for one. SBCL is not given a symbol
-it could do nothing with.")
+before it ships, and these are how a user asks for one -- DEFINE-OBJC-TRAMPOLINE
+for calling out, DEFINE-OBJC-CALLABLE-POOL for the IMPs a Lisp-defined class
+needs. SBCL is not given symbols it could do nothing with.")
 
 (test the-exported-surface-is-the-lispworks-one-plus-the-block-api
   "OBJC exports the 42 documented LispWorks symbols and the 8 block symbols, and

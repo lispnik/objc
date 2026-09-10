@@ -96,7 +96,8 @@
    ;; call shape the dynamic FFI cannot express -- a struct result, above all --
    ;; has to exist in the image before it ships. SBCL has no such problem and is
    ;; not given a symbol it could do nothing with.
-   #+ecl #:define-objc-trampoline))
+   #+ecl #:define-objc-trampoline
+   #+ecl #:define-objc-callable-pool))
 
 (defpackage #:cocoa
   (:use #:cl #:alexandria)

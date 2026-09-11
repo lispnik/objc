@@ -96,18 +96,21 @@ jobs:
           # ocicl exits 0 when a download fails, and ghcr.io fails often
           # enough to matter: two runs in one afternoon lost alexandria or
           # bordeaux-threads and surfaced it two steps later as "Component
-          # not found", pointing at the library.  So: up to three attempts,
-          # and a failure here, on the line that names the package.
-          for attempt in 1 2 3; do
+          # not found", pointing at the library.  So: several attempts, and
+          # a failure here, on the line that names the package.  Five rather
+          # than three because a run showed the registry recovering across
+          # attempts -- five packages missing, then two, then one -- and
+          # failing on the third.
+          for attempt in 1 2 3 4 5; do
             ocicl install 2>&1 | tee ocicl-install.log
             if ! grep -q "failed to install" ocicl-install.log; then
               break
             fi
             echo "::warning::ocicl install attempt $attempt did not get every package"
-            sleep 20
+            sleep 30
           done
           if grep -q "failed to install" ocicl-install.log; then
-            echo "::error::ocicl could not install every dependency after 3 attempts" >&2
+            echo "::error::ocicl could not install every dependency after 5 attempts" >&2
             exit 1
           fi
 

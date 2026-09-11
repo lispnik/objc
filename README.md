@@ -71,7 +71,7 @@ real IMPs, blocks from Lisp closures, structures by value in both directions,
 and a block invoked on a libdispatch worker — which used to hang, and was the
 one skipped test. It arrived on a thread ECL had never seen and libffi's
 executor asked for that thread's environment without importing one; the
-executor imports it now, on the `objc-develop` ECL this needs. Everything the
+executor imports it now, on the `lispnik/ecl` `develop` this needs. Everything the
 backend does is the dynamic FFI, so what runs on a Mac is what runs on a phone.
 
 **iOS runs, on a device.** Cross-compiled with
@@ -208,11 +208,11 @@ not import the thread it arrived on, so one called from a libdispatch worker
 died in `ecl_process_env()`; and `si:call-cfun` could not pass or return a
 structure by value. Each is on a branch of
 [lispnik/ecl](https://github.com/lispnik/ecl), for sending upstream, and
-`objc-develop` there is upstream `develop` plus all of them:
+`develop` there is upstream `develop` plus all of them:
 
 ```
 git clone https://github.com/lispnik/ecl.git && cd ecl
-git checkout objc-develop
+git checkout develop
 ./configure --prefix=$HOME/.local/ecl --enable-gmp=included
 make && make install
 ```
@@ -286,7 +286,7 @@ paste.
 
 **This needs an ECL with fixes**, none upstream yet, all on
 [lispnik/ecl](https://github.com/lispnik/ecl) and built by CI from its
-`objc-develop`. See [ECL](#ecl) under Requirements. There used to be a third
+`develop`. See [ECL](#ecl) under Requirements. There used to be a third
 way here — a pool of trampolines and IMPs compiled into the app before it
 shipped — because ECL's dynamic FFI could not name a structure and a libffi
 closure was believed to kill the process on iOS. Neither was a property of the

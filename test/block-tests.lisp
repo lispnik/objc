@@ -174,19 +174,6 @@ error."
   "dispatch_async runs the block on a libdispatch worker -- a thread SBCL never
 created.  Entering Lisp there is the thing that makes completion handlers
 usable at all, and it is not something the synchronous tests cover."
-  #+ecl
-  (skip "ECL: entering Lisp from a libdispatch worker hangs.
-
-The generated callable calls ECL_IMPORT_CURRENT_THREAD before touching Lisp,
-which is the documented way in and is not sufficient here -- the callback never
-returns. Everything synchronous works: a block called from Lisp runs, takes and
-returns structures, and contains its own errors. Only a block Cocoa invokes on a
-thread ECL never created is affected, which is completion handlers and
-dispatch_async.
-
-Skipped rather than left to hang, because a hanging test reports nothing at all
-and this one costs the whole suite run.")
-  #-ecl
   (with-runtime
     (let ((done (bt:make-semaphore))
           (main (bt:current-thread))

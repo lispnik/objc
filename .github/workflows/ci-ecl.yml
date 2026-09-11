@@ -39,7 +39,7 @@ jobs:
     # would then hand back a binary built from something else entirely.
     env:
       ECL_REPOSITORY: https://github.com/lispnik/ecl.git
-      ECL_REVISION: 5b8f1deaa
+      ECL_REVISION: aef1276d7
     # Building ECL is the long pole at roughly six minutes cold, and nothing
     # after it takes more than five.  Same reasoning as the sibling workflow:
     # loose enough never to fire on a slow runner, tight enough that a hung
@@ -61,13 +61,14 @@ jobs:
       # functions by name, so on a stock build CFFI resolves nothing.
       #
       # So this builds ECL rather than installing one, from lispnik/ecl's
-      # objc-develop: upstream develop plus three fixes, each on its own branch
-      # there for sending upstream.  RTLD_DEFAULT (above); FFI:CALLBACK
+      # objc-develop: upstream develop plus fixes on two more branches there,
+      # each for sending upstream.  RTLD_DEFAULT (above); FFI:CALLBACK
       # returning a closure's entry point rather than its writable record,
       # without which a dynamic callback jumps into the heap on arm64 macOS and
-      # iOS; and structures by value through SI:CALL-CFUN.  The second and
-      # third are what let the ECL backend do without a pool of trampolines
-      # built before an app ships.
+      # iOS, and importing the thread a callback arrives on, without which one
+      # from a libdispatch worker dies in ecl_process_env(); and structures by
+      # value through SI:CALL-CFUN.  Those are what let the ECL backend do
+      # without a pool of trampolines built before an app ships.
       #
       # This used to clone upstream and apply ci/ecl-rtld-default.patch here;
       # a committed fix is the better shape, because a revision alone then

@@ -91,13 +91,12 @@
    #:objc-block-pointer
    #:objc-block-live-p
 
-   ;; Ahead-of-time trampolines, on ECL only, because only ECL runs anywhere
-   ;; without a C compiler. On iOS nothing can be compiled at run time, so a
-   ;; call shape the dynamic FFI cannot express -- a struct result, above all --
-   ;; has to exist in the image before it ships. SBCL has no such problem and is
-   ;; not given a symbol it could do nothing with.
-   #+ecl #:define-objc-trampoline
-   #+ecl #:define-objc-callable-pool))
+   ;; An ahead-of-time trampoline, on ECL only, because only ECL runs anywhere
+   ;; without a C compiler. The dynamic FFI makes every call shape at run time
+   ;; but a variadic one; on iOS nothing can be compiled to fill that in, so it
+   ;; has to exist in the image before it ships. SBCL has no such problem and
+   ;; is not given a symbol it could do nothing with.
+   #+ecl #:define-objc-trampoline))
 
 (defpackage #:cocoa
   (:use #:cl #:alexandria)

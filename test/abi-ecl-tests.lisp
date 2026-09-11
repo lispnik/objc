@@ -1,13 +1,15 @@
 ;;;; test/abi-ecl-tests.lisp -- the ECL backend's own obligations.
 ;;;;
-;;;; Loaded only under ECL.  Everything here is about the two places where the
-;;;; ECL backend can be wrong without saying so, which is what makes them worth
-;;;; a test rather than a comment.
+;;;; Loaded only under ECL.  What is here is what the backend could get wrong
+;;;; without saying so: how an aggregate is described to the dynamic FFI, what
+;;;; the foreign types are, that traps are masked, and that the two paths a
+;;;; phone has -- dynamic calls and libffi closures -- actually carry a
+;;;; structure both ways with no compiler in the picture.
 
 (in-package #:objc/test)
 
 (def-suite abi-ecl :in all-tests
-  :description "The ECL ABI backend: decomposition, foreign types, FP traps.")
+  :description "The ECL ABI backend: dynamic FFI designators, foreign types, FP traps, closures.")
 
 (in-suite abi-ecl)
 
@@ -18,72 +20,51 @@
 (defun node-of (encoding)
   (objc::resolve-struct-layout (objc::parse-type encoding)))
 
-(defun decomposable-p (encoding)
-  (and (objc::decomposable-struct-argument-p (node-of encoding)) t))
+(defun dffi-type-of (encoding)
+  (objc::ecl-dffi-type (node-of encoding)))
 
-;;; Struct decomposition ----------------------------------------------------
+;;; Dynamic FFI designators ---------------------------------------------------
 ;;;
-;;; The failure mode here is not an error.  It is a plausible wrong number that
-;;; changes between runs, so nothing downstream can catch it and no user will
-;;; report it as anything but "sometimes the layout is odd".  These assertions
-;;; are the only thing standing between that and a released library.
-;;;
-;;; The shapes and their answers were measured on-device, not derived:
-;;; asdf-ios-app/examples/abi-probe calls each one both ways in one binary --
-;;; through SI:CALL-CFUN and through the C compiler -- and compares.
+;;; The dynamic FFI reads these in C and cannot look a name up, so an aggregate
+;;; reaches it as its resolved layout.  What matters is that the layout is
+;;; described truthfully -- nesting kept, arrays as arrays -- and that libffi is
+;;; left to classify it.  Nothing here decides which register anything goes in,
+;;; which is the whole improvement over the decomposition this replaced: that
+;;; was right for four shapes, silently wrong for the rest, and tested for
+;;; exactly the shapes it was wrong on.
 
-(test decomposes-the-two-shapes-that-are-equivalent
-  "An HFA of at most four like floats, and one or two eight-byte integers."
-  (is-true (decomposable-p "{CGPoint=dd}"))
-  (is-true (decomposable-p "{CGSize=dd}"))
-  ;; Nested, and it must flatten: AAPCS64 sees four doubles, not two structs.
-  (is-true (decomposable-p "{CGRect={CGPoint=dd}{CGSize=dd}}"))
-  (is-true (decomposable-p "{_NSRange=QQ}"))
-  (is-true (decomposable-p "{single=ffff}")))
+(test a-structure-is-described-as-its-layout
+  (is (equal '(:struct (:m :double) (:m :double)) (dffi-type-of "{CGPoint=dd}")))
+  (is (equal '(:struct (:m :unsigned-long-long) (:m :unsigned-long-long))
+             (dffi-type-of "{_NSRange=QQ}")))
+  ;; Nested stays nested: libffi flattens for classification itself.
+  (is (equal '(:struct (:m (:struct (:m :double) (:m :double)))
+                       (:m (:struct (:m :double) (:m :double))))
+             (dffi-type-of "{CGRect={CGPoint=dd}{CGSize=dd}}")))
+  ;; The shapes the old decomposition refused are ordinary here.
+  (is (equal '(:struct (:m :long-long) (:m :double)) (dffi-type-of "{mixed=qd}")))
+  (is (= 6 (length (rest (dffi-type-of "{CGAffineTransform=dddddd}"))))))
 
-(test refuses-the-shapes-that-would-corrupt
-  "Each of these was measured returning a plausible wrong answer, not failing."
-  ;; 16 bytes and not an HFA, so BOTH halves travel in general registers --
-  ;; decomposed, the double goes to v0 and the callee reads x1.
-  (is-false (decomposable-p "{mixed=qd}"))
-  ;; 48 bytes, not an HFA: passed BY POINTER.  Decomposed, the callee
-  ;; dereferences whatever happened to be in x0.  Measured twice, two
-  ;; different junk values.
-  (is-false (decomposable-p "{CGAffineTransform=dddddd}"))
-  (is-false (decomposable-p "{CATransform3D=dddddddddddddddd}"))
-  ;; More than four members is not an HFA however homogeneous.
-  (is-false (decomposable-p "{five=ddddd}")))
+(test an-array-member-is-an-array
+  (is (equal '(:struct (:m :byte) (:m (:array :int 3)))
+             (dffi-type-of "{tagged=c[3i]}"))))
 
-(test refuses-integer-aggregates-that-share-a-register
-  "Sixteen bytes is not the rule; one field per register is.
+(test pointers-and-scalars-are-what-ecl-foreign-type-says
+  (dolist (encoding '("@" "#" ":" "*" "^v" "^{CGRect=}"))
+    (is (eq :pointer-void (dffi-type-of encoding))))
+  (is (eq :byte (dffi-type-of "B")))
+  (is (eq :double (dffi-type-of "d"))))
 
-AAPCS64 packs {int,int,int,int} two-to-a-register into x0 and x1.  Decomposed
-into four :INT arguments they would go to x0-x3 and every one would be read
-from the wrong place.  This case was NOT in the on-device measurements -- it is
-refused by reasoning, which is the right direction to be wrong in."
-  (is-false (decomposable-p "{quad=iiii}"))
-  (is-false (decomposable-p "{pair=ii}"))
-  (is-false (decomposable-p "{small=cc}")))
-
-(test never-decomposes-a-struct-return
-  "There is no such thing, and the predicate is named for arguments only.
-
-A scalar return type names exactly one register, so a CGRect read back as
-:DOUBLE is origin.x and nothing else -- -[UIView bounds] returning a quarter of
-an answer, silently."
-  (dolist (encoding '("{CGPoint=dd}" "{CGRect={CGPoint=dd}{CGSize=dd}}"
-                      "{_NSRange=QQ}"))
-    (let ((node (node-of encoding)))
-      ;; The struct predicate says yes for an argument; the code path that
-      ;; would use it for a result must not exist.  Assert the shape of the
-      ;; contract rather than the absence of a caller.
-      (is-true (objc::struct-node-p node))
-      (is-true (objc::decomposable-struct-argument-p node)))))
-
-(test an-unresolved-layout-is-refused
-  "\"{CGRect=}\" -- the runtime elides layouts, and a struct with no fields
-cannot be classified.  Guessing is the one thing that must not happen."
-  (is-false (and (objc::decomposable-struct-argument-p '(:struct "Unknown" nil)) t)))
+(test a-union-and-an-unresolved-layout-are-refused
+  "Refused, not guessed at: libffi has no union type, and the runtime elides
+layouts -- \"{CGRect=}\" -- so a field-less struct cannot be described."
+  (signals objc::ecl-abi-unsupported
+    (objc::ecl-dffi-type '(:union "u" (:id :double))))
+  ;; A struct with no fields is sent to the runtime for its layout first, and
+  ;; the runtime's refusal is the one that arrives. Either way it is an error
+  ;; and not a guess, which is the property under test.
+  (signals error
+    (objc::ecl-dffi-type '(:struct "Unknown" nil))))
 
 ;;; Foreign types ------------------------------------------------------------
 
@@ -190,28 +171,40 @@ most often -- CFFI:MAKE-POINTER signalled a type error inside COERCE."
                                        "description")))))))
 
 (test a-struct-result-comes-back-whole
-  "The case the dynamic path can never do, and the reason Strategy B exists.
+  "Through SI:CALL-CFUN, with no compiler consulted.
 
-A scalar return type names exactly one register, so reading an NSRange back as
-:LONG gives its location and nothing else. This must be the compiled trampoline
-answering, not the dynamic one guessing."
+This used to be the case the dynamic path could never do and the reason a pool
+of trampolines shipped with every iOS app.  It is now an ordinary send."
+  (let ((range '(:struct "_NSRange" (:ulong-long :ulong-long))))
+    ;; The dynamic path claims it ...
+    (is-true (objc::%dynamic-trampoline :send range '(:id :sel :id) nil)))
   (if (not (ecl-foundation-available-p))
       (skip "Foundation not available")
       (let ((string (objc:invoke "NSString" "stringWithUTF8String:" "hello world")))
-        (if (not (objc::compiled-trampolines-available-p))
-            (skip "no C compiler: a struct result cannot be built here")
-            (is (equal '(6 . 5)
-                       (objc:invoke string "rangeOfString:"
-                                    (objc:invoke "NSString" "stringWithUTF8String:"
-                                                 "world"))))))))
+        ;; ... and gets it right.
+        (is (equal '(6 . 5)
+                   (objc:invoke string "rangeOfString:"
+                                (objc:invoke "NSString" "stringWithUTF8String:"
+                                             "world")))))))
+
+(test a-struct-argument-goes-by-value-whatever-its-shape
+  "A long beside a double is the shape scalar decomposition got wrong: the two
+halves go to x0 and v0, and decomposed, the double went to v0 and the callee
+read x1.  libffi puts it where it belongs."
+  (if (not (ecl-foundation-available-p))
+      (skip "Foundation not available")
+      ;; -[NSValue valueWithRange:] takes an NSRange by value and hands it back.
+      (let ((value (objc:invoke "NSValue" "valueWithRange:" '(7 . 9))))
+        (is (equal '(7 . 9) (objc:invoke value "rangeValue"))))))
 
 (test a-struct-crosses-into-a-lisp-method-and-back
-  "Both directions through a generated C shim: an NSRect argument arrives as a
-vector of doubles, an NSRange result goes back as a cons."
-  (if (or (not (ecl-foundation-available-p))
-          (not (objc::compiled-trampolines-available-p)))
-      (skip "needs Foundation and a C compiler")
+  "Both directions through a libffi closure: an NSRect argument arrives as a
+vector of doubles, an NSRange result goes back as a cons.  No compiler."
+  (if (not (ecl-foundation-available-p))
+      (skip "Foundation not available")
       (progn
+        ;; Run alone, this is the first thing to define a class.
+        (objc:ensure-objc-initialized)
         (eval '(objc:define-objc-class abi-ecl-shape () ()
                 (:objc-class-name "AbiEclShape")))
         (eval '(objc:define-objc-method ("areaOf:" :double)
@@ -224,7 +217,74 @@ vector of doubles, an NSRange result goes back as a cons."
           (is (= 42d0 (objc:invoke object "areaOf:" '(0d0 0d0 6d0 7d0))))
           (is (equal '(3 . 6) (objc:invoke object "spanFrom:" 3)))))))
 
-;;; The ahead-of-time pool ---------------------------------------------------
+;;; Closures -----------------------------------------------------------------
+
+(test a-callable-is-a-closure-that-can-be-called
+  "BUILD-CALLABLE's result is an address C can call.  Here it is called through
+SI:CALL-CFUN, which is C as far as the closure is concerned, with a structure
+in and a structure out and no Objective-C anywhere."
+  (let ((seen nil))
+    (multiple-value-bind (sap name)
+        (objc::build-callable
+         'abi-ecl-test-callable
+         '(:struct "_NSRange" (:ulong-long :ulong-long))
+         '(:id (:struct "CGPoint" (:double :double)) :int)
+         1
+         (lambda (self result-sap point n)
+           (setf seen (list (cffi:pointer-address self)
+                            (cffi:mem-ref point :double 0)
+                            (cffi:mem-ref point :double 8)
+                            n))
+           (setf (cffi:mem-ref result-sap :uint64 0) n
+                 (cffi:mem-ref result-sap :uint64 8) (* 2 n))
+           nil)
+         "test callable")
+      (is (eq name 'abi-ecl-test-callable))
+      (is-true (cffi:pointerp sap))
+      (cffi:with-foreign-object (point :double 2)
+        (setf (cffi:mem-aref point :double 0) 1.5d0
+              (cffi:mem-aref point :double 1) -2d0)
+        (let ((result (si:call-cfun sap
+                                    '(:struct (:m :unsigned-long-long) (:m :unsigned-long-long))
+                                    '(:pointer-void (:struct (:m :double) (:m :double)) :int)
+                                    (list (cffi:make-pointer 4096) point 21))))
+          (is (equal '(4096 1.5d0 -2d0 21) seen))
+          (is (= 21 (cffi:mem-ref result :uint64 0)))
+          (is (= 42 (cffi:mem-ref result :uint64 8))))))))
+
+(test a-condition-in-a-callable-does-not-escape
+  "There is no handler on the C side, so the closure reports and returns a
+zero value -- and for a structure result, a zeroed structure rather than NIL,
+which libffi could not copy."
+  (let ((sap (objc::build-callable
+              'abi-ecl-test-failing
+              '(:struct "_NSRange" (:ulong-long :ulong-long))
+              '(:id)
+              1
+              (lambda (self result-sap) (declare (ignore self result-sap))
+                (error "deliberate"))
+              "test callable")))
+    (let* ((*error-output* (make-string-output-stream))
+           (result (si:call-cfun sap
+                                 '(:struct (:m :unsigned-long-long) (:m :unsigned-long-long))
+                                 '(:pointer-void)
+                                 (list (cffi:null-pointer)))))
+      (is (= 0 (cffi:mem-ref result :uint64 0)))
+      (is (= 0 (cffi:mem-ref result :uint64 8)))
+      (is (search "deliberate" (get-output-stream-string *error-output*))))))
+
+;;; Declared trampolines -----------------------------------------------------
+;;;
+;;; What remains of the pool: a variadic send on a phone.  These test the lookup
+;;; and the refusal; that a declared trampoline calls correctly is the same
+;;; generated code Strategy B uses.
+
+(test the-dynamic-path-declines-a-variadic-send
+  "arm64 passes variadic arguments on the stack and a fixed cif puts them in
+registers, so this must be a miss and not a wrong answer."
+  (is-false (objc::%dynamic-trampoline :send :id '(:id :sel :id :id) 3)))
+
+------------------------------------------------
 ;;;
 ;;; What makes iOS work. These test the lookup and the refusal; that a pooled
 ;;; trampoline actually calls correctly is the same generated code Strategy B

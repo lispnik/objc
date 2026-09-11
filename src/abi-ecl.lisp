@@ -1,24 +1,32 @@
 ;;;; src/abi-ecl.lisp -- the implementation seam, for ECL.
 ;;;;
 ;;;; The counterpart to abi.lisp.  Same ten-function contract, different
-;;;; machinery underneath, and a much smaller reach: ECL's dynamic FFI can
-;;;; describe scalars and pointers and nothing else, so struct-by-value and
-;;;; arm64 variadic calls -- both of which abi.lisp does through sb-alien --
-;;;; have no equivalent here yet.  The BUILD-* functions below say so out loud
-;;;; rather than returning something that would misbehave at the ABI level.
+;;;; machinery underneath.  Where abi.lisp JITs through sb-alien, this reaches
+;;;; the ABI two ways:
 ;;;;
-;;;; What ECL does have is SI:CALL-CFUN, which builds a call frame at runtime
-;;;; through libffi.  That is enough for the ordinary case of an object or
-;;;; scalar return, and it is enough on iOS, where FFI:C-INLINE cannot be used
-;;;; because it needs a C compiler.
+;;;;   dynamic    SI:CALL-CFUN and SI::MAKE-DYNAMIC-CALLBACK, which are libffi.
+;;;;              No compiler involved, so it works in an interpreted image and
+;;;;              therefore on a phone and at a REPL attached to one.  Since ECL
+;;;;              learned to pass a structure by value through them, this is
+;;;;              nearly the whole of what Cocoa needs.
 ;;;;
-;;;; The eventual answer for the hard cases is not more libffi.  It is to
-;;;; compile the trampolines ahead of time, on the host, for the target: ECL's
-;;;; compiler emits C and shells out to a C compiler, so pointing that compiler
-;;;; at an iOS SDK yields a real compiled trampoline in which the *C* compiler
-;;;; handles the ABI -- structs, homogeneous float aggregates, x8 indirect
-;;;; returns and all.  That requires knowing the signatures at build time,
-;;;; which suits an application and not a REPL.
+;;;;   compiled   FFI:C-INLINE, generated per call shape and compiled with the
+;;;;              C compiler that a Mac has and a phone does not.  Faster, and
+;;;;              the only way to make a genuinely variadic call.
+;;;;
+;;;; There used to be a third: a pool of trampolines and IMPs compiled into the
+;;;; application before it shipped, because the dynamic FFI could not name a
+;;;; structure and a libffi closure was believed to kill the process on iOS.
+;;;; Neither was true of ECL itself.  The first was a closed table of scalars in
+;;;; src/c/ffi.d, since opened; the second was FFI:CALLBACK handing out a
+;;;; closure's writable record instead of its entry point, since fixed -- both
+;;;; on lispnik/ecl.  What survives of the pool is OBJC:DEFINE-OBJC-TRAMPOLINE,
+;;;; for the one shape the dynamic path still cannot make: a variadic send, on
+;;;; a platform with no compiler.
+;;;;
+;;;; This file needs that ECL.  On one without those fixes, a structure result
+;;;; is refused with a message that says so, and a dynamic callback crashes on
+;;;; arm64 the first time it is called.
 
 (in-package #:objc)
 
@@ -167,32 +175,69 @@ BOOL argument into NO without erroring."
                       (format nil "~s is an aggregate; the dynamic FFI cannot ~
                                    name one" node)))))))
 
-;;; Struct decomposition -----------------------------------------------------
+;;; Dynamic FFI designators ---------------------------------------------------
 ;;;
-;;; ECL's foreign type table is a closed enum of scalars, so a struct can only
-;;; be smuggled through SI:CALL-CFUN as the scalars it is made of.  That is
-;;; right exactly when AAPCS64 happens to put those fields where the same
-;;; number of separate scalars would have gone, and wrong -- silently, with no
-;;; condition signalled and a plausible number returned -- otherwise.
-;;;
-;;; The two classes that work were measured on-device rather than reasoned
-;;; about (asdf-ios-app/examples/abi-probe):
-;;;
-;;;   an HFA of at most four floats of one type   CGPoint CGSize CGRect
-;;;   two 8-byte integer-or-pointer fields        NSRange
-;;;
-;;; and the ones that do not:
-;;;
-;;;   {long, double}    16 bytes and not an HFA, so BOTH halves go in general
-;;;                     registers; decomposed, the double lands in v0 and the
-;;;                     callee reads x1
-;;;   {d,d,d,d,d,d}     48 bytes, not an HFA, passed BY POINTER; decomposed,
-;;;                     the callee dereferences whatever was in x0
-;;;
-;;; Neither of those faulted when measured.  They returned plausible numbers
-;;; that changed between runs.  So this predicate is conservative by
-;;; construction: it recognises the two shapes it can prove and refuses
-;;; everything else, including shapes that might well work.
+;;; SI:CALL-CFUN and SI::MAKE-DYNAMIC-CALLBACK read their types in C and cannot
+;;; look a name up, so an aggregate is handed to them as the (:STRUCT (name
+;;; type) ...) list its layout resolves to.  libffi takes it from there: size,
+;;; alignment, and -- the part nothing in Lisp should be deciding -- which
+;;; registers the members travel in, when the whole thing goes to memory, and
+;;; when the callee is handed a hidden pointer to write its result through.
+
+(defun ecl-dffi-type (node)
+  "The dynamic FFI designator for NODE.
+
+A scalar or pointer is what ECL-FOREIGN-TYPE says.  A structure is its resolved
+layout as a (:STRUCT ...) list, nested structures nested and an array member as
+(:ARRAY type count); the member names are not read by anything.  A union is
+refused, because libffi has no union type and the usual imitation -- a
+structure of the largest member -- classifies wrongly for register passing
+exactly when the members disagree about their class, which is the case that
+matters."
+  (etypecase node
+    (keyword (ecl-foreign-type node))
+    (cons
+     (ecase (first node)
+       (:pointer :pointer-void)
+       (:qualified (ecl-dffi-type (third node)))
+       (:array (list :array (ecl-dffi-type (third node)) (second node)))
+       (:struct
+        (let ((fields (third (%resolved-struct node))))
+          (unless fields
+            (%unsupported "ECL-DFFI-TYPE"
+                          (format nil "~s has no layout; the runtime elides ~
+                                       them, and one cannot be guessed" node)))
+          (list* :struct (mapcar (lambda (field) (list :m (ecl-dffi-type field)))
+                                 fields))))
+       (:union
+        (%unsupported "ECL-DFFI-TYPE"
+                      (format nil "~s is a union, which libffi cannot describe ~
+                                   in a way that is right for every ABI" node)))
+       (:bitfield
+        (%unsupported "ECL-DFFI-TYPE"
+                      (format nil "~s is a bitfield" node)))))))
+
+(defun %resolved-struct (node)
+  "NODE with its layout, resolving through the runtime if it came without one."
+  (if (third node) node (resolve-struct-layout node)))
+
+(defun %struct-size (node)
+  (values (node-size-and-alignment (%resolved-struct node))))
+
+(defun %copy-foreign-bytes (from to size)
+  "SIZE bytes from foreign pointer FROM to foreign pointer TO."
+  (loop for i below size
+        do (setf (cffi:mem-aref to :uint8 i) (cffi:mem-aref from :uint8 i))))
+
+(defun %zeroed-foreign-buffer (size)
+  "SIZE bytes of collector-managed foreign memory, zero-filled.
+
+Collector-managed rather than FOREIGN-ALLOC, because a structure returned from
+a callback is read by libffi after the Lisp function has returned and there is
+no moment at which to free it."
+  (let ((buffer (si::allocate-foreign-data :void size)))
+    (loop for i below size do (setf (cffi:mem-aref buffer :uint8 i) 0))
+    buffer))
 
 (defun %flatten-fields (node)
   "The leaf scalar nodes of NODE, in layout order, or NIL if it has none.
@@ -207,45 +252,6 @@ and AAPCS64 sees four doubles either way."
                    append leaves)))
       (list node)))
 
-(defun %homogeneous-float-aggregate-p (leaves)
-  "True when LEAVES is an HFA: at most four members, all the same float type."
-  (and leaves
-       (<= (length leaves) 4)
-       (let ((first-leaf (first leaves)))
-         (and (member first-leaf '(:float :double))
-              (every (lambda (leaf) (eq leaf first-leaf)) leaves)))))
-
-(defun %eight-byte-integer-aggregate-p (leaves)
-  "True when LEAVES is one or two fields, each exactly eight bytes.
-
-The eight-byte requirement is the whole of it, and `total size at most 16' is
-NOT the rule.  A {int,int,int,int} is sixteen bytes and AAPCS64 packs two ints
-into each of x0 and x1; decomposed into four :INT arguments they would go to
-x0-x3 and every one would be read from the wrong place.  One field per register
-is what makes decomposition equivalent, so that is what this asks for."
-  (and leaves
-       (<= (length leaves) 2)
-       (every (lambda (leaf)
-                (and (not (member leaf '(:float :double)))
-                     (eql 8 (node-size-and-alignment leaf))))
-              leaves)))
-
-(defun decomposable-struct-argument-p (node)
-  "True when NODE may be passed as the scalars it is made of.
-
-Arguments only.  A struct RETURN is never decomposable: a scalar return type
-names exactly one register, so a CGRect read back as :DOUBLE gives origin.x and
-nothing else -- which is -[UIView bounds] returning a quarter of an answer."
-  (and (struct-node-p node)
-       (let ((leaves (%flatten-fields node)))
-         (and leaves
-              (or (%homogeneous-float-aggregate-p leaves)
-                  (%eight-byte-integer-aggregate-p leaves))))))
-
-(defun struct-argument-scalars (node)
-  "The scalar nodes NODE decomposes into, or NIL if it must not be decomposed."
-  (and (decomposable-struct-argument-p node)
-       (%flatten-fields node)))
 
 ;;; Dispatch entry points ----------------------------------------------------
 
@@ -323,93 +329,48 @@ redefinition and is the right trade against crashing mid-session.")
 ;;; SI:CALL-CFUN builds a call frame at run time through libffi, so this needs
 ;;; no C compiler and works in an interpreted image -- which means a trampoline
 ;;; built this way is available at a remote REPL on a phone, where nothing can
-;;; be compiled at all.
+;;; be compiled at all.  Structures go by value in both directions: an argument
+;;; is read from the memory its SAP names, and a result comes back as fresh
+;;; foreign data that is copied into OUT to keep the contract.
 ;;;
-;;; What it cannot do is a struct RESULT (a scalar return type names exactly one
-;;; register) or a variadic call (arm64 passes variadic arguments on the stack,
-;;; and a fixed signature puts them in registers). Those fall through to a
-;;; compiled strategy.
+;;; What it cannot do is a variadic call.  arm64 passes variadic arguments on
+;;; the stack, a fixed cif puts them in registers, and ECL does not expose
+;;; libffi's variadic preparation.  That falls through to a compiled strategy,
+;;; or on a phone to a declared one.
 
-(defun %leaf-reader (node)
-  "A function of (address offset) returning NODE's value ready for SI:CALL-CFUN.
+(defun %dynamic-signature (result-node arg-nodes)
+  "(VALUES RESULT-TYPE ARG-TYPES), or NIL if the dynamic FFI cannot describe them."
+  (let ((result-type (ignore-errors (ecl-dffi-type result-node)))
+        (arg-types (ignore-errors (mapcar #'ecl-dffi-type arg-nodes))))
+    (and result-type
+         (or arg-types (null arg-nodes))
+         (values result-type arg-types))))
 
-Pointer-ish leaves come back as foreign objects rather than addresses, because
-that is what a :POINTER-VOID argument wants; everything above this file speaks
-addresses and the conversion happens here."
-  (etypecase node
-    (keyword
-     (ecase node
-       (:double (lambda (address offset) (cffi:mem-ref address :double offset)))
-       (:float  (lambda (address offset) (cffi:mem-ref address :float offset)))
-       (:long-long (lambda (address offset) (cffi:mem-ref address :int64 offset)))
-       (:ulong-long (lambda (address offset) (cffi:mem-ref address :uint64 offset)))
-       ((:id :class :sel :cstring :block)
-        (lambda (address offset) (cffi:mem-ref address :pointer offset)))))
-    (cons
-     (ecase (first node)
-       (:pointer (lambda (address offset)
-                   (cffi:mem-ref address :pointer offset)))))))
-
-(defun %struct-argument-expander (node)
-  "A function of one SAP returning the list of scalars NODE decomposes into.
-
-The offsets are a simple stride, and provably so: decomposition is only ever
-allowed for a homogeneous float aggregate or for fields of exactly eight bytes,
-and in both of those every member has the same size. A shape where that is not
-true is refused by DECOMPOSABLE-STRUCT-ARGUMENT-P before reaching here."
-  (let* ((leaves (struct-argument-scalars node))
-         (stride (node-size-and-alignment (first leaves)))
-         (readers (mapcar #'%leaf-reader leaves)))
-    (lambda (sap)
-      (loop for reader in readers
-            for offset from 0 by stride
-            collect (funcall reader sap offset)))))
-
-(defun %dynamic-argument-plan (arg-nodes)
-  "(VALUES TYPES EXPANDERS) for ARG-NODES, or NIL if the dynamic path cannot.
-
-EXPANDERS has one entry per argument: NIL for a scalar passed straight through,
-a function of the incoming value otherwise. A struct expands into several
-values, which is why every expander returns a list."
-  (let ((types '())
-        (expanders '()))
-    (dolist (node arg-nodes)
-      (cond
-        ((struct-node-p node)
-         (let ((leaves (struct-argument-scalars node)))
-           (unless leaves (return-from %dynamic-argument-plan nil))
-           (dolist (leaf leaves) (push (ecl-foreign-type leaf) types))
-           (push (%struct-argument-expander node) expanders)))
+(defun %dynamic-result-handler (result-node result-type)
+  "A function of (raw out) producing the contract's value for a raw CALL-CFUN result."
+  (cond ((struct-node-p result-node)
+         (let ((size (%struct-size result-node)))
+           (lambda (raw out) (%copy-foreign-bytes raw out size) nil)))
+        ((eq result-type :void)
+         (lambda (raw out) (declare (ignore raw out)) nil))
         (t
-         (let ((type (ignore-errors (ecl-foreign-type node))))
-           (unless type (return-from %dynamic-argument-plan nil))
-           (push type types)
-           ;; A SAP is already the foreign object libffi wants.
-           (push nil expanders)))))
-    (values (nreverse types) (nreverse expanders))))
+         (lambda (raw out) (declare (ignore out)) raw))))
 
 (defun %dynamic-trampoline (kind result-node arg-nodes n-fixed)
   "A trampoline built on SI:CALL-CFUN, or NIL if this signature is out of reach."
-  (when (or (struct-node-p result-node)   ; one register, one field
-            n-fixed)                      ; variadic: stack, not registers
+  (when n-fixed                         ; variadic: stack, not registers
     (return-from %dynamic-trampoline nil))
-  (let ((result-type (ignore-errors (ecl-foreign-type result-node))))
+  (multiple-value-bind (result-type arg-types) (%dynamic-signature result-node arg-nodes)
     (unless result-type (return-from %dynamic-trampoline nil))
-    (multiple-value-bind (types expanders) (%dynamic-argument-plan arg-nodes)
-      (unless (or types (null arg-nodes)) (return-from %dynamic-trampoline nil))
-      (ensure-dispatch-addresses)
-      (let ((entry (ecase kind
-                     (:send *msgsend-address*)
-                     (:super *msgsend-super-address*)))
-            (void-result-p (eq result-type :void)))
-        (lambda (out &rest args)
-          (declare (ignore out))         ; no struct result reaches here
-          (let ((frame (loop for arg in args
-                             for expander in expanders
-                             append (if expander (funcall expander arg) (list arg)))))
-            (let ((raw (with-fp-traps-masked
-                         (si:call-cfun entry result-type types frame))))
-              (if void-result-p nil raw))))))))
+    (ensure-dispatch-addresses)
+    (let ((entry (ecase kind
+                   (:send *msgsend-address*)
+                   (:super *msgsend-super-address*)))
+          (finish (%dynamic-result-handler result-node result-type)))
+      (lambda (out &rest args)
+        (funcall finish
+                 (with-fp-traps-masked (si:call-cfun entry result-type arg-types args))
+                 out)))))
 
 
 ;;; Strategy B: compiled trampolines ------------------------------------------
@@ -427,7 +388,8 @@ values, which is why every expander returns a list."
 ;;; JITs per signature and caches too.
 ;;;
 ;;; Not available on iOS: there is no C compiler on a phone, and ECL's COMPILE
-;;; there yields bytecode. That is what Strategy C is for.
+;;; there yields bytecode. The dynamic path covers a phone; a variadic send is
+;;; the one thing it cannot, and DEFINE-OBJC-TRAMPOLINE is for that.
 
 (defvar *compiled-trampolines-available* :unknown
   "T, NIL, or :UNKNOWN before the first attempt. See COMPILED-TRAMPOLINES-AVAILABLE-P.")
@@ -699,18 +661,14 @@ because finding it out costs a subprocess."
               (with-fp-traps-masked (apply function args)))))))))
 
 
-;;; Strategy C: an ahead-of-time pool -------------------------------------------
+;;; Declared trampolines --------------------------------------------------------
 ;;;
-;;; On a phone there is no C compiler and ECL's COMPILE yields bytecode, so a
-;;; trampoline that does not exist before the app ships cannot be made. The
-;;; dynamic path covers every scalar and pointer signature, which is most of
-;;; Cocoa; what it cannot do is a struct result, and -bounds and -frame are how
-;;; you ask a view anything.
+;;; For a variadic send on a platform with no compiler.  Everything else the
+;;; dynamic path does; this is what remains of the pool that used to cover
+;;; structure results as well.
 ;;;
-;;; So the shapes are compiled in advance, into the application, and looked up
-;;; here. A trampoline depends only on the ABI shape of a signature and not on
-;;; the selector, so one entry serves every method that looks like it: the
-;;; pool is small even though Cocoa is not.
+;;; A trampoline depends only on the ABI shape of a signature and not on the
+;;; selector, so one declaration serves every method that looks like it.
 
 (defvar *trampoline-pool* (make-hash-table :test 'equal)
   "ABI shape -> a trampoline function built before the image shipped.")
@@ -752,16 +710,19 @@ are not the same shape."
                                   &environment environment)
   "Compile a trampoline for one call shape into this image, ahead of time.
 
-For iOS, where nothing can be compiled at run time. RESULT and ARGUMENTS are
-ordinary type descriptors, and ARGUMENTS names every C parameter including the
-two hidden ones:
+For a variadic send on iOS, where nothing can be compiled at run time and the
+dynamic FFI cannot make one.  RESULT and ARGUMENTS are ordinary type
+descriptors, ARGUMENTS names every C parameter including the two hidden ones,
+and VARIADIC-NUM-OF-FIXED says where the variadic part begins:
 
     (objc:define-objc-trampoline
-      (:result cocoa:ns-rect
-       :arguments (objc:objc-object-pointer objc:sel)))
+      (:result objc:objc-object-pointer
+       :arguments (objc:objc-object-pointer objc:sel objc:objc-object-pointer
+                   objc:objc-object-pointer)
+       :variadic-num-of-fixed 3))
 
-covers -bounds, -frame, and every other no-argument method returning a
-rectangle. The shape is what is matched, so one of these serves many selectors.
+covers +stringWithFormat: with one argument, and every other selector that
+looks like it.  The shape is what is matched, so one of these serves many.
 
 Put these in a file listed in :BUNDLE-TRAMPOLINES: it must be compiled for the
 target and never on the host, because FFI:C-INLINE cannot survive the host pass."
@@ -780,20 +741,20 @@ target and never on the host, because FFI:C-INLINE cannot survive the host pass.
 (defun %no-trampoline (kind result-node arg-nodes n-fixed)
   "Refuse, naming the declaration that would fix it.
 
-The failure a user actually meets on iOS, so it is worth more than \"not
-supported\": the shape is known here, and the form to paste is a mechanical
-function of it. A message that ends the search is the difference between a
-five-minute fix and an afternoon reading this file."
+Only a variadic send reaches here: everything else the dynamic path makes at
+run time.  The shape is known and the form to paste is a mechanical function of
+it, so the message ends the search rather than starting one."
   (%unsupported
    "BUILD-TRAMPOLINE"
    (format nil
-           "no trampoline for this call shape, and none can be built here -- ~
-            there is no C compiler on this platform.~2%~
+           "no trampoline for this ~:[call~;variadic call~], and none can be ~
+            built here -- there is no C compiler on this platform.~2%~
             Add this to a file listed in :BUNDLE-TRAMPOLINES:~2%~
             ~2t(objc:define-objc-trampoline~%~
             ~5t(~@[:kind ~(~s~) ~]:result ~(~s~)~%~
             ~6t:arguments ~(~s~)~@[~%~6t:variadic-num-of-fixed ~d~]))~2%~
             and rebuild."
+           n-fixed
            (unless (eq kind :send) kind)
            (ignore-errors (fli-type-for-node result-node))
            (mapcar (lambda (node) (or (ignore-errors (fli-type-for-node node)) node))
@@ -807,10 +768,9 @@ The contract is abi.lisp's, unchanged:
 
     (out-sap arg...) => scalar-or-NIL
 
-Strategies are tried in order of what they cost. The dynamic one needs no
-compiler and reaches every scalar and pointer signature, which is most of
-Cocoa; the rest -- struct results, variadics, and the struct arguments AAPCS64
-does not pass like separate scalars -- needs a compiled trampoline."
+The dynamic path first, because it costs nothing and reaches everything but a
+variadic call; then a declared trampoline, which is what a phone has for those;
+then one compiled now, which is what a Mac has."
   (or (%dynamic-trampoline kind result-node arg-nodes n-fixed)
       (%pooled-trampoline kind result-node arg-nodes n-fixed)
       (%compiled-trampoline kind result-node arg-nodes n-fixed)
@@ -827,26 +787,16 @@ does not pass like separate scalars -- needs a compiled trampoline."
 
 (defun %dynamic-block-caller (result-node arg-nodes invoke-offset)
   "A block caller on SI:CALL-CFUN, or NIL if this signature is out of reach."
-  (when (struct-node-p result-node)
-    (return-from %dynamic-block-caller nil))
-  (let ((result-type (ignore-errors (ecl-foreign-type result-node))))
+  (multiple-value-bind (result-type arg-types) (%dynamic-signature result-node arg-nodes)
     (unless result-type (return-from %dynamic-block-caller nil))
-    (multiple-value-bind (types expanders) (%dynamic-argument-plan arg-nodes)
-      (unless (or types (null arg-nodes)) (return-from %dynamic-block-caller nil))
-      (let ((void-result-p (eq result-type :void)))
-        (lambda (out block &rest args)
-          (declare (ignore out))
-          ;; The invoke pointer, read from this particular block.
-          (let ((entry (cffi:mem-ref block :pointer invoke-offset))
-                (frame (cons block
-                             (loop for arg in args
-                                   for expander in (rest expanders)
-                                   append (if expander
-                                              (funcall expander arg)
-                                              (list arg))))))
-            (let ((raw (with-fp-traps-masked
-                         (si:call-cfun entry result-type types frame))))
-              (if void-result-p nil raw))))))))
+    (let ((finish (%dynamic-result-handler result-node result-type)))
+      (lambda (out block &rest args)
+        ;; The invoke pointer, read from this particular block.
+        (let ((entry (cffi:mem-ref block :pointer invoke-offset)))
+          (funcall finish
+                   (with-fp-traps-masked
+                     (si:call-cfun entry result-type arg-types (cons block args)))
+                   out))))))
 
 (defun %block-caller-source (result-node arg-nodes invoke-offset function-name)
   "The Lisp source for a compiled block caller."
@@ -928,24 +878,27 @@ invoke field sits in the block literal; the caller passes it from the CFFI
 struct definition so the layout has one source of truth."
   (or (%dynamic-block-caller result-node arg-nodes invoke-offset)
       (%compiled-block-caller result-node arg-nodes invoke-offset)
-      (%unsupported "BUILD-BLOCK-CALLER"
-                    (if (struct-node-p result-node)
-                        "a struct result and no C compiler is available"
-                        "this signature cannot be described"))))
+      (%unsupported "BUILD-BLOCK-CALLER" "this signature cannot be described")))
 
 ;;; Inbound: real IMPs ---------------------------------------------------------
 ;;;
 ;;; The other direction. An Objective-C class defined in Lisp needs a real C
-;;; function pointer per method, and FFI:DEFCALLBACK emits one -- the ECL
-;;; compiler handles DEFCALLBACK itself rather than allocating a libffi closure,
-;;; provided FFI::*USE-DFFI* is NIL when it is compiled. That matters beyond
-;;; tidiness: the closure path needs writable-then-executable memory, which iOS
-;;; refuses, so a libffi closure is not slower there, it is fatal.
+;;; function pointer per method, and SI::MAKE-DYNAMIC-CALLBACK makes one: a
+;;; libffi closure, whose entry point is a slot in a page of trampolines the
+;;; platform maps executable once.  No compiler, no shim, and a structure in
+;;; either direction is described the same way a call is.
 ;;;
-;;; What DEFCALLBACK cannot describe is an aggregate, because c1-defcallback
-;;; resolves every argument and the return through FOREIGN-ELT-TYPE-CODE. A
-;;; method taking or returning a struct by value therefore still needs a
-;;; hand-written C shim; -drawRect: is the one everybody wants.
+;;; Two obligations from abi.lisp are met in the Lisp function the closure
+;;; calls rather than in C.  Float traps are masked, because Cocoa generates
+;;; invalid operations freely and an unmasked one takes the process out.  And
+;;; no condition may escape, because there is no handler on the Objective-C
+;;; side and an unwind past the closure aborts.
+;;;
+;;; One obligation is not met, and was not by the C shims this replaces either:
+;;; a callback arriving on a thread ECL did not create.  libffi's executor
+;;; asks for the current thread's environment and does not import one, so a
+;;; block invoked on a libdispatch worker is still the gap the README records.
+;;; Every IMP UIKit calls arrives on the main thread, which is ECL's own.
 
 (defun report-imp-error (condition selector &optional (noun "method"))
   "Report a condition that tried to escape a Lisp implementation into Objective-C.
@@ -972,310 +925,36 @@ that sends the reader to the wrong file."
          (cffi:null-pointer))
         (t 0)))
 
-(defvar *callable-bodies* (make-hash-table)
-  "Index -> the Lisp side of one generated callable.
+(defun %dynamic-callable (name result-node arg-nodes n-hidden body noun)
+  "A libffi closure calling BODY, or NIL if the signature cannot be described.
 
-The generated DEFCALLBACK is compiled in its own file and cannot close over
-anything, so it calls back in here with its index and this supplies the closure,
-the hidden-argument count and the result node.")
-
-(defvar *callable-counter* 0)
-
-(defstruct (callable-entry (:constructor %make-callable-entry))
-  body n-hidden result-node name noun)
-
-(defun %invoke-callable-body (index result-sap &rest args)
-  "The Lisp side of a generated callable. Called from the DEFCALLBACK.
-
-This is BUILD-CALLABLE's contract from abi.lisp, and both halves of it are
-obligations rather than politeness. Float traps are masked because Cocoa
-generates invalid operations freely and an unmasked one takes the process out.
-And no condition may escape: there is no handler on the Objective-C side, so an
-unwind past this frame aborts."
-  (let ((entry (gethash index *callable-bodies*)))
-    (if (null entry)
-        (zero-value :void)
-        (let ((n-hidden (callable-entry-n-hidden entry))
-              (result-node (callable-entry-result-node entry)))
-          (with-fp-traps-masked
-            (handler-case
-                (apply (callable-entry-body entry)
-                       (append (subseq args 0 n-hidden)
-                               ;; RESULT-SAP is the struct result buffer, or a
-                               ;; null pointer when the result is a scalar and
-                               ;; the body's value is the C return. One entry
-                               ;; point for both, so the two generators differ
-                               ;; only in what they pass here.
-                               (list result-sap)
-                               (nthcdr n-hidden args)))
-              (serious-condition (condition)
-                (report-imp-error condition (callable-entry-name entry)
-                                  (callable-entry-noun entry))
-                (zero-value result-node))))))))
-
-(defun %callable-source (result-node arg-nodes index function-name)
-  "The Lisp source for one generated callable, as a string."
-  (let ((params (loop for node in arg-nodes
-                      for i from 0
-                      collect (format nil "(a~d ~(~s~))" i (ecl-foreign-type node)))))
-    (with-output-to-string (out)
-      (format out ";;;; Generated by objc for one callable signature.~%")
-      (format out "(in-package #:objc)~%~%")
-      (format out "(ffi:defcallback ~a ~(~s~) (~{~a~^ ~})~%"
-              function-name (ecl-foreign-type result-node) params)
-      ;; A null result pointer: DEFCALLBACK only ever handles a scalar result.
-      (format out "  (%invoke-callable-body ~d (cffi:null-pointer)~{ ~a~}))~%~%"
-              index (loop for i from 0 below (length arg-nodes)
-                          collect (format nil "a~d" i)))
-      ;; FFI:CALLBACK is a macro over a compile-time name, so the address has to
-      ;; be taken here rather than by the caller.
-      (format out "(defun ~a-address () (ffi:callback '~a))~%"
-              function-name function-name))))
-
-(defun %callable-describable-p (result-node arg-nodes)
-  "Whether DEFCALLBACK can describe this signature at all."
-  (and (not (struct-node-p result-node))
-       (notany #'struct-node-p arg-nodes)
-       (ignore-errors (ecl-foreign-type result-node))
-       (every (lambda (node) (ignore-errors (ecl-foreign-type node))) arg-nodes)
-       t))
-
-
-;;; Callables that carry aggregates -------------------------------------------
-;;;
-;;; FFI:DEFCALLBACK cannot describe a struct, because c1-defcallback resolves
-;;; every argument and the return through FOREIGN-ELT-TYPE-CODE. So for a method
-;;; like -drawRect: -- the one everybody wants -- the C function is written out
-;;; by hand instead, with the exact prototype, and calls back into Lisp through
-;;; cl_funcall.
-;;;
-;;; The Lisp side is the same %INVOKE-CALLABLE-BODY the DEFCALLBACK path uses.
-;;; The two differ only in what they can spell, not in what they mean.
-
-(defun %shim-forms (result-node arg-nodes index function-name)
-  "(VALUES CLINES-FORM ADDRESS-DEFUN) for one C shim callable."
-  (let* ((definitions '())
-         (structp (struct-node-p result-node))
-         (result-c (multiple-value-bind (type more)
-                       (%c-type-name (if structp
-                                         (resolve-struct-layout result-node)
-                                         result-node)
-                                     definitions)
-                     (setf definitions more)
-                     type))
-         (arg-cs (loop for node in arg-nodes
-                       collect (multiple-value-bind (type more)
-                                   (%c-type-name node definitions)
-                                 (setf definitions more)
-                                 type)))
-         (shim (format nil "objc_shim_~d" index))
-         (parameters (loop for c-type in arg-cs
-                           for i from 0
-                           collect (format nil "~a p~d" c-type i)))
-         ;; Every argument reaches Lisp as a foreign pointer or a Lisp number.
-         ;; A struct is copied to a local first so its address can be taken:
-         ;; a parameter's address is not something to hand out, and the copy is
-         ;; what makes the body's SAP contract uniform.
-         (copies (loop for node in arg-nodes
-                       for i from 0
-                       when (struct-node-p node)
-                         collect (format nil "  ~a c~d = p~d;" (nth i arg-cs) i i)))
-         (actuals (loop for node in arg-nodes
-                        for i from 0
-                        collect
-                        (cond
-                          ((struct-node-p node)
-                           (format nil "ecl_make_foreign_data(ECL_NIL, 0, &c~d)" i))
-                          ((eq (ecl-foreign-type node) :pointer-void)
-                           (format nil "ecl_make_foreign_data(ECL_NIL, 0, (void *)p~d)" i))
-                          ((member node '(:float :double))
-                           (format nil "ecl_make_double_float((double)p~d)" i))
-                          (t (format nil "ecl_make_fixnum((long)p~d)" i))))))
-    (let ((shim-c
-            ;; The shim itself. No `at' sign may appear anywhere ECL reads as
-            ;; its own return syntax, which is why the result is assigned to a
-            ;; local rather than produced by a return macro.
-            (with-output-to-string (c)
-                (format c "static ~a ~a(~{~a~^, ~}) {~%" result-c shim parameters)
-                ;; Cocoa calls an IMP or a block on whatever thread it likes,
-                ;; and libdispatch's workers are threads ECL never created.
-                ;; Entering Lisp on one without importing it first is
-                ;; undefined -- in practice the callback never returns, which
-                ;; is a hang rather than a crash and correspondingly harder to
-                ;; read. ECL's own DEFCALLBACK does not do this, which is the
-                ;; main reason every callable is generated here rather than
-                ;; there.
-                (format c "  bool imported = ecl_import_current_thread(ECL_NIL, ECL_NIL);~%")
-                (dolist (copy copies) (format c "~a~%" copy))
-                (when structp
-                  (format c "  ~a out;~%  memset(&out, 0, sizeof out);~%" result-c))
-                (unless (member result-node '(:void :unknown))
-                  (unless structp (format c "  ~a value;~%" result-c)))
-                (format c "  cl_object fn = ecl_make_symbol(\"%INVOKE-CALLABLE-BODY\", \"OBJC\");~%")
-                (format c "  cl_object r = cl_funcall(~d, fn, ecl_make_fixnum(~d), ~a~{, ~a~});~%"
-                        (+ 3 (length actuals)) index
-                        (if structp
-                            "ecl_make_foreign_data(ECL_NIL, 0, &out)"
-                            "ECL_NIL")
-                        actuals)
-                ;; The Lisp value is turned into a C one BEFORE the thread is
-                ;; released: after that, r is not something to be reading.
-                (cond
-                  (structp (format c "  (void)r;~%"))
-                  ((member result-node '(:void :unknown)) (format c "  (void)r;~%"))
-                  ((member result-node '(:float :double))
-                   (format c "  value = (~a)ecl_to_double(r);~%" result-c))
-                  ((eq (ecl-foreign-type result-node) :pointer-void)
-                   (format c "  value = (~a)ecl_foreign_data_pointer_safe(r);~%" result-c))
-                  (t (format c "  value = (~a)ecl_to_fixnum(r);~%" result-c)))
-                (format c "  if (imported) ecl_release_current_thread();~%")
-                (cond
-                  (structp (format c "  return out;~%"))
-                  ((member result-node '(:void :unknown)))
-                  (t (format c "  return value;~%")))
-                (format c "}"))))
-      (values
-       `(ffi:clines "#include <string.h>" ,@(reverse definitions) ,shim-c)
-       ;; The address, taken from Lisp. The cast is what class_addMethod wants,
-       ;; and the at-sign return syntax is ECL's own -- it is OTHER uses of it
-       ;; in a c-inline body that ECL misreads.
-       `(defun ,(intern (string-upcase (format nil "~a-address" function-name)) '#:objc) ()
-          (ffi:c-inline () () :pointer-void
-                        ,(format nil "{ ~a(return) = (void *)~a; }" #\@ shim)
-                        :one-liner nil))))))
-
-(defun %shim-source (result-node arg-nodes index function-name)
-  "The Lisp source for one C shim callable, as a string."
-  (multiple-value-bind (clines address-defun)
-      (%shim-forms result-node arg-nodes index function-name)
-    (with-readable-forms
-      (format nil ";;;; Generated by objc for one callable signature.~%~
-                   (in-package #:objc)~%~%~s~%~%~s~%"
-              clines address-defun))))
-
-(defun %compiled-shim-callable (name result-node arg-nodes n-hidden body noun)
-  "Build a callable for a signature DEFCALLBACK cannot describe, or NIL."
-  (let* ((index (incf *callable-counter*))
-         (function-name (format nil "objc-shim-~d" index)))
-    (setf (gethash index *callable-bodies*)
-          (%make-callable-entry :body body :n-hidden n-hidden
-                                :result-node result-node :name name :noun noun))
-    (let* ((source (handler-case (%shim-source result-node arg-nodes index function-name)
-                     (error () nil)))
-           (address-fn (and source
-                            (%compile-and-load source
-                                               (format nil "~a-address" function-name)))))
-      (cond (address-fn (funcall address-fn))
-            (t (remhash index *callable-bodies*) nil)))))
-
-
-;;; An ahead-of-time pool of IMPs ---------------------------------------------
-;;;
-;;; The other half of what iOS needs, and it cannot work the way the trampoline
-;;; pool does. A trampoline is looked up and called; an IMP is a bare C function
-;;; pointer handed to class_addMethod, and it carries no argument saying which
-;;; Lisp function it stands for. One address is one method.
-;;;
-;;; So the pool holds several shims per shape, each compiled with its own index
-;;; baked in, and BUILD-CALLABLE claims one. Defining a method spends an entry;
-;;; redefining the same method reuses it, because the body is looked up through
-;;; the index at call time and rebinding it is all a redefinition needs.
-;;;
-;;; Running out is a build-time question with a build-time answer, so the error
-;;; says which shape to add and how many.
-
-(defvar *callable-pool* (make-hash-table :test 'equal)
-  "Callable shape -> a list of unclaimed (index . address) pairs.")
-
-(defvar *claimed-callables* (make-hash-table :test 'equal)
-  "(name . shape) -> the (index . address) already claimed for it.
-
-Redefining a method must not spend a second entry from the pool. The generated
-shim reaches its body through the index, so rebinding that is the whole of a
-redefinition -- which is also why the old body becomes garbage safely here,
-where on SBCL the callable has to be kept alive forever.")
-
-(defun %callable-shape (result-node arg-nodes n-hidden)
-  (list (%abi-shape result-node) (mapcar #'%abi-shape arg-nodes) n-hidden))
-
-(defun register-callable (result-node arg-nodes n-hidden index address)
-  "Record one pre-compiled shim as available. Called by the pool file."
-  (let ((shape (%callable-shape result-node arg-nodes n-hidden)))
-    (push (cons index address) (gethash shape *callable-pool*))
-    index))
-
-(defun %claim-pooled-callable (name result-node arg-nodes n-hidden body noun)
-  "Bind BODY to a pre-compiled shim for this shape, and return its address."
-  (let* ((shape (%callable-shape result-node arg-nodes n-hidden))
-         (key (cons (string name) shape))
-         ;; A redefinition reuses the entry it already has; only a new name
-         ;; spends one from the pool.
-         (entry (or (gethash key *claimed-callables*)
-                    (pop (gethash shape *callable-pool*)))))
-    (when entry
-      (setf (gethash key *claimed-callables*) entry)
-      (setf (gethash (car entry) *callable-bodies*)
-            (%make-callable-entry :body body :n-hidden n-hidden
-                                  :result-node result-node :name name :noun noun))
-      (cdr entry))))
-
-(defmacro define-objc-callable-pool ((&key (result :void) (arguments '())
-                                           (hidden 2) (count 4))
-                                     &environment environment)
-  "Compile COUNT interchangeable IMPs for one method shape, ahead of time.
-
-For iOS, where an IMP cannot be built at run time. RESULT and ARGUMENTS are
-ordinary type descriptors and ARGUMENTS names every C parameter, so an ordinary
-method starts with the two hidden ones:
-
-    (objc:define-objc-callable-pool
-      (:result :void
-       :arguments (objc:objc-object-pointer objc:sel cocoa:ns-rect)
-       :count 4))
-
-covers four -drawRect:-shaped methods. HIDDEN is 2 for a method and 1 for a
-block's invoke function.
-
-COUNT is code in the application whether or not it is used, so it is small by
-default. Redefining a method does not spend another."
-  (declare (ignorable environment))
-  (let* ((result-node (node-for-fli-type result))
-         (arg-nodes (mapcar #'node-for-fli-type arguments))
-         (forms '()))
-    (dotimes (i count)
-      (let* ((index (incf *callable-counter*))
-             (name (format nil "objc-pooled-callable-~d" index)))
-        (multiple-value-bind (clines address-defun)
-            (%shim-forms result-node arg-nodes index name)
-          (push clines forms)
-          (push address-defun forms)
-          (push `(register-callable ',result-node ',arg-nodes ,hidden
-                                    ,index (,(second address-defun)))
-                forms))))
-    `(progn ,@(nreverse forms))))
-
-(defun %no-callable (result-node arg-nodes n-hidden noun)
-  "Refuse an IMP, naming the declaration that would supply one.
-
-Same reasoning as %NO-TRAMPOLINE: this is the failure a user meets on iOS, the
-shape is known here, and a message that ends the search is worth more than one
-that starts a reading of this file."
-  (%unsupported
-   (format nil "BUILD-~:@(~a~)" noun)
-   (format nil
-           "no ~a left in the pool for this shape, and one cannot be built ~
-            here -- there is no C compiler on this platform.~2%~
-            Add this to a file listed in :BUNDLE-TRAMPOLINES:~2%~
-            ~2t(objc:define-objc-callable-pool~%~
-            ~5t(:result ~(~s~)~%~
-            ~6t:arguments ~(~s~)~@[~%~6t:hidden ~d~] :count 4))~2%~
-            and rebuild. :COUNT is how many methods of this shape you may ~
-            define; redefining one does not spend another."
-           noun
-           (or (ignore-errors (fli-type-for-node result-node)) result-node)
-           (mapcar (lambda (node) (or (ignore-errors (fli-type-for-node node)) node))
-                   arg-nodes)
-           (unless (eql n-hidden 2) n-hidden))))
+Returns the closure's entry point.  ECL keeps what the closure needs alive on
+NAME's plist, and NAME is interned, so the address stays valid for the life of
+the image -- which is what an address handed to class_addMethod requires."
+  (multiple-value-bind (result-type arg-types) (%dynamic-signature result-node arg-nodes)
+    (unless result-type (return-from %dynamic-callable nil))
+    (let* ((structp (struct-node-p result-node))
+           (size (and structp (%struct-size result-node))))
+      (flet ((call (args)
+               ;; RESULT-SAP is the structure result buffer, or a null pointer
+               ;; when the result is a scalar and the body's value is the C
+               ;; return.  A structure result is the buffer itself: libffi
+               ;; copies it out after this returns.
+               (let* ((result-sap (if structp (%zeroed-foreign-buffer size) (cffi:null-pointer)))
+                      (value (apply body (append (subseq args 0 n-hidden)
+                                                 (list result-sap)
+                                                 (nthcdr n-hidden args)))))
+                 (if structp result-sap value)))
+             (zero ()
+               (if structp (%zeroed-foreign-buffer size) (zero-value result-node))))
+        (si::make-dynamic-callback
+         (lambda (&rest args)
+           (with-fp-traps-masked
+             (handler-case (call args)
+               (serious-condition (condition)
+                 (report-imp-error condition name noun)
+                 (zero)))))
+         name result-type arg-types)))))
 
 (defun build-callable (name result-node arg-nodes n-hidden body &optional (noun "method"))
   "Build a real C function that calls BODY, and return (VALUES SAP NAME).
@@ -1285,37 +964,12 @@ hidden leading ones, N-HIDDEN says how many are the calling convention's, and
 BODY is called as
 
     (funcall BODY hidden... result-sap user-args...)"
-  ;; A pre-compiled shim first: on a phone it is the only option, and where a
-  ;; compiler exists it still saves a subprocess.
-  (let ((address (%claim-pooled-callable name result-node arg-nodes n-hidden body noun)))
-    (when address
-      (return-from build-callable (values address name))))
-  (unless (compiled-trampolines-available-p)
-    (%no-callable result-node arg-nodes n-hidden noun))
-  ;; Every callable goes through the generated C shim, including the ones
-  ;; FFI:DEFCALLBACK could describe. Two reasons, and the second is the
-  ;; decisive one: DEFCALLBACK cannot spell an aggregate at all, and it does
-  ;; not import a foreign thread, so a block reaching Lisp from a libdispatch
-  ;; worker hangs. One generator with the C in view handles both.
-  (let ((sap (%compiled-shim-callable name result-node arg-nodes n-hidden body noun)))
-    (return-from build-callable
-      (if sap
-          (values sap name)
-          (%unsupported (format nil "BUILD-~:@(~a~)" noun)
-                        (format nil "the C shim for ~a did not compile" name)))))
-  (let* ((index (incf *callable-counter*))
-         (function-name (format nil "objc-callable-~d" index)))
-    (setf (gethash index *callable-bodies*)
-          (%make-callable-entry :body body :n-hidden n-hidden
-                                :result-node result-node :name name :noun noun))
-    (let ((address-fn (%compile-and-load
-                       (%callable-source result-node arg-nodes index function-name)
-                       (format nil "~a-address" function-name))))
-      (unless address-fn
-        (remhash index *callable-bodies*)
+  (let ((sap (%dynamic-callable name result-node arg-nodes n-hidden body noun)))
+    (if sap
+        (values sap name)
         (%unsupported (format nil "BUILD-~:@(~a~)" noun)
-                      (format nil "the generated callable for ~a did not compile" name)))
-      (values (funcall address-fn) name))))
+                      (format nil "the signature of ~a cannot be described to ~
+                                   the dynamic FFI" name)))))
 
 (defun build-imp (result-node arg-nodes body)
   "Build a real IMP that calls BODY, and return (VALUES SAP CALLABLE-NAME).

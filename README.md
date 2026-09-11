@@ -1,9 +1,11 @@
 # objc
 
 [![macOS](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml)
+[![ECL](https://github.com/lispnik/objc/actions/workflows/ci-ecl.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-ecl.yml)
 
-The badge is SBCL on macOS. ECL is run locally and not yet by CI; iOS is run by
-hand, on a device — see [Status](#status).
+The first badge is SBCL on macOS, the second ECL on macOS, built from a fork
+that carries fixes not yet upstream. iOS is run by hand, on a device — see
+[Status](#status).
 
 The LispWorks Objective-C interface, reimplemented for SBCL and ECL on macOS,
 and for ECL on iOS, and extended.
@@ -64,18 +66,13 @@ against, so the differential tests run without LispWorks installed.
 
 ### ECL
 
-989 of 990 checks. Everything above works there: `invoke`, real IMPs, blocks
-from Lisp closures, and structures by value in both directions. One test is
-skipped, and one platform is unverified.
-
-**A block invoked on a libdispatch worker hangs.** The generated callable calls
-`ecl_import_current_thread` before touching Lisp, which is the documented way in
-and is not sufficient — the callback never returns. Everything synchronous is
-fine: a block called from Lisp runs, carries structures, and contains its own
-errors. What is affected is `dispatch_async` and completion handlers, which is a
-real part of modern Cocoa. Skipped rather than left to hang, because a hanging
-test reports nothing and costs the whole run. Note that SBCL needs a safepoint
-build for the neighbouring problem; this area is hard on both.
+999 checks, none skipped. Everything above works there: `invoke`,
+real IMPs, blocks from Lisp closures, structures by value in both directions,
+and a block invoked on a libdispatch worker — which used to hang, and was the
+one skipped test. It arrived on a thread ECL had never seen and libffi's
+executor asked for that thread's environment without importing one; the
+executor imports it now, on the `objc-develop` ECL this needs. Everything the
+backend does is the dynamic FFI, so what runs on a Mac is what runs on a phone.
 
 **iOS runs, on a device.** Cross-compiled with
 [asdf-ios-app](https://github.com/lispnik/asdf-ios-app), signed with an Apple
@@ -111,10 +108,6 @@ where `SYS:` resolves to a readable directory on the Mac.
   a selector the class does not implement is a Lisp error raised before anything
   is sent. A genuine `NSException` from inside a method that *does* exist will
   take the image down.
-- **On ECL, a block invoked on a libdispatch worker hangs.** Not the same
-  problem as the SBCL one below, and worse in one way: it does not fail, it
-  stops. `dispatch_async` and completion handlers are what this affects;
-  everything synchronous works. See [Status](#ecl).
 - **Running Lisp on two libdispatch threads at once needs a safepoint SBCL.** A
   block runs on a thread SBCL did not create; a garbage collection stops the
   world by signalling every other thread in Lisp, and Darwin refuses to signal a
@@ -207,19 +200,26 @@ all:
 Not `objc_getClass` — `strlen`. CFFI's ECL backend resolves foreign functions by
 name, so on a stock build CFFI resolves nothing and this library cannot load.
 
-Until it is upstream, build ECL from the branch that carries the fix — upstream
-`develop` plus that one commit, and nothing else:
+That is one of the fixes this library needs and stock ECL lacks. The others:
+`ffi:callback` returned a libffi closure's writable record rather than its
+entry point — the two coincide only where memory may be both, and on arm64
+macOS and iOS calling the record jumps into the heap; a dynamic callback did
+not import the thread it arrived on, so one called from a libdispatch worker
+died in `ecl_process_env()`; and `si:call-cfun` could not pass or return a
+structure by value. Each is on a branch of
+[lispnik/ecl](https://github.com/lispnik/ecl), for sending upstream, and
+`objc-develop` there is upstream `develop` plus all of them:
 
 ```
 git clone https://github.com/lispnik/ecl.git && cd ecl
-git checkout fix-dlsym-default-darwin
+git checkout objc-develop
 ./configure --prefix=$HOME/.local/ecl --enable-gmp=included
 make && make install
 ```
 
-This is what CI builds. The change on its own is in `ci/ecl-rtld-default.patch`,
-which is the form to send upstream; the day it lands, both that file and the
-`ECL` workflow can go.
+This is what CI builds. The `RTLD_DEFAULT` change on its own is in
+`ci/ecl-rtld-default.patch`, which is the form to send upstream; the day they
+all land, that file and the `ECL` workflow can go.
 
 An iOS build additionally needs `-DENABLE_DLOPEN=1`, because `configure` ties
 that to `--enable-shared` and an app must link statically while still being able
@@ -248,57 +248,51 @@ Everything implementation-specific lives in one file, and a test enforces that:
 `src/abi.lisp` for SBCL, `src/abi-ecl.lisp` for ECL. Nothing above the seam
 knows which is loaded.
 
-### Three ways to reach `objc_msgSend`, on ECL
+### Two ways to reach `objc_msgSend`, on ECL
 
 SBCL JITs a trampoline per signature. ECL runs on a platform where nothing can
-be compiled at all, so it tries three strategies in order of what they cost.
+be compiled at all, so it has a way that needs no compiler and a way that uses
+one.
 
 | | needs | reaches |
 |---|---|---|
-| **dynamic** — `si:call-cfun` | nothing | every scalar and pointer signature, and struct *arguments* AAPCS64 passes like separate scalars |
-| **compiled** — generated `ffi:c-inline`, cached per shape | a C compiler at run time | everything: struct results, variadics, IMPs, blocks |
-| **pooled** — built before the image shipped | a declaration | whatever was declared |
+| **dynamic** — `si:call-cfun` and `si:make-dynamic-callback` | nothing | every signature but a variadic one: structures by value both ways, IMPs, blocks |
+| **compiled** — generated `ffi:c-inline`, cached per shape | a C compiler at run time | everything, faster |
 
-The first needs no compiler, which is why it works in an interpreted image and
-therefore at a REPL attached to a phone. The second is what a Mac uses and is
-the same bargain SBCL strikes — one subprocess per distinct call shape, for the
-life of the image. The third is what iOS uses, because there is no C compiler on
-a phone and ECL's `compile` yields bytecode there.
+The first is what a phone uses, and what a REPL attached to one uses, because
+it works in an interpreted image. The second is what a Mac prefers for a send
+and is the same bargain SBCL strikes — one subprocess per distinct call shape,
+for the life of the image. Callables are always the first: a libffi closure
+costs nothing to make and there is nothing a compiled one does better.
 
-**Only one shape actually needs the pool: a structure returned by value.** A
-scalar return type names exactly one register, so an `NSRange` read back as a
-`long` gives its location and nothing else, and a `CGRect` gives `origin.x` —
-which is `-bounds` returning a quarter of an answer, silently. Struct
-*arguments* mostly come free: decomposing one into its fields is right exactly
-when the ABI would have put them where that many separate scalars go, which
-covers `CGRect`, `CGPoint`, `CGSize` and `NSRange`. It is wrong for a mixed
-16-byte struct and for anything over 16 bytes that is not a float aggregate, and
-those are refused rather than attempted, because the failure is a plausible
-wrong number rather than an error.
+**One shape needs a declaration on iOS: a variadic send.** arm64 passes
+variadic arguments on the stack, a fixed cif puts them in registers, and ECL
+does not expose libffi's variadic preparation. A Mac compiles one on demand; a
+phone cannot, so `+stringWithFormat:` and its relatives have to be in the image
+before it ships:
 
-Calling *in* needs the same treatment and cannot share it. A trampoline is
-looked up and called, so one serves every method that looks like it; an IMP is a
-bare function pointer handed to `class_addMethod` and carries nothing saying
-which Lisp function it stands for, so one address is one method. The pool
-therefore holds several interchangeable shims per shape and a definition claims
-one. Redefining a method does not spend another — the body is reached through an
-index, and rebinding it is the whole of a redefinition.
-
-`src/pool-ecl.lisp` carries the shapes that ship;
-`objc:define-objc-trampoline` and `objc:define-objc-callable-pool` add more,
-in a file of your own named by `:bundle-trampolines`. When a shape is missing
-the error says which of the two it needs and what to paste:
-
+```lisp
+(objc:define-objc-trampoline
+  (:result objc:objc-object-pointer
+   :arguments (objc:objc-object-pointer objc:sel objc:objc-object-pointer
+               objc:objc-object-pointer)
+   :variadic-num-of-fixed 3))
 ```
-no trampoline for this call shape, and none can be built here --
-there is no C compiler on this platform.
 
-Add this to a file listed in :BUNDLE-TRAMPOLINES:
+in a file of your own named by `:bundle-trampolines`. A trampoline is chosen by
+the ABI shape of a signature, not by the selector, so one declaration serves
+every method that looks like it. When one is missing the error says what to
+paste.
 
-  (objc:define-objc-trampoline
-     (:result (:struct cocoa:ns-range)
-      :arguments (objc:objc-object-pointer objc:sel objc:objc-object-pointer)))
-```
+**This needs an ECL with fixes**, none upstream yet, all on
+[lispnik/ecl](https://github.com/lispnik/ecl) and built by CI from its
+`objc-develop`. See [ECL](#ecl) under Requirements. There used to be a third
+way here — a pool of trampolines and IMPs compiled into the app before it
+shipped — because ECL's dynamic FFI could not name a structure and a libffi
+closure was believed to kill the process on iOS. Neither was a property of the
+platform: the first was a closed table of scalars in `src/c/ffi.d`, the second
+was `ffi:callback` handing out a closure's writable record instead of its entry
+point. Fixing ECL deleted the pool.
 
 ## Differences from LispWorks
 

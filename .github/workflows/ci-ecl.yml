@@ -131,10 +131,18 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Restore dependencies
+        # ocicl exits 0 when a download fails.  Left alone, that surfaces two
+        # steps later as "Component :ALEXANDRIA not found", pointing at the
+        # library rather than at the registry that was unreachable.  So the
+        # step fails here, on the line that says which package did not arrive.
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           ocicl setup
-          ocicl install
+          ocicl install 2>&1 | tee ocicl-install.log
+          if grep -q "failed to install" ocicl-install.log; then
+            echo "::error::ocicl could not install every dependency; see above" >&2
+            exit 1
+          fi
 
       - name: Report the environment the tests will see
         # The first line is the one that matters: if :default resolves nothing,

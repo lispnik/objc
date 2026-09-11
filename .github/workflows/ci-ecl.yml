@@ -39,7 +39,7 @@ jobs:
     # would then hand back a binary built from something else entirely.
     env:
       ECL_REPOSITORY: https://github.com/lispnik/ecl.git
-      ECL_REVISION: e9c1c953a
+      ECL_REVISION: 5b8f1deaa
     # Building ECL is the long pole at roughly six minutes cold, and nothing
     # after it takes more than five.  Same reasoning as the sibling workflow:
     # loose enough never to fire on a slow runner, tight enough that a hung
@@ -60,15 +60,23 @@ jobs:
       # scope; RTLD_DEFAULT is (void *)-2.  CFFI's ECL backend resolves foreign
       # functions by name, so on a stock build CFFI resolves nothing.
       #
-      # So this builds ECL rather than installing one, from a fork of upstream
-      # develop carrying that one-line fix and nothing else.  This used to clone
-      # upstream and apply ci/ecl-rtld-default.patch here; a committed fix is
-      # the better shape, because a revision alone then settles what was built.
-      # The patch file stays as the thing to send upstream, and the build step
-      # below asserts the two still say the same thing.
+      # So this builds ECL rather than installing one, from lispnik/ecl's
+      # objc-develop: upstream develop plus three fixes, each on its own branch
+      # there for sending upstream.  RTLD_DEFAULT (above); FFI:CALLBACK
+      # returning a closure's entry point rather than its writable record,
+      # without which a dynamic callback jumps into the heap on arm64 macOS and
+      # iOS; and structures by value through SI:CALL-CFUN.  The second and
+      # third are what let the ECL backend do without a pool of trampolines
+      # built before an app ships.
       #
-      # Delete this whole job the day the fix is upstream and `brew install ecl`
-      # carries it.
+      # This used to clone upstream and apply ci/ecl-rtld-default.patch here;
+      # a committed fix is the better shape, because a revision alone then
+      # settles what was built.  The patch file stays as the thing to send
+      # upstream, and the build step below asserts the revision still carries
+      # it.
+      #
+      # Delete this whole job the day the fixes are upstream and
+      # `brew install ecl` carries them.
       # ---------------------------------------------------------------
       - name: Cache the patched ECL
         id: ecl-cache

@@ -273,67 +273,36 @@ which libffi could not copy."
       (is (= 0 (cffi:mem-ref result :uint64 8)))
       (is (search "deliberate" (get-output-stream-string *error-output*))))))
 
-;;; Declared trampolines -----------------------------------------------------
+;;; Variadic sends -----------------------------------------------------------
 ;;;
-;;; What remains of the pool: a variadic send on a phone.  These test the lookup
-;;; and the refusal; that a declared trampoline calls correctly is the same
-;;; generated code Strategy B uses.
+;;; What remained of the pool was a variadic send on a phone: arm64 passes
+;;; variadic arguments on the stack, a fixed cif puts them in registers, and
+;;; ECL did not expose libffi's variadic preparation.  It does now, so the
+;;; dynamic path makes these too, and nothing is compiled ahead of time.
 
-(test the-dynamic-path-declines-a-variadic-send
-  "arm64 passes variadic arguments on the stack and a fixed cif puts them in
-registers, so this must be a miss and not a wrong answer."
-  (is-false (objc::%dynamic-trampoline :send :id '(:id :sel :id :id) 3)))
+(test the-dynamic-path-makes-a-variadic-send
+  "A signature with a fixed count is claimed by the dynamic path -- it used to
+be the one shape it declined."
+  (is-true (objc::%dynamic-trampoline :send :id '(:id :sel :id :id) 3))
+  (if (not (ecl-foundation-available-p))
+      (skip "Foundation not available")
+      ;; And with no compiler to fall back on, +stringWithFormat: reads its
+      ;; variadic arguments from where the callee looks.
+      (let ((objc::*compiled-trampolines-available* nil))
+        (is (string= "x 42"
+                     (objc:ns-string-to-string
+                      (objc:invoke "NSString"
+                                   '("stringWithFormat:"
+                                     (objc:objc-object-pointer objc:objc-object-pointer :int)
+                                     :result-type objc:objc-object-pointer
+                                     :variadic-num-of-fixed 1)
+                                   "%@ %d" "x" 42)))))))
 
-------------------------------------------------
-;;;
-;;; What makes iOS work. These test the lookup and the refusal; that a pooled
-;;; trampoline actually calls correctly is the same generated code Strategy B
-;;; uses and is covered above.
-
-(test a-shape-is-what-the-abi-distinguishes-and-nothing-else
-  "One entry serves every method that looks like it, which is why a short pool
-covers most of Cocoa. Names do not enter into it: NSRect and CGRect are one
-shape, and so are NSPoint and NSSize -- both are two doubles."
-  (flet ((shape (encoding)
-           (objc::%abi-shape (objc::resolve-struct-layout (objc::parse-type encoding)))))
-    (is (equal (shape "{CGPoint=dd}") (shape "{CGSize=dd}")))
-    (is (equal (shape "{CGRect={CGPoint=dd}{CGSize=dd}}") (shape "{NSRect=dddd}")))
-    ;; And a difference the ABI does care about is kept.
-    (is (not (equal (shape "{CGPoint=dd}") (shape "{_NSRange=QQ}"))))
-    (is (not (equal (shape "{CGPoint=dd}") (shape "{CGRect=dddd}"))))))
-
-(test the-pool-is-consulted-before-the-compiler-is-asked
-  "The order matters on a Mac only for speed and on a phone for whether it works
-at all: a pooled trampoline needs no subprocess and no C compiler."
-  (let* ((objc::*trampoline-pool* (make-hash-table :test 'equal))
-         (result '(:struct "_NSRange" (:ulong-long :ulong-long)))
-         (args '(:id :sel))
-         (called nil))
-    (objc::register-trampoline :send result args nil
-                               (lambda (&rest ignored)
-                                 (declare (ignore ignored))
-                                 (setf called t)))
-    (let ((trampoline (objc::%pooled-trampoline :send result args nil)))
-      (is-true trampoline)
-      (funcall trampoline (objc::sb-sap-zero) (objc::sb-sap-zero) (objc::sb-sap-zero))
-      (is-true called))
-    ;; A shape that was never declared is a miss, not a wrong answer.
-    (is-false (objc::%pooled-trampoline :send result '(:id :sel :id) nil))
-    (is-false (objc::%pooled-trampoline :super result args nil))))
-
-(test a-missing-shape-names-the-declaration-that-fixes-it
-  "The failure a user meets on iOS. The shape is known here and the form to
-paste is a mechanical function of it, so the message ends the search rather
-than starting one."
-  (handler-case
-      (progn (objc::%no-trampoline
-              :send '(:struct "_NSRange" (:ulong-long :ulong-long)) '(:id :sel) nil)
-             (is-true nil "should have signalled"))
-    (objc::ecl-abi-unsupported (condition)
-      ;; Case-insensitively: whether a piece of the message is printed by ~(~s~)
-      ;; or written as a literal is not something a test should pin down.
-      (let ((text (string-downcase (princ-to-string condition))))
-        (is (search "define-objc-trampoline" text))
-        (is (search ":result" text))
-        (is (search ":arguments" text))
-        (is (search "bundle-trampolines" text))))))
+(test a-variadic-float-is-promoted
+  "libffi refuses an unpromoted variadic argument, so a float past the fixed
+ones is sent as a double -- which is also what the callee, reading a va_list,
+expects."
+  (is (eq :double (objc::%promoted-type :float)))
+  (is (eq :int (objc::%promoted-type :byte)))
+  (is (eq :id (objc::%promoted-type :id)))
+  (is (typep (objc::%promote-value :double 1.5) 'double-float)))

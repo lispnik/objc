@@ -255,33 +255,22 @@ one.
 
 | | needs | reaches |
 |---|---|---|
-| **dynamic** — `si:call-cfun` and `si:make-dynamic-callback` | nothing | every signature but a variadic one: structures by value both ways, IMPs, blocks |
+| **dynamic** — `si:call-cfun` and `si:make-dynamic-callback` | nothing | everything: structures by value both ways, variadic sends, IMPs, blocks |
 | **compiled** — generated `ffi:c-inline`, cached per shape | a C compiler at run time | everything, faster |
 
 The first is what a phone uses, and what a REPL attached to one uses, because
-it works in an interpreted image. The second is what a Mac prefers for a send
-and is the same bargain SBCL strikes — one subprocess per distinct call shape,
-for the life of the image. Callables are always the first: a libffi closure
-costs nothing to make and there is nothing a compiled one does better.
+it works in an interpreted image. The second is a faster way of doing the same
+thing where a compiler happens to exist — one subprocess per distinct call
+shape, for the life of the image, the bargain SBCL strikes. Callables are
+always the first: a libffi closure costs nothing to make and there is nothing a
+compiled one does better.
 
-**One shape needs a declaration on iOS: a variadic send.** arm64 passes
-variadic arguments on the stack, a fixed cif puts them in registers, and ECL
-does not expose libffi's variadic preparation. A Mac compiles one on demand; a
-phone cannot, so `+stringWithFormat:` and its relatives have to be in the image
-before it ships:
-
-```lisp
-(objc:define-objc-trampoline
-  (:result objc:objc-object-pointer
-   :arguments (objc:objc-object-pointer objc:sel objc:objc-object-pointer
-               objc:objc-object-pointer)
-   :variadic-num-of-fixed 3))
-```
-
-in a file of your own named by `:bundle-trampolines`. A trampoline is chosen by
-the ABI shape of a signature, not by the selector, so one declaration serves
-every method that looks like it. When one is missing the error says what to
-paste.
+A variadic send is the last thing the dynamic path learned. arm64 passes
+variadic arguments on the stack, a fixed cif puts them in registers, and until
+ECL exposed libffi's variadic preparation the only way to make one on a phone
+was a trampoline compiled into the app in advance. `si:call-cfun` now takes
+the count of fixed arguments, and `invoke`'s `:variadic-num-of-fixed` reaches
+it directly, with the variadic arguments promoted the way C promotes them.
 
 **This needs an ECL with fixes**, none upstream yet, all on
 [lispnik/ecl](https://github.com/lispnik/ecl) and built by CI from its

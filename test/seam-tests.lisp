@@ -122,15 +122,10 @@ Named for the library rather than for SBCL, which it was when SBCL was the only
 implementation.")
 
 (defparameter +ecl-additions+
-  '("DEFINE-OBJC-TRAMPOLINE")
-  "An ahead-of-time trampoline, which only ECL needs.
-
-The dynamic FFI makes every call shape at run time except a variadic one: arm64
-passes variadic arguments on the stack, a fixed cif puts them in registers, and
-ECL does not expose libffi's variadic preparation.  On a Mac the C compiler
-makes it; on a phone there is no compiler, so it has to be in the image before
-it ships, and this is how a user asks for one.  SBCL is not given a symbol it
-could do nothing with.")
+  '()
+  "Nothing, now.  There was DEFINE-OBJC-TRAMPOLINE, for a variadic send on a
+phone, until ECL's dynamic FFI learned to make one; the ECL backend exports
+nothing the SBCL one does not.")
 
 (test the-exported-surface-is-the-lispworks-one-plus-the-block-api
   "OBJC exports the 42 documented LispWorks symbols and the 8 block symbols, and

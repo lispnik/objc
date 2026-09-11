@@ -7,26 +7,22 @@
 ;;;;   dynamic    SI:CALL-CFUN and SI::MAKE-DYNAMIC-CALLBACK, which are libffi.
 ;;;;              No compiler involved, so it works in an interpreted image and
 ;;;;              therefore on a phone and at a REPL attached to one.  Since ECL
-;;;;              learned to pass a structure by value through them, this is
-;;;;              nearly the whole of what Cocoa needs.
+;;;;              learned to pass a structure by value and to make a variadic
+;;;;              call through them, this is the whole of what Cocoa needs.
 ;;;;
 ;;;;   compiled   FFI:C-INLINE, generated per call shape and compiled with the
 ;;;;              C compiler that a Mac has and a phone does not.  Faster, and
-;;;;              the only way to make a genuinely variadic call.
+;;;;              nothing more: everything it can do, the dynamic path can.
 ;;;;
 ;;;; There used to be a third: a pool of trampolines and IMPs compiled into the
 ;;;; application before it shipped, because the dynamic FFI could not name a
-;;;; structure and a libffi closure was believed to kill the process on iOS.
-;;;; Neither was true of ECL itself.  The first was a closed table of scalars in
-;;;; src/c/ffi.d, since opened; the second was FFI:CALLBACK handing out a
-;;;; closure's writable record instead of its entry point, since fixed -- both
-;;;; on lispnik/ecl.  What survives of the pool is OBJC:DEFINE-OBJC-TRAMPOLINE,
-;;;; for the one shape the dynamic path still cannot make: a variadic send, on
-;;;; a platform with no compiler.
+;;;; structure, could not make a variadic call, and a libffi closure was
+;;;; believed to kill the process on iOS.  None of that was true of the
+;;;; platform; all of it was ECL, and all of it is fixed on lispnik/ecl.
 ;;;;
 ;;;; This file needs that ECL.  On one without those fixes, a structure result
-;;;; is refused with a message that says so, and a dynamic callback crashes on
-;;;; arm64 the first time it is called.
+;;;; and a variadic send are refused with a message that says so, and a
+;;;; dynamic callback crashes on arm64 the first time it is called.
 
 (in-package #:objc)
 
@@ -239,19 +235,6 @@ no moment at which to free it."
     (loop for i below size do (setf (cffi:mem-aref buffer :uint8 i) 0))
     buffer))
 
-(defun %flatten-fields (node)
-  "The leaf scalar nodes of NODE, in layout order, or NIL if it has none.
-Nested structs flatten: a CGRect is two CGPoints and a CGSize is two doubles,
-and AAPCS64 sees four doubles either way."
-  (if (struct-node-p node)
-      (let ((fields (third node)))
-        (and fields
-             (loop for field in fields
-                   for leaves = (%flatten-fields field)
-                   unless leaves return nil
-                   append leaves)))
-      (list node)))
-
 
 ;;; Dispatch entry points ----------------------------------------------------
 
@@ -333,10 +316,11 @@ redefinition and is the right trade against crashing mid-session.")
 ;;; is read from the memory its SAP names, and a result comes back as fresh
 ;;; foreign data that is copied into OUT to keep the contract.
 ;;;
-;;; What it cannot do is a variadic call.  arm64 passes variadic arguments on
-;;; the stack, a fixed cif puts them in registers, and ECL does not expose
-;;; libffi's variadic preparation.  That falls through to a compiled strategy,
-;;; or on a phone to a declared one.
+;;; A variadic send is told how many of its arguments are fixed, and libffi
+;;; prepares the call for the stack-passed remainder.  What libffi asks in
+;;; return is that the variadic arguments be promoted as C promotes them -- a
+;;; float to double, a char or short to int -- and that is done here, so that
+;;; a BOOL or a float past the fixed arguments arrives where the callee reads.
 
 (defun %dynamic-signature (result-node arg-nodes)
   "(VALUES RESULT-TYPE ARG-TYPES), or NIL if the dynamic FFI cannot describe them."
@@ -356,21 +340,44 @@ redefinition and is the right trade against crashing mid-session.")
         (t
          (lambda (raw out) (declare (ignore out)) raw))))
 
+(defun %promoted-type (type)
+  "TYPE as C's default argument promotions would pass it."
+  (case type
+    (:float :double)
+    ((:byte :unsigned-byte :short :unsigned-short) :int)
+    (t type)))
+
+(defun %promote-value (type value)
+  (if (and (eq type :double) (floatp value)) (float value 1d0) value))
+
 (defun %dynamic-trampoline (kind result-node arg-nodes n-fixed)
   "A trampoline built on SI:CALL-CFUN, or NIL if this signature is out of reach."
-  (when n-fixed                         ; variadic: stack, not registers
-    (return-from %dynamic-trampoline nil))
   (multiple-value-bind (result-type arg-types) (%dynamic-signature result-node arg-nodes)
     (unless result-type (return-from %dynamic-trampoline nil))
     (ensure-dispatch-addresses)
-    (let ((entry (ecase kind
-                   (:send *msgsend-address*)
-                   (:super *msgsend-super-address*)))
-          (finish (%dynamic-result-handler result-node result-type)))
-      (lambda (out &rest args)
-        (funcall finish
-                 (with-fp-traps-masked (si:call-cfun entry result-type arg-types args))
-                 out)))))
+    (let* ((entry (ecase kind
+                    (:send *msgsend-address*)
+                    (:super *msgsend-super-address*)))
+           (finish (%dynamic-result-handler result-node result-type))
+           ;; Past the fixed arguments, the promoted types are what libffi
+           ;; is told and what the values are coerced to.
+           (types (if n-fixed
+                      (loop for type in arg-types for i from 0
+                            collect (if (< i n-fixed) type (%promoted-type type)))
+                      arg-types)))
+      (if n-fixed
+          (lambda (out &rest args)
+            (funcall finish
+                     (with-fp-traps-masked
+                       (si:call-cfun entry result-type types
+                                     (loop for arg in args for type in types
+                                           collect (%promote-value type arg))
+                                     :default n-fixed))
+                     out))
+          (lambda (out &rest args)
+            (funcall finish
+                     (with-fp-traps-masked (si:call-cfun entry result-type types args))
+                     out))))))
 
 
 ;;; Strategy B: compiled trampolines ------------------------------------------
@@ -388,8 +395,8 @@ redefinition and is the right trade against crashing mid-session.")
 ;;; JITs per signature and caches too.
 ;;;
 ;;; Not available on iOS: there is no C compiler on a phone, and ECL's COMPILE
-;;; there yields bytecode. The dynamic path covers a phone; a variadic send is
-;;; the one thing it cannot, and DEFINE-OBJC-TRAMPOLINE is for that.
+;;; there yields bytecode. The dynamic path covers a phone entirely; this is a
+;;; faster way of doing the same thing where a compiler happens to exist.
 
 (defvar *compiled-trampolines-available* :unknown
   "T, NIL, or :UNKNOWN before the first attempt. See COMPILED-TRAMPOLINES-AVAILABLE-P.")
@@ -661,102 +668,13 @@ because finding it out costs a subprocess."
               (with-fp-traps-masked (apply function args)))))))))
 
 
-;;; Declared trampolines --------------------------------------------------------
-;;;
-;;; For a variadic send on a platform with no compiler.  Everything else the
-;;; dynamic path does; this is what remains of the pool that used to cover
-;;; structure results as well.
-;;;
-;;; A trampoline depends only on the ABI shape of a signature and not on the
-;;; selector, so one declaration serves every method that looks like it.
-
-(defvar *trampoline-pool* (make-hash-table :test 'equal)
-  "ABI shape -> a trampoline function built before the image shipped.")
-
-(defun %abi-shape (node)
-  "NODE reduced to what the calling convention actually distinguishes.
-
-A trampoline is chosen by the shape of a signature, not by the selector or by
-the names in it: CGRect and NSRect are one entry, and so are every two methods
-that return an object and take an object. Size is carried along with a struct's
-leaves because two aggregates with the same leaf sequence and different padding
-are not the same shape."
-  (if (struct-node-p node)
-      (let ((resolved (if (third node) node (resolve-struct-layout node))))
-        (list* :struct
-               (node-size-and-alignment resolved)
-               (mapcar #'%abi-shape (or (%flatten-fields resolved) '(:unknown)))))
-      (ecl-foreign-type node)))
-
-(defun %signature-shape (kind result-node arg-nodes n-fixed)
-  (list kind (%abi-shape result-node) (mapcar #'%abi-shape arg-nodes) n-fixed))
-
-(defun register-trampoline (kind result-node arg-nodes n-fixed function)
-  "Record FUNCTION as the trampoline for this shape. Called by the pool file."
-  (setf (gethash (%signature-shape kind result-node arg-nodes n-fixed)
-                 *trampoline-pool*)
-        function))
-
-(defun %pooled-trampoline (kind result-node arg-nodes n-fixed)
-  (let ((function (gethash (%signature-shape kind result-node arg-nodes n-fixed)
-                           *trampoline-pool*)))
-    (when function
-      (lambda (&rest args) (with-fp-traps-masked (apply function args))))))
-
-;;; Declaring one -------------------------------------------------------------
-
-(defmacro define-objc-trampoline ((&key (kind :send) (result :void) (arguments '())
-                                        variadic-num-of-fixed)
-                                  &environment environment)
-  "Compile a trampoline for one call shape into this image, ahead of time.
-
-For a variadic send on iOS, where nothing can be compiled at run time and the
-dynamic FFI cannot make one.  RESULT and ARGUMENTS are ordinary type
-descriptors, ARGUMENTS names every C parameter including the two hidden ones,
-and VARIADIC-NUM-OF-FIXED says where the variadic part begins:
-
-    (objc:define-objc-trampoline
-      (:result objc:objc-object-pointer
-       :arguments (objc:objc-object-pointer objc:sel objc:objc-object-pointer
-                   objc:objc-object-pointer)
-       :variadic-num-of-fixed 3))
-
-covers +stringWithFormat: with one argument, and every other selector that
-looks like it.  The shape is what is matched, so one of these serves many.
-
-Put these in a file listed in :BUNDLE-TRAMPOLINES: it must be compiled for the
-target and never on the host, because FFI:C-INLINE cannot survive the host pass."
-  (declare (ignorable environment))
-  (let* ((result-node (node-for-fli-type result))
-         (arg-nodes (mapcar #'node-for-fli-type arguments))
-         (name (format nil "objc-pool-~(~a~)-~d" kind (incf *trampoline-counter*))))
-    (multiple-value-bind (clines defun-form)
-        (%trampoline-forms kind result-node arg-nodes variadic-num-of-fixed name)
-      `(progn
-         ,clines
-         ,defun-form
-         (register-trampoline ,kind ',result-node ',arg-nodes ,variadic-num-of-fixed
-                              (function ,(second defun-form)))))))
-
 (defun %no-trampoline (kind result-node arg-nodes n-fixed)
-  "Refuse, naming the declaration that would fix it.
-
-Only a variadic send reaches here: everything else the dynamic path makes at
-run time.  The shape is known and the form to paste is a mechanical function of
-it, so the message ends the search rather than starting one."
+  "Refuse.  Only a signature the dynamic FFI cannot describe reaches here."
   (%unsupported
    "BUILD-TRAMPOLINE"
-   (format nil
-           "no trampoline for this ~:[call~;variadic call~], and none can be ~
-            built here -- there is no C compiler on this platform.~2%~
-            Add this to a file listed in :BUNDLE-TRAMPOLINES:~2%~
-            ~2t(objc:define-objc-trampoline~%~
-            ~5t(~@[:kind ~(~s~) ~]:result ~(~s~)~%~
-            ~6t:arguments ~(~s~)~@[~%~6t:variadic-num-of-fixed ~d~]))~2%~
-            and rebuild."
-           n-fixed
-           (unless (eq kind :send) kind)
-           (ignore-errors (fli-type-for-node result-node))
+   (format nil "~(~a~) ~s ~s~@[ variadic after ~d~] cannot be described to ~
+                the dynamic FFI, and no C compiler is available"
+           kind (ignore-errors (fli-type-for-node result-node))
            (mapcar (lambda (node) (or (ignore-errors (fli-type-for-node node)) node))
                    arg-nodes)
            n-fixed)))
@@ -768,11 +686,9 @@ The contract is abi.lisp's, unchanged:
 
     (out-sap arg...) => scalar-or-NIL
 
-The dynamic path first, because it costs nothing and reaches everything but a
-variadic call; then a declared trampoline, which is what a phone has for those;
-then one compiled now, which is what a Mac has."
+The dynamic path first, because it costs nothing and reaches everything; then
+one compiled now, on a machine with a compiler, for speed."
   (or (%dynamic-trampoline kind result-node arg-nodes n-fixed)
-      (%pooled-trampoline kind result-node arg-nodes n-fixed)
       (%compiled-trampoline kind result-node arg-nodes n-fixed)
       (%no-trampoline kind result-node arg-nodes n-fixed)))
 

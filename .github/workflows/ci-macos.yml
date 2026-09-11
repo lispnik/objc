@@ -11,17 +11,22 @@
 # encoding is measured from the runtime rather than assumed, but "should work"
 # and "does work" are different claims and only this makes the second one.
 #
-# What a CI run can and cannot prove.  GitHub's macOS runners have no window
-# server, so [NSScreen mainScreen] is nil and the gui suite skips itself --
-# roughly 30 of the checks.  Everything else runs, including the suites that
-# matter most for portability of the dispatch machinery: the encoding parser,
-# the struct layout table checked against Foundation's own
-# NSGetSizeAndAlignment, the differential tests against the recorded LispWorks
-# answers, and the dump suite, which saves an executable in a subprocess and
-# sends a message to a Lisp-defined class after the restart.
+# What a CI run proves.  This file used to say GitHub's macOS runners have no
+# window server and that the gui suite -- roughly 30 checks -- skips itself
+# there.  Every run says otherwise: the environment step prints `window
+# server: T`, and the check count matches a run on a Mac with a display, so
+# the gui suite runs on the runner and always has.  GitHub's macOS images
+# come with a logged-in session and a WindowServer, which is what makes UI
+# testing possible on them at all.  The suite still gates on
+# WINDOW-SERVER-P, and the skip count is printed, so a runner that changes
+# would show up as fewer checks rather than as a mystery.
 #
-# The skip count is printed by the suite.  A green headless run is a green run
-# of fewer checks, not a green run of the GUI tests.
+# The suites that matter most for portability of the dispatch machinery all
+# run here regardless: the encoding parser, the struct layout table checked
+# against Foundation's own NSGetSizeAndAlignment, the differential tests
+# against the recorded LispWorks answers, and the dump suite, which saves an
+# executable in a subprocess and sends a message to a Lisp-defined class after
+# the restart.
 
 # The Intel leg is not box-ticking.  The two architectures genuinely differ in
 # the Objective-C ABI: BOOL encodes as 'c' (a signed char) on x86-64 and 'B'
@@ -108,8 +113,8 @@ jobs:
       - name: Report the environment the tests will see
         # Worth its own step: BOOL's encoding is measured from the runtime
         # rather than chosen by a read-time conditional, and whether the gui
-        # suite runs at all depends on there being a window server.  When
-        # checks are skipped, this is what says why.
+        # suite runs at all depends on there being a window server -- which the
+        # runners have, and this is the line that proves it each time.
         run: |
           sbcl --non-interactive \
             --load "$HOME/.local/share/ocicl/ocicl-runtime.lisp" \

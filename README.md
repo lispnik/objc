@@ -217,9 +217,8 @@ git checkout develop
 make && make install
 ```
 
-This is what CI builds. The `RTLD_DEFAULT` change on its own is in
-`ci/ecl-rtld-default.patch`, which is the form to send upstream; the day they
-all land, that file and the `ECL` workflow can go.
+This is what CI builds, resolving `develop` to a commit at the start of each
+run. The day the fixes land upstream, the `ECL` workflow can go.
 
 An iOS build additionally needs `-DENABLE_DLOPEN=1`, because `configure` ties
 that to `--enable-shared` and an app must link statically while still being able

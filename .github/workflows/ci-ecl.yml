@@ -7,10 +7,7 @@
 # that it means "both pass".
 #
 # What this can and cannot prove.  Everything ci-macos.yml says about the
-# headless runner applies here too: no window server, so the gui suite skips
-# itself.  Beyond that, one test is skipped on ECL for a real reason -- a block
-# invoked on a libdispatch worker never returns -- and iOS is not exercised at
-# all.  No hosted runner has a cross-compiled ECL and building one is a
+# runner applies here too.  Beyond that, iOS is not exercised at all.  No hosted runner has a cross-compiled ECL and building one is a
 # twenty-minute job, so the iOS half of this backend stays a manual check on a
 # device.  A green badge here means ECL on macOS, and nothing about a phone.
 
@@ -30,16 +27,16 @@ jobs:
   test:
     name: ecl · macos-latest (arm64)
     runs-on: macos-latest
-    # The revision lives here, not on the two steps that use it: a cache key
-    # and the checkout that fills the cache must never disagree, and the surest
-    # way to keep them honest is to give them one place to read it from.
-    #
-    # A commit, never a branch.  A branch name in a cache key is a key that
-    # stops tracking what it names the moment the branch moves, and the cache
-    # would then hand back a binary built from something else entirely.
+    # The branch is named here; the commit it stands for is resolved by the
+    # first step below, once per run, and everything after reads that.  A
+    # branch name must never reach the cache key directly -- it would stop
+    # tracking what it names the moment the branch moved, and the cache would
+    # hand back a binary built from something else -- but a commit resolved
+    # at the start of the run is as good as one written down, and does not
+    # have to be rewritten every time the fork's develop moves.
     env:
       ECL_REPOSITORY: https://github.com/lispnik/ecl.git
-      ECL_REVISION: 034f6b0b4
+      ECL_BRANCH: develop
     # Building ECL is the long pole at roughly six minutes cold, and nothing
     # after it takes more than five.  Same reasoning as the sibling workflow:
     # loose enough never to fire on a slow runner, tight enough that a hung
@@ -48,6 +45,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+
+      - name: Resolve the ECL branch to a commit
+        id: ecl
+        run: |
+          sha=$(git ls-remote "$ECL_REPOSITORY" "refs/heads/$ECL_BRANCH" | cut -f1)
+          test -n "$sha" || { echo "::error::$ECL_REPOSITORY has no branch $ECL_BRANCH" >&2; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "$ECL_BRANCH is $sha"
 
       # ---------------------------------------------------------------
       # A stock ECL cannot run this library at all, and the reason is not iOS.
@@ -70,46 +75,24 @@ jobs:
       # value through SI:CALL-CFUN.  Those are what let the ECL backend do
       # without a pool of trampolines built before an app ships.
       #
-      # This used to clone upstream and apply ci/ecl-rtld-default.patch here;
-      # a committed fix is the better shape, because a revision alone then
-      # settles what was built.  The patch file stays as the thing to send
-      # upstream, and the build step below asserts the revision still carries
-      # it.
-      #
       # Delete this whole job the day the fixes are upstream and
       # `brew install ecl` carries them.
       # ---------------------------------------------------------------
-      - name: Cache the patched ECL
+      - name: Cache the built ECL
         id: ecl-cache
         uses: actions/cache@v4
         with:
           path: ~/.local/ecl
-          key: ecl-${{ runner.os }}-${{ runner.arch }}-${{ env.ECL_REVISION }}
+          key: ecl-${{ runner.os }}-${{ runner.arch }}-${{ steps.ecl.outputs.sha }}
 
-      - name: Build ECL from source, patched
+      - name: Build ECL from source
         if: steps.ecl-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           brew install gmp libffi automake autoconf libtool texinfo
           git clone "$ECL_REPOSITORY" "$RUNNER_TEMP/ecl"
           cd "$RUNNER_TEMP/ecl"
-          git checkout "$ECL_REVISION"
-
-          # The fix is in the revision, so nothing is applied here.  What is
-          # left to check is that ci/ecl-rtld-default.patch -- which is both the
-          # in-tree explanation and the patch to send upstream -- still
-          # describes what was actually built.  It reverse-applies cleanly to a
-          # tree that already has the fix, so that is the assertion.
-          if git apply --check --reverse "$GITHUB_WORKSPACE/ci/ecl-rtld-default.patch" 2>/dev/null; then
-            echo "$ECL_REVISION carries the fix, and it matches ci/ecl-rtld-default.patch"
-          elif git apply --check "$GITHUB_WORKSPACE/ci/ecl-rtld-default.patch" 2>/dev/null; then
-            echo "$ECL_REVISION does NOT carry the RTLD_DEFAULT fix -- wrong revision?" >&2
-            exit 1
-          else
-            echo "ci/ecl-rtld-default.patch no longer describes $ECL_REVISION." >&2
-            echo "Either upstream reworked that code, or the two have drifted." >&2
-            exit 1
-          fi
+          git checkout "${{ steps.ecl.outputs.sha }}"
 
           ./configure --prefix="$HOME/.local/ecl" --enable-gmp=included
           make -j"$(sysctl -n hw.ncpu)"

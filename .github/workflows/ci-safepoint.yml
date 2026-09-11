@@ -93,7 +93,23 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           ocicl setup
-          ocicl install
+          # ocicl exits 0 when a download fails, and ghcr.io fails often
+          # enough to matter: two runs in one afternoon lost alexandria or
+          # bordeaux-threads and surfaced it two steps later as "Component
+          # not found", pointing at the library.  So: up to three attempts,
+          # and a failure here, on the line that names the package.
+          for attempt in 1 2 3; do
+            ocicl install 2>&1 | tee ocicl-install.log
+            if ! grep -q "failed to install" ocicl-install.log; then
+              break
+            fi
+            echo "::warning::ocicl install attempt $attempt did not get every package"
+            sleep 20
+          done
+          if grep -q "failed to install" ocicl-install.log; then
+            echo "::error::ocicl could not install every dependency after 3 attempts" >&2
+            exit 1
+          fi
 
       - name: Confirm the library agrees concurrent blocks are supported
         # CONCURRENT-BLOCKS-SUPPORTED-P is what PARALLEL-MAP and DISPATCH-APPLY

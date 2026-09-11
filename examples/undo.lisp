@@ -24,19 +24,19 @@
 ;;;; gives you undo and redo from one piece of code.  Leave it out and undo
 ;;;; works once, -canRedo answers NO, and nothing tells you why.
 ;;;;
-;;;; AND ONE THING THAT CANNOT BE DONE FROM HERE.
-;;;; -prepareWithInvocationTarget: is the other registration style: it returns a
-;;;; proxy, you send the proxy the message you want undone, and it records the
-;;;; NSInvocation.  It does not work with this library and cannot be made to.
-;;;; The proxy is an NSUndoManagerProxy, which does not IMPLEMENT the selector --
-;;;; it forwards it -- and this library resolves the Method before sending.  That
-;;;; resolution is the thing that turns an unimplemented selector into a Lisp
-;;;; error instead of an NSException, and the price is that a forwarding object
-;;;; is invisible: CAN-INVOKE-P answers NIL and INVOKE signals NO-SUCH-METHOD.
-;;;;
-;;;; That is not really about undo.  It is true of every proxy that relies on
-;;;; -forwardInvocation:, which includes NSXPCConnection's remote object and
-;;;; NSDistantObject.  Worth knowing before reaching for one.
+;;;; AND THE OTHER REGISTRATION STYLE, WHICH GOES THROUGH A PROXY.
+;;;; -prepareWithInvocationTarget: returns a proxy; you send the proxy the
+;;;; message you want undone, and it records the NSInvocation.  The proxy is an
+;;;; NSUndoManagerProxy, which does not IMPLEMENT the selector -- it forwards
+;;;; it -- so there is no Method to resolve, and for a long time this library
+;;;; could not send to one: it resolves the Method before sending, which is
+;;;; what turns an unimplemented selector into a Lisp error instead of an
+;;;; NSException.  Now, when there is no Method, it asks the object for the
+;;;; selector's signature the way forwarding itself does, through
+;;;; -methodSignatureForSelector:, and sends if there is one.  So the proxy
+;;;; works, and so does every other -forwardInvocation: object -- NSXPCConnection's
+;;;; remote object, NSDistantObject, and UITextField answering a text-input
+;;;; trait it never declared.
 
 (in-package #:objc/examples)
 
@@ -130,9 +130,10 @@ back to 42.  The last one is the assertion that matters -- undoing after a new
 change must return the value from BEFORE that change, which only works if each
 call registered its own inverse.
 
-:PROXY-REFUSED records the limitation rather than pretending it is not there:
--prepareWithInvocationTarget: hands back a forwarding proxy, and this library
-cannot send to one.  See the header; it is not specific to undo."
+:PROXY-FORWARDS is the other registration style: -prepareWithInvocationTarget:
+hands back a forwarding proxy, the proxy is sent -setValueFrom: 99, which it
+records rather than performs, and the undo that follows performs it.  See the
+header; it is not specific to undo."
   (objc:ensure-objc-initialized)
   (objc:with-autorelease-pool ()
     (let* ((manager (make-undo-manager))
@@ -157,14 +158,17 @@ cannot send to one.  See the header; it is not specific to undo."
       (list :values (nreverse values)
             :action-name action
             :can-redo-after-undo can-redo
-            :proxy-refused
-            (let ((proxy (objc:invoke manager "prepareWithInvocationTarget:" counter)))
-              (and (not (objc:can-invoke-p proxy "setValueFrom:"))
-                   (handler-case
-                       (progn (objc:invoke proxy "setValueFrom:"
-                                           (objc:invoke "NSNumber" "numberWithInt:" 1))
-                              nil)
-                     (error () t))))))))
+            :proxy-forwards
+            (with-undo-group (manager "Via Proxy")
+              (let ((proxy (objc:invoke manager "prepareWithInvocationTarget:" counter)))
+                (and (objc:can-invoke-p proxy "setValueFrom:")
+                     (progn
+                       ;; Recorded, not performed: the value is still 42 ...
+                       (objc:invoke proxy "setValueFrom:"
+                                    (objc:invoke "NSNumber" "numberWithInt:" 99))
+                       (= 42 (counter-value counter))))))
+            :after-undoing-the-proxied-action
+            (progn (undo manager) (counter-value counter))))))
 
 (defun report-undo ()
   "Print an undo and a redo, with the manager's state at each step."

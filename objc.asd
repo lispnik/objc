@@ -70,6 +70,18 @@ Lisp method can take and return C structs by value like any other."
                  (:file "init"))))
   :in-order-to ((test-op (test-op #:objc/test))))
 
+(asdf:defsystem #:objc/uikit
+  :description "The dozen conveniences a UIKit interface in Lisp keeps reaching for."
+  :author "Matthew Kennedy <burnsidemk@gmail.com>"
+  :license "MIT"
+  :version "0.4.1"
+  ;; Loads wherever OBJC does; the classes it names exist only on iOS.  A
+  ;; sibling of COCOA rather than part of OBJC, whose exports are the
+  ;; LispWorks ones and nothing else.
+  :depends-on (#:objc)
+  :components ((:module "src"
+                :components ((:file "uikit")))))
+
 (asdf:defsystem #:objc/examples
   :description "The LispWorks Objective-C manual's examples, ported."
   :author "Matthew Kennedy <burnsidemk@gmail.com>"
@@ -134,7 +146,7 @@ Lisp method can take and return C structs by value like any other."
   :version "0.4.1"
   :homepage "https://github.com/lispnik/objc"
   :serial t
-  :depends-on (#:objc #:objc/examples #:fiveam)
+  :depends-on (#:objc #:objc/uikit #:objc/examples #:fiveam)
   :components ((:module "test"
                 :serial t
                 :components
@@ -154,10 +166,12 @@ Lisp method can take and return C structs by value like any other."
                  (:file "manual-tests")
                  (:file "gui-tests")
                  (:file "seam-tests")
-                 ;; The ECL backend's own obligations -- struct decomposition
-                 ;; above all, whose failure mode is a wrong number rather than
-                 ;; an error. Nothing to assert on SBCL, where abi.lisp hands
-                 ;; the whole question to the C compiler.
+                 (:file "uikit-tests")
+                 ;; The ECL backend's own obligations: how an aggregate is
+                 ;; described to the dynamic FFI, and that the two paths a
+                 ;; phone has -- dynamic calls and libffi closures -- carry a
+                 ;; structure both ways. Nothing to assert on SBCL, where
+                 ;; abi.lisp hands the whole question to the C compiler.
                  #+ecl (:file "abi-ecl-tests")
                  (:file "oracle-tests")
                  (:file "thread-tests")

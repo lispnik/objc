@@ -1291,18 +1291,20 @@ so a method that always registers the inverse of what it is about to do gives
 you undo and redo out of one piece of code. Leave it out and undo works exactly
 once, `-canRedo` answers NO, and nothing tells you why.
 
-**One thing cannot be done from here.** `-prepareWithInvocationTarget:` is the
-other registration style — it hands back a proxy, you send the proxy the message
-you want undone, and it records the `NSInvocation`. It does not work with this
-library and cannot be made to: the proxy does not *implement* the selector, it
-forwards it, and this library resolves the `Method` before sending. That
-resolution is the thing that turns an unimplemented selector into a Lisp error
-instead of an `NSException`, and the price is that a forwarding object is
-invisible — `can-invoke-p` answers NIL and `invoke` signals `no-such-method`.
-
-That is not really about undo. It is true of every proxy built on
-`-forwardInvocation:`, which includes `NSXPCConnection`'s remote object and
-`NSDistantObject`. Worth knowing before reaching for one.
+**The other registration style goes through a proxy, and works.**
+`-prepareWithInvocationTarget:` hands back a proxy; you send the proxy the
+message you want undone, and it records the `NSInvocation` rather than
+performing it. The proxy does not *implement* the selector, it forwards it, so
+there is no `Method` to resolve — and this library resolves the `Method` before
+sending, which is what turns an unimplemented selector into a Lisp error
+instead of an `NSException`. For a long time that made a forwarding object
+invisible. Now, when there is no `Method`, `invoke` asks the object for the
+selector's signature the way forwarding itself does, through
+`-methodSignatureForSelector:`, and sends if there is one; a selector nobody
+answers still fails in Lisp. That is not really about undo: it is what makes
+`NSXPCConnection`'s remote object, `NSDistantObject`, and `UITextField`'s
+text-input traits — forwarded, on iOS, from a class that never declared them —
+reachable.
 
 ### Memory
 

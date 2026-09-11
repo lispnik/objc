@@ -94,25 +94,66 @@ check is not a convenience: resolving the Method is how the call signature is
 discovered in the first place, and it means an unimplemented selector fails
 here, in Lisp, instead of reaching the runtime and raising an Objective-C
 exception that would abort the process."
-  (let ((method (and (objc-pointer-p class) (find-method-for class selector-name))))
-    (unless method
-      (error 'no-such-method
-             :selector selector-name
-             :receiver receiver
-             :class-name (and (objc-pointer-p class) (%class-get-name class))
-             :superclass-name (when (eq kind :super)
-                                (and (objc-pointer-p class) (%class-get-name class)))))
-    (let* ((key (cons kind (cffi:pointer-address method)))
-           (cached (gethash key *trampoline-by-method*)))
-      (if cached
-          (let ((signature (gethash key *signature-by-method*)))
-            (values cached (car signature) (cdr signature)))
-          (multiple-value-bind (result args)
-              (parse-method-encoding (method-encoding method))
-            (let ((trampoline (trampoline-for kind result args nil)))
-              (setf (gethash key *trampoline-by-method*) trampoline
-                    (gethash key *signature-by-method*) (cons result args))
-              (values trampoline result args)))))))
+  (let* ((method (and (objc-pointer-p class) (find-method-for class selector-name)))
+         ;; A Method is keyed by its address; a forwarded selector has none and
+         ;; is keyed by where it was found.  Both live in the same tables.
+         (key (cond (method (cons kind (cffi:pointer-address method)))
+                    ((objc-pointer-p class)
+                     (list kind (cffi:pointer-address class) selector-name))))
+         (cached (and key (gethash key *trampoline-by-method*))))
+    (when cached
+      (let ((signature (gethash key *signature-by-method*)))
+        (return-from resolve-signature
+          (values cached (car signature) (cdr signature)))))
+    (let ((encoding (cond (method (method-encoding method))
+                          ((eq kind :send) (forwarded-encoding receiver selector-name)))))
+      (unless encoding
+        (error 'no-such-method
+               :selector selector-name
+               :receiver receiver
+               :class-name (and (objc-pointer-p class) (%class-get-name class))
+               :superclass-name (when (eq kind :super)
+                                  (and (objc-pointer-p class) (%class-get-name class)))))
+      (multiple-value-bind (result args) (parse-method-encoding encoding)
+        (let ((trampoline (trampoline-for kind result args nil)))
+          (setf (gethash key *trampoline-by-method*) trampoline
+                (gethash key *signature-by-method*) (cons result args))
+          (values trampoline result args))))))
+
+;;; Forwarded selectors -------------------------------------------------------
+;;;
+;;; Not every message an object answers has a Method behind it.  A class may
+;;; implement -forwardInvocation: and answer for selectors it never declared:
+;;; NSUndoManager's -prepareWithInvocationTarget: proxy, NSXPCConnection's
+;;; remote object, and -- the one that made this necessary -- UITextField,
+;;; which answers the UITextInputTraits setters by forwarding, so that
+;;; class_getInstanceMethod finds nothing for -setAutocorrectionType: on a
+;;; class that plainly takes it.
+;;;
+;;; What such an object does have is a signature: -forwardInvocation: cannot
+;;; work without -methodSignatureForSelector:, so a forwarding class always
+;;; implements it.  The NSMethodSignature it returns is the same information a
+;;; Method's type encoding carries, and is read back into one here.  The
+;;; refusal for a selector nobody answers is unchanged: an object that neither
+;;; implements nor forwards a selector has no signature either, and the send
+;;; fails in Lisp rather than raising an Objective-C exception.
+
+(defun forwarded-encoding (receiver selector-name)
+  "The type encoding of SELECTOR-NAME as RECEIVER would forward it, or NIL."
+  (multiple-value-bind (kind pointer) (ignore-errors (resolve-receiver receiver))
+    (when (and (eq kind :send) (objc-pointer-p pointer))
+      (let ((signature (send-raw pointer "methodSignatureForSelector:"
+                                 (coerce-to-selector selector-name))))
+        (when (objc-pointer-p signature)
+          (let ((count (send-raw signature "numberOfArguments")))
+            (with-output-to-string (out)
+              (write-string (cffi:foreign-string-to-lisp
+                             (send-raw signature "methodReturnType"))
+                            out)
+              (dotimes (i count)
+                (write-string (cffi:foreign-string-to-lisp
+                               (send-raw signature "getArgumentTypeAtIndex:" i))
+                              out)))))))))
 
 ;;; The call -----------------------------------------------------------------
 
@@ -160,7 +201,10 @@ pointer checks the instance or class methods as appropriate."
                    (super-reference-class class-or-object-pointer)
                    (lookup-class-for-receiver class-or-object-pointer))))
     (and (objc-pointer-p class)
-         (not (null (find-method-for class (selector-name method))))
+         (or (find-method-for class (selector-name method))
+             ;; No Method, but perhaps forwarded -- see FORWARDED-ENCODING.
+             (and (not (super-reference-p class-or-object-pointer))
+                  (forwarded-encoding class-or-object-pointer (selector-name method))))
          t)))
 
 (defun clear-dispatch-caches ()

@@ -517,10 +517,10 @@ only holds because -setValueFrom: registers its own inverse every time it runs -
 during an undo the manager is recording onto the redo stack, so one method serves
 set, undo and redo.  Leave the registration out and undo works exactly once.
 
-:PROXY-REFUSED records a limitation rather than hiding it.
--prepareWithInvocationTarget: returns a forwarding proxy, which this library
-cannot send to because it resolves the Method first; that is true of every
--forwardInvocation: proxy, not just this one."
+:PROXY-FORWARDS is the other registration style, through a forwarding proxy.
+There is no Method behind the selector the proxy takes, and this library used
+to refuse it; it now reads the signature from -methodSignatureForSelector:,
+which every forwarding object must answer, and sends."
   (with-runtime
     (let ((result (objc/examples:test-undo)))
       (is (equal '(42 0 42 7 42) (getf result :values))
@@ -529,8 +529,10 @@ cannot send to because it resolves the Method first; that is true of every
           "the group's action name came back from the manager")
       (is-true (getf result :can-redo-after-undo)
                "the undo registered its own inverse, so there is something to redo")
-      (is-true (getf result :proxy-refused)
-               "a forwarding proxy is invisible to CAN-INVOKE-P and INVOKE"))))
+      (is-true (getf result :proxy-forwards)
+               "the proxy answers CAN-INVOKE-P and records the send without performing it")
+      (is (= 99 (getf result :after-undoing-the-proxied-action))
+          "undoing performed what the proxy recorded"))))
 
 (test the-memory-example-observes-deallocation
   "examples/memory.lisp is the only one that thinks about ownership, which every

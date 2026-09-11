@@ -173,6 +173,8 @@ make test-clean   # the suite with no ~/.sbclrc and no site init, as CI sees it
 There is no C toolchain in the build: no `cffi-grovel`, no `cffi-libffi`, and no
 shim library.
 
+### SBCL
+
 A stock SBCL runs everything here. If you intend to run **Lisp closures on
 several libdispatch queues at once** — `dispatch_apply`, or a concurrent queue
 with more than one block in flight — you need one built with safepoints, or the
@@ -182,6 +184,11 @@ running:
 ```
 ./make.sh --with-sb-safepoint --prefix=$HOME/.local && sh install.sh
 ```
+
+Nothing else needs it, and the suite is green either way. `objc/examples:concurrent-blocks-supported-p`
+is the runtime predicate, and the calls that require it refuse with an
+explanation on a build that lacks it rather than taking the image down. The
+reason is under [Blocks](#blocks).
 
 ### ECL
 
@@ -199,18 +206,24 @@ all:
 
 Not `objc_getClass` — `strlen`. CFFI's ECL backend resolves foreign functions by
 name, so on a stock build CFFI resolves nothing and this library cannot load.
-Build ECL with the one-line fix in `src/c/ffi/libraries.d` until it is upstream.
+
+Until it is upstream, build ECL from the branch that carries the fix — upstream
+`develop` plus that one commit, and nothing else:
+
+```
+git clone https://github.com/lispnik/ecl.git && cd ecl
+git checkout fix-dlsym-default-darwin
+./configure --prefix=$HOME/.local/ecl --enable-gmp=included
+make && make install
+```
+
+This is what CI builds. The change on its own is in `ci/ecl-rtld-default.patch`,
+which is the form to send upstream; the day it lands, both that file and the
+`ECL` workflow can go.
 
 An iOS build additionally needs `-DENABLE_DLOPEN=1`, because `configure` ties
 that to `--enable-shared` and an app must link statically while still being able
 to `dlsym`.
-
-
-
-Nothing else needs it, and the suite is green either way. `objc/examples:concurrent-blocks-supported-p`
-is the runtime predicate, and the calls that require it refuse with an
-explanation on a build that lacks it rather than taking the image down. The
-reason is under [Blocks](#blocks).
 
 ## How it works
 

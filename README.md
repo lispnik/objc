@@ -484,6 +484,14 @@ unchanged:
   entry points are plain C functions that all take a block. The shortest answer
   to what blocks bought, and where the concurrency limit above is drawn in code.
   See [Grand Central Dispatch](#grand-central-dispatch).
+- `examples/xpc.lisp` — a Lisp XPC service and its client, over libxpc rather
+  than `NSXPCConnection`, since `NSXPCInterface` wants a compiled protocol.
+  Both ends in one process over an anonymous endpoint for the test suite,
+  and a launchd agent, installed and removed from Lisp, for a separate
+  service process that any process of yours can send forms to.
+- `examples/notes-app/` — a document-based application as a signed `.app`:
+  `NSDocument`, `NSDocumentController`, a menu without a nib, packaged by
+  asdf-macos-app. See its README.
 - `examples/url-session.lisp` — `NSURLSession`, the completion-handler API, and
   the shape of most modern Cocoa: hand it a block, it calls you back when the
   answer is ready. Also the practical answer to the concurrency limit, in one

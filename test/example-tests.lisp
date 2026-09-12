@@ -18,6 +18,19 @@
 (in-suite examples)
 
 
+(test the-xpc-example-round-trips-in-process
+  "examples/xpc.lisp: both ends of an XPC connection in this process, over an
+anonymous listener's endpoint.  The service's handler runs on the serial
+queue's thread and the caller waits on the Mach port; the reply carries the
+value and the name of the thread that computed it.  Foundation only."
+  (with-runtime
+    (let ((result (objc/examples:test-xpc)))
+      (is (equal "3" (getf result :value)))
+      (is-true (getf result :thread-differs)
+               "the service evaluated on a libdispatch thread, not the caller's")
+      (is (search "boom" (getf result :error))
+          "an error in the service comes back as the service's error"))))
+
 (test the-gcd-example-runs-every-shape
   "examples/gcd.lisp is what block creation was for: GCD is plain C functions
 that all take a block, so it needed nothing else from the bridge.  Foundation

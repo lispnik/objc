@@ -48,6 +48,9 @@
            #:dispatch-apply #:parallel-map #:concurrent-blocks-supported-p
            #:dispatch-group #:make-dispatch-group #:group-async #:group-wait
            #:with-dispatch-group #:test-gcd #:report-gcd
+           ;; xpc
+           #:test-xpc #:lisp-service #:lisp-service-main
+           #:install-lisp-service #:uninstall-lisp-service
            ;; NSURLSession (examples/url-session.lisp).
            #:fetch #:fetch-async #:fetch-all #:serial-session #:with-url-session
            #:ns-data-to-bytes #:ns-data-to-string #:response-status

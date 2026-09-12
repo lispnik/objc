@@ -489,6 +489,11 @@ unchanged:
   Both ends in one process over an anonymous endpoint for the test suite,
   and a launchd agent, installed and removed from Lisp, for a separate
   service process that any process of yours can send forms to.
+- `examples/menu-bar-lisp.lisp` — a Lisp in the menu bar: copy an expression
+  in any application, press ⌃⌥⌘E, and the value replaces it on the clipboard
+  and shows in a panel. The hotkey is a global event monitor, which macOS
+  delivers only to a process granted Accessibility; the menu says whether it
+  has been.
 - `examples/notes-app/` — a document-based application as a signed `.app`:
   `NSDocument`, `NSDocumentController`, a menu without a nib, packaged by
   asdf-macos-app. See its README.

@@ -51,6 +51,9 @@
            ;; xpc
            #:test-xpc #:lisp-service #:lisp-service-main
            #:install-lisp-service #:uninstall-lisp-service
+           ;; the menu-bar lisp
+           #:run-menu-bar-lisp #:make-menu-bar-lisp #:remove-menu-bar-lisp #:test-menu-bar-lisp
+           #:hotkey-permitted-p
            ;; NSURLSession (examples/url-session.lisp).
            #:fetch #:fetch-async #:fetch-all #:serial-session #:with-url-session
            #:ns-data-to-bytes #:ns-data-to-string #:response-status

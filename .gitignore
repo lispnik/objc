@@ -14,3 +14,6 @@
 
 # Example app bundles
 examples/notes-app/build/
+
+# Swift bridge build product
+examples/swift/libLispSwift.dylib

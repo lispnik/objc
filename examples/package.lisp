@@ -55,6 +55,11 @@
            ;; the menu-bar lisp
            #:run-menu-bar-lisp #:make-menu-bar-lisp #:remove-menu-bar-lisp #:test-menu-bar-lisp
            #:hotkey-permitted-p
+           ;; Swift-only frameworks (examples/swift.lisp)
+           #:build-swift-bridge #:ensure-swift-bridge
+           #:sha256 #:hmac-sha256 #:random-key #:seal #:open-sealed
+           #:bar-chart-view #:bar-chart-png #:show-bar-chart
+           #:language-model-availability #:ask-language-model #:test-swift-bridge
            ;; NSURLSession (examples/url-session.lisp).
            #:fetch #:fetch-async #:fetch-all #:serial-session #:with-url-session
            #:ns-data-to-bytes #:ns-data-to-string #:response-status

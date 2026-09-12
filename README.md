@@ -492,6 +492,14 @@ unchanged:
   emits: `make-lisp-protocol` creates a protocol at run time and writes those
   encodings into the runtime's own structure, layout checked first, and a
   remote proxy then carries a Lisp method call and its reply block.
+- `examples/swift.lisp` — Swift-only frameworks: CryptoKit, Swift Charts in
+  SwiftUI, and FoundationModels, the on-device language model of macOS 26.
+  None has an Objective-C surface, so `examples/swift/LispSwift.swift` gives
+  them one -- a hundred lines of `@objc` Swift, built into a dylib by
+  `build.sh` -- and the rest is `objc:invoke`. Measured: the hash and HMAC
+  match their published vectors, a ChaChaPoly box round-trips and refuses
+  tampering, SwiftUI renders a bar chart to a PNG, and the model answers a
+  question from Lisp in about three seconds.
 - `examples/menu-bar-lisp.lisp` — a Lisp in the menu bar: copy an expression
   in any application, press ⌃⌥⌘E, and the value replaces it on the clipboard
   and shows in a panel. The hotkey is a global event monitor, which macOS

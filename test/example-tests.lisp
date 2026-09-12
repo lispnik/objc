@@ -46,6 +46,30 @@ through the block, and the reply arrives on the connection's queue."
       (is-true (getf result :reply-thread-differs)
                "the reply block ran on the connection's queue, not the caller"))))
 
+(test the-swift-bridge-reaches-swift-only-frameworks
+  "examples/swift.lisp: CryptoKit, Swift Charts and FoundationModels have no
+Objective-C surface, so a hundred lines of @objc Swift give them one, and
+the rest is OBJC:INVOKE.  Needs swiftc the first time, to build the dylib;
+skipped where Xcode is absent.  The hash and HMAC are checked against
+their published vectors, the sealed box against itself and a tampered
+copy; the chart is only written; the model is asked only if it says it
+can, and its answer is only required to be a string."
+  (if (not (ignore-errors (zerop (nth-value 2 (uiop:run-program '("xcrun" "-f" "swiftc")
+                                                                 :ignore-error-status t :output nil :error-output nil)))))
+      (skip "no swiftc on this machine")
+      (with-runtime
+        (let ((result (objc/examples:test-swift-bridge)))
+          (is (equal "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                     (getf result :sha256-of-abc)))
+          (is (equal "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+                     (getf result :hmac-rfc-4231)))
+          (is-true (getf result :sealed-round-trip))
+          (is-true (getf result :tampered-refused) "Poly1305 refuses an altered box")
+          (is-true (probe-file (getf result :chart-png)) "SwiftUI rendered the chart to a file")
+          (is (stringp (getf result :language-model)))
+          (when (getf result :answer)
+            (is (plusp (length (getf result :answer)))))))))
+
 (test the-gcd-example-runs-every-shape
   "examples/gcd.lisp is what block creation was for: GCD is plain C functions
 that all take a block, so it needed nothing else from the bridge.  Foundation

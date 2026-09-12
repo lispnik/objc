@@ -13,14 +13,21 @@
 ;;;; time -- verified here: allocated, registered, and found again by
 ;;;; objc_getProtocol under its own name.
 ;;;;
-;;;; What such a protocol cannot do is carry the EXTENDED method signatures
-;;;; clang emits alongside the ordinary ones, because no runtime function
-;;;; records them.  Anything that needs those rejects it, and NSXPCInterface
-;;;; says so in as many words: "Unable to get extended method signature from
-;;;; Protocol data ... Use of clang is required for NSXPCInterface."  So XPC is
-;;;; out of reach from here for the same reason there is no cffi-grovel in the
-;;;; build -- it wants a C compiler -- and creating protocols remains a thing
-;;;; this library declines to expose rather than a thing the system forbids.
+;;;; What such a protocol cannot do THROUGH THE RUNTIME'S FUNCTIONS is carry
+;;;; the EXTENDED method signatures clang emits alongside the ordinary ones,
+;;;; because no function records them.  Anything that needs those rejects it,
+;;;; and NSXPCInterface says so in as many words: "Unable to get extended
+;;;; method signature from Protocol data ... Use of clang is required for
+;;;; NSXPCInterface."
+;;;;
+;;;; They can be written into the protocol's structure directly, since objc4
+;;;; keeps them in a field a runtime-made protocol has and leaves null, and
+;;;; examples/xpc.lisp does that -- MAKE-LISP-PROTOCOL, with the layout
+;;;; checked against a compiled protocol before anything is written -- and
+;;;; then drives an NSXPCConnection through the result.  It stays an example
+;;;; rather than a library feature because it relies on a structure the
+;;;; runtime does not publish; creating protocols remains a thing this
+;;;; library declines to expose rather than a thing the system forbids.
 
 (in-package #:objc)
 

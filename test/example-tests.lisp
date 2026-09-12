@@ -31,6 +31,21 @@ value and the name of the thread that computed it.  Foundation only."
       (is (search "boom" (getf result :error))
           "an error in the service comes back as the service's error"))))
 
+(test the-nsxpc-example-round-trips-through-a-lisp-protocol
+  "examples/xpc.lisp again: NSXPCConnection, whose interface wants the
+extended method encodings clang emits, given a protocol made at run time
+whose extended encodings were written into the runtime's structure by
+hand.  The layout is checked against a compiled protocol first.  A remote
+proxy is sent a string and a reply block, the exported Lisp object answers
+through the block, and the reply arrives on the connection's queue."
+  (with-runtime
+    (let ((result (objc/examples:test-nsxpc)))
+      (is (equal "v32@0:8@\"NSString\"16@?<v@?@\"NSString\">24" (getf result :encoding))
+          "the runtime answers with the extended encoding written into it")
+      (is (equal "HELLO, NSXPC" (getf result :reply)))
+      (is-true (getf result :reply-thread-differs)
+               "the reply block ran on the connection's queue, not the caller"))))
+
 (test the-gcd-example-runs-every-shape
   "examples/gcd.lisp is what block creation was for: GCD is plain C functions
 that all take a block, so it needed nothing else from the bridge.  Foundation

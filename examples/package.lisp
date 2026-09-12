@@ -51,6 +51,7 @@
            ;; xpc
            #:test-xpc #:lisp-service #:lisp-service-main
            #:install-lisp-service #:uninstall-lisp-service
+           #:make-lisp-protocol #:protocol-extended-encoding #:test-nsxpc
            ;; the menu-bar lisp
            #:run-menu-bar-lisp #:make-menu-bar-lisp #:remove-menu-bar-lisp #:test-menu-bar-lisp
            #:hotkey-permitted-p

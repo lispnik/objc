@@ -484,11 +484,14 @@ unchanged:
   entry points are plain C functions that all take a block. The shortest answer
   to what blocks bought, and where the concurrency limit above is drawn in code.
   See [Grand Central Dispatch](#grand-central-dispatch).
-- `examples/xpc.lisp` — a Lisp XPC service and its client, over libxpc rather
-  than `NSXPCConnection`, since `NSXPCInterface` wants a compiled protocol.
-  Both ends in one process over an anonymous endpoint for the test suite,
+- `examples/xpc.lisp` — a Lisp XPC service and its client. Over libxpc:
+  both ends in one process over an anonymous endpoint for the test suite,
   and a launchd agent, installed and removed from Lisp, for a separate
-  service process that any process of yours can send forms to.
+  service process that any process of yours can send forms to. And over
+  `NSXPCConnection`, which wants the extended method encodings only clang
+  emits: `make-lisp-protocol` creates a protocol at run time and writes those
+  encodings into the runtime's own structure, layout checked first, and a
+  remote proxy then carries a Lisp method call and its reply block.
 - `examples/menu-bar-lisp.lisp` — a Lisp in the menu bar: copy an expression
   in any application, press ⌃⌥⌘E, and the value replaces it on the clipboard
   and shows in a panel. The hotkey is a global event monitor, which macOS

@@ -343,3 +343,199 @@ the thread it ran on there.
     (let ((connection (connect-client (%xpc-connection-create-mach-service name queue 0))))
       (unwind-protect (call-service connection form)
         (%xpc-connection-cancel connection)))))
+
+;;; NSXPCConnection, with a protocol made here ------------------------------------
+;;;
+;;; The reason this file used libxpc was that NSXPCInterface wants the
+;;; EXTENDED method type encodings -- the ones with class names for object
+;;; arguments and signatures for blocks, "v32@0:8@\"NSString\"16@?<v@?@\"NSString\">24"
+;;; rather than "v32@0:8@16@?24" -- and no runtime function records them for
+;;; a protocol made with objc_allocateProtocol.  No function, but a field:
+;;; objc4's protocol_t carries them as an array of C strings, one per method
+;;; in the order required instance, required class, optional instance,
+;;; optional class, and a protocol made at run time has the field and leaves
+;;; it null.  So this fills it in, which is writing into a structure the
+;;; runtime does not publish.  The layout is checked before it is trusted,
+;;; against a protocol clang compiled: its size field must say 96 bytes and
+;;; its extended-types pointer must be where it is expected, or
+;;; MAKE-LISP-PROTOCOL refuses rather than corrupt something.  Measured on
+;;; macOS 26.6: the field is at byte 72, _protocol_getMethodTypeEncoding
+;;; answers with the string put there, NSXPCInterface accepts the protocol,
+;;; and a message goes through a remote proxy and its reply block comes back.
+
+(defconstant +protocol-size-offset+ 64)
+(defconstant +protocol-extended-types-offset+ 72)
+(defconstant +protocol-expected-size+ 96)
+
+(defun protocol-layout-as-expected-p ()
+  "Whether this runtime's protocol_t is the one MAKE-LISP-PROTOCOL writes to,
+judged by a protocol clang compiled: NSXPCListenerDelegate, from Foundation."
+  (let ((compiled (cffi:foreign-funcall "objc_getProtocol" :string "NSXPCListenerDelegate" :pointer)))
+    (and (not (cffi:null-pointer-p compiled))
+         (= +protocol-expected-size+ (cffi:mem-ref compiled :uint32 +protocol-size-offset+))
+         (not (cffi:null-pointer-p (cffi:mem-ref compiled :pointer +protocol-extended-types-offset+)))
+         ;; and that pointer really is an array of encodings: the first entry
+         ;; parses as one, starting with a return type.
+         (let ((first (cffi:mem-ref (cffi:mem-ref compiled :pointer +protocol-extended-types-offset+) :pointer 0)))
+           (and (not (cffi:null-pointer-p first))
+                (find (char (cffi:foreign-string-to-lisp first :count 1) 0) "vBci@"))))))
+
+(defun encoding-size (type)
+  "The bytes TYPE takes in a method's argument frame, as encodings count them."
+  (ecase (if (consp type) (first type) type)
+    ((:object :block :pointer :selector :class) 8)
+    (:double 8)
+    (:int 4)
+    (:bool 1)))
+
+(defun encoding-letter (type &key extended)
+  "TYPE's encoding.  EXTENDED adds the class name of an object and the
+signature of a block, which is what NSXPCInterface reads."
+  (let ((kind (if (consp type) (first type) type)))
+    (ecase kind
+      (:void "v")
+      (:int "i")
+      (:bool "B")
+      (:double "d")
+      (:selector ":")
+      (:class "#")
+      (:pointer "^v")
+      (:object (if (and extended (consp type) (second type))
+                   (format nil "@\"~a\"" (second type))
+                   "@"))
+      ;; A bare :BLOCK is the block's own slot inside its signature, which
+      ;; carries no nested signature of its own.
+      (:block (if (and extended (consp type))
+                  (format nil "@?<~a>" (block-encoding (second type) (third type)))
+                  "@?")))))
+
+(defun block-encoding (result args)
+  "A block's signature as clang embeds it in an extended encoding: the
+result, the block itself, then the arguments, with no frame offsets --
+\"v@?@\\\"NSString\\\"\" for a block of one string returning nothing."
+  (format nil "~a@?~{~a~}"
+          (encoding-letter result :extended t)
+          (mapcar (lambda (type) (encoding-letter type :extended t)) args)))
+
+(defun method-encoding (result args &key extended (receiver t))
+  "The type encoding of a method returning RESULT with ARGS, after the
+receiver and selector when RECEIVER."
+  (let* ((all (if receiver (list* :object :selector args) args))
+         (frame (reduce #'+ (mapcar #'encoding-size all))))
+    (with-output-to-string (out)
+      (format out "~a~d" (encoding-letter result :extended extended) frame)
+      (loop :with offset := 0
+            :for type :in all
+            :do (format out "~a~d" (encoding-letter type :extended extended) offset)
+                (incf offset (encoding-size type))))))
+
+(defun make-lisp-protocol (name methods)
+  "Create and register the Objective-C protocol NAME with METHODS, each
+(SELECTOR RESULT ARG-TYPES), and give it the extended type encodings
+NSXPCInterface needs.  Types are :VOID, :INT, :BOOL, :DOUBLE, (:OBJECT
+\"ClassName\"), or (:BLOCK RESULT (ARG-TYPES)).  Returns the Protocol, or
+the existing one of that name if it was made before."
+  (let ((existing (cffi:foreign-funcall "objc_getProtocol" :string name :pointer)))
+    (unless (cffi:null-pointer-p existing)
+      (return-from make-lisp-protocol existing)))
+  (unless (protocol-layout-as-expected-p)
+    (error "This Objective-C runtime's protocol layout is not the one this code knows; ~
+            refusing to write extended method types into it."))
+  (let ((protocol (cffi:foreign-funcall "objc_allocateProtocol" :string name :pointer))
+        (extended (cffi:foreign-alloc :pointer :count (length methods))))
+    (loop :for (selector result args) :in methods
+          :for i :from 0
+          :do (cffi:foreign-funcall "protocol_addMethodDescription"
+                                    :pointer protocol
+                                    :pointer (cffi:foreign-funcall "sel_registerName" :string selector :pointer)
+                                    :string (method-encoding result args)
+                                    :bool t :bool t :void)
+              (setf (cffi:mem-aref extended :pointer i)
+                    (cffi:foreign-string-alloc (method-encoding result args :extended t))))
+    (cffi:foreign-funcall "objc_registerProtocol" :pointer protocol :void)
+    (setf (cffi:mem-ref protocol :pointer +protocol-extended-types-offset+) extended)
+    protocol))
+
+(defun protocol-extended-encoding (protocol selector)
+  "What the runtime now answers for SELECTOR, or NIL: the check that the
+write took."
+  (let ((encoding (cffi:foreign-funcall "_protocol_getMethodTypeEncoding"
+                                        :pointer protocol
+                                        :pointer (cffi:foreign-funcall "sel_registerName" :string selector :pointer)
+                                        :bool t :bool t :pointer)))
+    (if (cffi:null-pointer-p encoding) nil (cffi:foreign-string-to-lisp encoding))))
+
+;;; The service: a Lisp object exported over NSXPC ------------------------------------
+
+(defparameter *upper-caser-protocol-name* "LispUpperCaser")
+
+(defun upper-caser-protocol ()
+  (make-lisp-protocol *upper-caser-protocol-name*
+                      '(("upper:reply:" :void ((:object "NSString")
+                                                (:block :void ((:object "NSString"))))))))
+
+(objc:define-objc-block-type string-reply :void (objc:objc-object-pointer))
+
+(objc:define-objc-class upper-caser ()
+  ()
+  (:objc-class-name "LispUpperCaserService"))
+
+(objc:define-objc-method ("upper:reply:" :void)
+    ((self upper-caser) (string objc:objc-object-pointer) (reply objc:objc-object-pointer))
+  ;; The reply is a block the client sent; calling it sends the answer back
+  ;; over the connection.
+  (objc:call-objc-block 'string-reply reply
+                        (objc:string-to-ns-string
+                         (string-upcase (objc:ns-string-to-string string)))))
+
+(objc:define-objc-class listener-delegate ()
+  ((exported :initarg :exported :reader listener-delegate-exported))
+  (:objc-class-name "LispXPCListenerDelegate"))
+
+(objc:define-objc-method ("listener:shouldAcceptNewConnection:" objc:objc-bool)
+    ((self listener-delegate) (listener objc:objc-object-pointer)
+     (connection objc:objc-object-pointer))
+  (declare (ignore listener))
+  (objc:invoke connection "setExportedInterface:"
+               (objc:invoke "NSXPCInterface" "interfaceWithProtocol:" (upper-caser-protocol)))
+  (objc:invoke connection "setExportedObject:" (listener-delegate-exported self))
+  (objc:invoke connection "resume")
+  t)
+
+(defun test-nsxpc ()
+  "An NSXPCConnection round trip through a protocol made here, in this
+process over an anonymous listener: the client's remote proxy is sent
+upper:reply: with a string and a block, the exported Lisp object answers
+through the block, and the reply arrives on the connection's queue.
+
+    (objc/examples:test-nsxpc)
+    => (:ENCODING \"v32@0:8@\\\"NSString\\\"16@?<v@?@\\\"NSString\\\">24\" :REPLY \"HELLO, NSXPC\" :REPLY-THREAD-DIFFERS T)"
+  (let* ((protocol (upper-caser-protocol))
+         (interface (objc:invoke "NSXPCInterface" "interfaceWithProtocol:" protocol))
+         (service (make-instance 'upper-caser))
+         (delegate (make-instance 'listener-delegate :exported (objc:objc-object-pointer service)))
+         (listener (objc:invoke "NSXPCListener" "anonymousListener"))
+         (reply nil)
+         (reply-thread nil)
+         (semaphore (bt:make-semaphore)))
+    (objc:invoke listener "setDelegate:" (objc:objc-object-pointer delegate))
+    (objc:invoke listener "resume")
+    (let ((client (objc:invoke (objc:invoke "NSXPCConnection" "alloc")
+                               "initWithListenerEndpoint:" (objc:invoke listener "endpoint"))))
+      (objc:invoke client "setRemoteObjectInterface:" interface)
+      (objc:invoke client "resume")
+      (unwind-protect
+           (progn
+             (objc:with-objc-block (block 'string-reply
+                                          (lambda (string)
+                                            (setf reply (objc:ns-string-to-string string)
+                                                  reply-thread (bt:thread-name (bt:current-thread)))
+                                            (bt:signal-semaphore semaphore)))
+               (objc:invoke (objc:invoke client "remoteObjectProxy") "upper:reply:" "hello, nsxpc" block)
+               (unless (bt:wait-on-semaphore semaphore :timeout 10)
+                 (error "No reply over NSXPC in ten seconds.")))
+             (list :encoding (protocol-extended-encoding protocol "upper:reply:")
+                   :reply reply
+                   :reply-thread-differs (not (equal reply-thread (bt:thread-name (bt:current-thread))))))
+        (objc:invoke client "invalidate")
+        (objc:invoke listener "invalidate")))))

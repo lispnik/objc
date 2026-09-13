@@ -295,7 +295,10 @@ hold the name and start the job when something connects to it."
 </dict></plist>
 "
             name
-            (namestring sb-ext:*runtime-pathname*)
+            ;; The Lisp that launchd is to start: this one.  Read-time
+            ;; conditional rather than a runtime check, because SB-EXT does
+            ;; not exist as a package to read on ECL.
+            (namestring #+sbcl sb-ext:*runtime-pathname* #-sbcl (uiop:argv0))
             (namestring objc)
             (namestring (merge-pathnames "ocicl/" objc))
             name

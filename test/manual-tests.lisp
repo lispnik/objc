@@ -49,20 +49,35 @@ that returns a structure by value, filling it through the result variable."
       (is (= 1.0 (cffi:mem-aref p :float 0)))
       (is (= 2.0 (cffi:mem-aref p :float 1))))))
 
-(test the-pair-struct-method-refuses-to-return-a-freed-buffer
+(test the-pair-struct-method-through-plain-invoke-is-a-vector
   "The same method through plain INVOKE.  A structure result is written into a
 buffer INVOKE owns and frees on the way out, so the pointer it used to return
 was already dangling -- and it read as plausible numbers, which is why the test
 above, the manual's own, never caught it: the manual uses INVOKE-INTO.
 
-Only the four Cocoa structures have a Lisp representation to return instead, so
-everything else signals and says which method and what to do."
+PAIR is declared, so its layout is known and INVOKE reads the fields out of
+the buffer before freeing it: a vector, one element per field, no pointer."
   (with-objc
     (let ((object (objc:alloc-init-object "MyObject")))
-      (signals objc::unrepresentable-struct-result (objc:invoke object "pair"))
+      (is (equalp #(1.0 2.0) (objc:invoke object "pair"))))))
+
+(test a-struct-result-with-no-known-layout-still-refuses
+  "What is left of the guard: a structure whose encoding names no fields --
+the runtime writes {name=} for an opaque one -- has no layout to read by, so
+INVOKE signals and names the method rather than returning a pointer into a
+freed buffer.  (Any encoding that does list its fields is readable, declared
+or not; this is about the ones that cannot be.)"
+  (with-objc
+    (let ((object (objc:alloc-init-object "MyObject")))
+      (signals objc::unrepresentable-struct-result
+        (objc::unmarshal-result nil (objc::parse-type "{opaque=}")
+                                (objc::sap-of (cffi:null-pointer)) :default "pair"))
       (is (search "-pair"
                   (princ-to-string
-                   (handler-case (objc:invoke object "pair")
+                   (handler-case
+                       (objc::unmarshal-result nil (objc::parse-type "{opaque=}")
+                                               (objc::sap-of (cffi:null-pointer))
+                                               :default "pair")
                      (error (c) c))))
           "the report names the method that was called"))))
 

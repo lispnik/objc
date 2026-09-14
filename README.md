@@ -402,13 +402,17 @@ field, each coerced to its field's type and stored at its field's offset, a
 nested structure as a sequence of its own. That holds where a message wants
 the structure by value and where a Lisp method returns one, so a
 `UIEdgeInsets` goes out as `#(8 0 8 0)` and comes back from a delegate the
-same way. A pointer to foreign memory, the manual's form, still works. (An
-argument *arriving* in a Lisp method is still a pointer, as the manual says.)
+same way, and `invoke` on a method that returns one gives the vector back
+too, nested structures nested, so `-[CLLocation coordinate]` is
+`#(37.33 -122.01)` with no buffer to allocate. A pointer to foreign memory,
+the manual's form, still works. (An argument *arriving* in a Lisp method is
+still a pointer, as the manual says.)
 
 Structs pass **by value** in both directions, so
 `-[NSString enumerateSubstringsInRange:options:usingBlock:]` hands its `NSRange`s
-straight to the closure and a block may return an `NSRect`. The one gap is
-`call-objc-block` *returning* a struct that has no Lisp representation: the only
+straight to the closure and a block may return an `NSRect`, or any declared
+struct, which `call-objc-block` hands back as a vector. The one gap is a
+result struct that was never declared: with no layout to read by, the only
 answer would be a pointer into a buffer the call frees on its way out, so it
 signals instead.
 

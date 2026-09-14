@@ -91,12 +91,22 @@ argument of INVOKE-INTO."
       ;; destination the caller allocated.  Anything else would be a pointer
       ;; into freed memory, and reads back as plausible numbers.
       ((struct-node-p result-node)
-       (unless (or kind (cffi:pointerp disposition))
-         (error 'unrepresentable-struct-result
-                :encoding (unparse-type result-node)
-                :selector (and selector (string selector))))
-       (let ((value (if kind (read-cocoa-struct out-sap kind) (pointer-of out-sap))))
-         (unmarshal-into value result-node out-sap disposition kind)))
+       (cond
+         ((or kind (cffi:pointerp disposition))
+          (let ((value (if kind (read-cocoa-struct out-sap kind) (pointer-of out-sap))))
+            (unmarshal-into value result-node out-sap disposition kind)))
+         ;; Any other structure whose layout is known comes back as a vector
+         ;; with one element per field, read out of the buffer before it
+         ;; goes: the same shape WRITE-STRUCT-FROM-SEQUENCE takes going in.
+         ((struct-readable-p result-node)
+          (read-struct-to-sequence (pointer-of out-sap) result-node))
+         (t
+          ;; An opaque structure has no fields for UNPARSE-TYPE to write
+          ;; either, and a report that cannot be printed is no report.
+          (error 'unrepresentable-struct-result
+                 :encoding (or (ignore-errors (unparse-type result-node))
+                               (format nil "{~A=}" (or (second result-node) "?")))
+                 :selector (and selector (string selector))))))
       ((eq result-node :void) (values))
       ;; The manual, for INVOKE-INTO with :POINTER: "If the result type of the
       ;; method is unsigned char *, then the value is returned as a pointer of

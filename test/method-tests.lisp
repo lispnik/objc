@@ -213,6 +213,17 @@ of its own: each lands at the offset the ABI gives it."
       (is (= 3.5d0 (cffi:mem-ref p :double 8)))
       (is (= 40d0 (cffi:mem-ref p :double (+ 16 24)))))))
 
+(test a-declared-struct-result-of-a-message-is-a-vector
+  "The read side: INVOKE on a method returning a declared structure gives a
+vector with one element per field, a nested structure as a vector of its
+own, and no INVOKE-INTO buffer is needed.  Before, only the four Cocoa
+structures came back as values."
+  (with-objc
+    (is (equalp #(1d0 2d0 3d0 4d0) (objc:invoke (a-test-object) "insetsAsVector")))
+    (is (equalp #(5d0 6d0 7d0 8d0) (objc:invoke (a-test-object) "insetsAsList")))
+    (is (equalp #(1 2 3.5d0 #(10d0 20d0 30d0 40d0))
+                (objc:invoke (a-test-object) "mixedAsSequence")))))
+
 (test a-sequence-of-the-wrong-length-is-refused-by-name
   (with-objc
     (signals error (objc:invoke (a-test-object) "sumOfInsets:" #(1 2 3)))

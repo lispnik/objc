@@ -264,6 +264,55 @@ A nested structure field takes a sequence of its own."
           do (write-struct-field (cffi:inc-pointer pointer offset) field element))
     pointer))
 
+(defun struct-readable-p (node)
+  "Whether NODE's layout is known and every field is a scalar, a pointer, or a
+structure of the same kind: what READ-STRUCT-TO-SEQUENCE can read."
+  (let ((node (ignore-errors (resolve-struct-layout node))))
+    (and node
+         (eq (first node) :struct)
+         (third node)
+         (every (lambda (field)
+                  (etypecase field
+                    (keyword t)
+                    (cons (case (first field)
+                            ((:pointer) t)
+                            ((:qualified) (struct-readable-p (third field)))
+                            ((:struct) (struct-readable-p field))
+                            (t nil)))))
+                (third node)))))
+
+(defun read-struct-field (pointer node)
+  (etypecase node
+    (keyword
+     (ecase node
+       (:char (cffi:mem-ref pointer :int8))
+       (:uchar (cffi:mem-ref pointer :uint8))
+       (:short (cffi:mem-ref pointer :int16))
+       (:ushort (cffi:mem-ref pointer :uint16))
+       ((:int :long) (cffi:mem-ref pointer :int32))
+       ((:uint :ulong) (cffi:mem-ref pointer :uint32))
+       (:long-long (cffi:mem-ref pointer :int64))
+       (:ulong-long (cffi:mem-ref pointer :uint64))
+       (:float (cffi:mem-ref pointer :float))
+       (:double (cffi:mem-ref pointer :double))
+       (:bool (cffi:mem-ref pointer :uint8))
+       ((:id :class :sel :cstring :block) (cffi:mem-ref pointer :pointer))))
+    (cons
+     (ecase (first node)
+       (:pointer (cffi:mem-ref pointer :pointer))
+       (:qualified (read-struct-field pointer (third node)))
+       (:struct (read-struct-to-sequence pointer node))))))
+
+(defun read-struct-to-sequence (pointer node)
+  "The structure at POINTER as a vector with one element per field of NODE,
+a nested structure as a vector of its own: the read side of
+WRITE-STRUCT-FROM-SEQUENCE, and what INVOKE returns for a declared structure."
+  (let ((node (resolve-struct-layout node)))
+    (coerce (loop for field in (third node)
+                  for offset in (struct-field-offsets node)
+                  collect (read-struct-field (cffi:inc-pointer pointer offset) field))
+            'vector)))
+
 ;;; Argument marshalling -----------------------------------------------------
 
 (defun marshal-argument (value node)

@@ -551,23 +551,28 @@ BLOCK is an OBJC-BLOCK, a raw pointer, or anything OBJC-OBJECT-POINTER accepts."
                               for node in arg-nodes
                               collect (marshal-argument arg node)))))
           ;; A structure result is written through a buffer rather than
-          ;; returned.  For the Cocoa structures that becomes a vector or a cons
-          ;; and the buffer's lifetime stops mattering; for anything else the
-          ;; only thing there is to hand back is a pointer INTO that buffer,
-          ;; which is dead by the time this function returns, so this refuses
-          ;; rather than returning one.
+          ;; returned.  For the Cocoa structures that becomes a vector or a
+          ;; cons, for any other structure whose layout is known a vector of
+          ;; its fields, and the buffer's lifetime stops mattering; for a
+          ;; structure whose layout is not known the only thing there is to
+          ;; hand back is a pointer INTO that buffer, which is dead by the
+          ;; time this function returns, so this refuses rather than
+          ;; returning one.
           (cond
-            ((and (struct-node-p result-node) (cocoa-struct-kind result-node))
-             (let ((size (node-size-and-alignment (resolve-struct-layout result-node))))
+            ((and (struct-node-p result-node)
+                  (or (cocoa-struct-kind result-node) (struct-readable-p result-node)))
+             (let* ((kind (cocoa-struct-kind result-node))
+                    (size (node-size-and-alignment (resolve-struct-layout result-node))))
                (cffi:with-foreign-object (out :uint8 (max 1 size))
                  (call (sap-of out))
-                 (read-cocoa-struct (sap-of out) (cocoa-struct-kind result-node)))))
+                 (if kind
+                     (read-cocoa-struct (sap-of out) kind)
+                     (read-struct-to-sequence (sap-of out) result-node)))))
             ((struct-node-p result-node)
-             (error "CALL-OBJC-BLOCK cannot return a ~A: it is a structure with no ~
-                     Lisp representation, so the only result would be a pointer to a ~
-                     buffer this call frees on the way out.  A block that RETURNS such ~
-                     a structure to Lisp is the gap; MAKE-OBJC-BLOCK can still create ~
-                     one, and a structure ARGUMENT in either direction is fine."
+             (error "CALL-OBJC-BLOCK cannot return a ~A: it is a structure whose ~
+                     layout is not known, so the only result would be a pointer to a ~
+                     buffer this call frees on the way out.  Declare it with ~
+                     DEFINE-OBJC-STRUCT and it comes back as a vector of its fields."
                     (unparse-type result-node)))
             (t (call (sap-of (cffi:null-pointer))))))))))
 

@@ -115,8 +115,9 @@ returns plausible garbage instead of failing."))
               ~2T(cffi:with-foreign-object (p :uint8 <size>)~%~
               ~4T(objc:invoke-into p receiver ~S)~%~
               ~4T...)~%~
-              NSRect, NSPoint, NSSize and NSRange need none of this: INVOKE ~
-              returns those as a vector or a cons."
+              NSRect, NSPoint, NSSize and NSRange need none of this, nor does ~
+              any structure whose layout is known: INVOKE returns those as a ~
+              vector or a cons."
              (unrepresentable-struct-result-selector condition)
              (unrepresentable-struct-result-encoding condition)
              (or (unrepresentable-struct-result-selector condition) "selector"))))

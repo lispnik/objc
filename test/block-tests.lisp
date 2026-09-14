@@ -254,19 +254,20 @@ business; that it is exercised is this test's."
                    (cffi:foreign-string-to-lisp
                     (objc::%block-signature (objc:objc-block-pointer b))))))))
 
-(test a-structure-result-with-no-lisp-representation-is-refused-not-dangled
+(test a-declared-structure-result-comes-back-as-a-vector
   "A block may RETURN any structure -- Cocoa gets it by value and is happy --
-but CALL-OBJC-BLOCK has to hand Lisp something, and for a structure with no
-Lisp representation the only candidate is a pointer into the buffer this call
-frees on its way out.  Refusing beats returning one: a dangling pointer reads
-as plausible numbers."
+and CALL-OBJC-BLOCK has to hand Lisp something.  A declared structure has a
+known layout, so it is read out of the buffer before the call frees it: a
+vector, one element per field.  32 bytes of integers goes through a hidden
+pointer on arm64, unlike the NSRect above, so this exercises the other
+return convention too."
   (with-runtime
     (objc:define-objc-struct (block-test-quad (:foreign-name "BlockTestQuad"))
       (a :long-long) (b :long-long) (c :long-long) (d :long-long))
-    ;; Creating it is fine -- this is only about the direction back into Lisp.
     (objc:with-objc-block (b '(block-test-quad (:long-long))
-                             (lambda (n) (declare (ignore n)) nil))
-      (signals error (objc:call-objc-block '(block-test-quad (:long-long)) b 1)))))
+                             (lambda (n) (vector n (* 2 n) (* 3 n) (* 4 n))))
+      (is (equalp #(7 14 21 28)
+                  (objc:call-objc-block '(block-test-quad (:long-long)) b 7))))))
 
 ;;; Calling a block from Lisp ------------------------------------------------
 

@@ -544,6 +544,16 @@ unchanged:
   a PDF, read its text back. Self-contained, because it writes the PDF it reads.
 - `examples/thumbnail.lisp` — Quick Look previews of any file type, through a
   completion handler.
+- `examples/accessibility.lisp` — the Accessibility API: the frontmost
+  application's windows as a tree of plists, and a button pressed, for a
+  process the user has trusted.
+- `examples/scripting.lisp` — `NSAppleScript` and Scripting Bridge: AppleScript
+  run from Lisp with its reply read out, and Finder's desktop items as
+  message sends made up from the dictionary at run time.
+- `examples/pasteboard.lisp` — `NSPasteboard` with a type of our own, a Lisp
+  form alongside the plain text, and an `NSView` in Lisp that accepts drops.
+- `examples/spotlight.lisp` — Core Spotlight: the app's own items indexed
+  under a domain and found by title through `CSSearchQuery`'s blocks.
 - `examples/workspace.lisp` — `NSWorkspace`: what is running, what opens what,
   and the smallest example here.
 - `examples/metal.lisp` — GPU compute: a shader compiled at run time from a

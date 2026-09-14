@@ -325,6 +325,60 @@ runner has not got.  Neither is a property of this library."
       (is-true (getf result :finder-path) "launch services knows where Finder is")
       (is-true (getf result :opens-text) "and what would open a .txt"))))
 
+(test the-accessibility-example-reads-the-frontmost-app
+  "examples/accessibility.lisp reads another application's interface through
+the Accessibility API, which only a trusted process may do.  Skipped where
+this one is not: that is a setting the machine's owner makes, not a property
+of the library.  Trusted, it asserts the frontmost application named itself
+and its windows have roles."
+  (with-runtime
+    (let ((result (objc/examples:test-accessibility)))
+      (if (not (getf result :trusted))
+          (skip "this process is not trusted for accessibility")
+          (progn
+            (is (stringp (getf result :application)))
+            (is (every #'stringp (getf result :roles))))))))
+
+(test the-scripting-example-runs-applescript
+  "examples/scripting.lisp runs AppleScript through NSAppleScript.  A script
+that targets no application runs anywhere and is asserted; one that asks
+Finder sends an Apple event across processes, which the machine may refuse
+(-1743 with no session to prompt in), and is asserted only when it answered."
+  (with-runtime
+    (let ((result (objc/examples:test-scripting)))
+      (is (eql 42 (getf result :pure)) "6 * 7 in AppleScript")
+      (is (null (getf result :pure-error)))
+      (if (getf result :permitted)
+          (is (stringp (getf result :disk)) "Finder named the startup disk")
+          (skip "sending Apple events to Finder is not permitted here")))))
+
+(test the-pasteboard-example-round-trips-a-form
+  "examples/pasteboard.lisp puts a Lisp form on the general pasteboard under
+its own type and plain text, reads it back, and restores what was there."
+  (with-runtime
+    (let ((result (objc/examples:test-pasteboard)))
+      (is-true (getf result :round-trip) "the form came back EQUAL")
+      (is-true (getf result :counted) "the change count moved")
+      (is-true (getf result :own-type))
+      (is-true (getf result :plain-text)))))
+
+(test the-spotlight-example-indexes-and-finds
+  "examples/spotlight.lisp indexes items under its own domain and finds one
+by title through CSSearchQuery's blocks, then removes them.  Skipped where
+indexing is unavailable, and where the index did not answer in time, which
+a fresh runner's Spotlight may not."
+  (with-runtime
+    (let ((result (objc/examples:test-spotlight)))
+      (cond ((not (getf result :available))
+             (skip "Spotlight indexing is not available here"))
+            ((not (eq t (getf result :indexed)))
+             (skip (format nil "indexing did not complete: ~a" (getf result :indexed))))
+            ((null (getf result :found))
+             (skip "the index did not answer the query in time"))
+            (t
+             (is (member "lisp-1" (getf result :found) :test #'string=))
+             (is (not (member "other-1" (getf result :found) :test #'string=))))))))
+
 (test the-metal-example-computes-on-the-gpu
   "examples/metal.lisp compiles a Metal Shading Language kernel at run time and
 runs it on the GPU over data a Lisp function handed it.  The flagship: a C entry

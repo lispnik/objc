@@ -98,7 +98,26 @@
            ;; NSWorkspace (examples/workspace.lisp).
            #:running-applications #:frontmost-application #:application-named
            #:application-for-file #:open-url #:reveal-in-finder
-           #:test-workspace #:report-workspace
+           #:test-workspace
+           #:accessibility-trusted-p
+           #:frontmost-interface
+           #:press-first-button
+           #:test-accessibility
+           #:run-script
+           #:finder-startup-disk
+           #:scriptable-application
+           #:finder-desktop-items
+           #:test-scripting
+           #:put-form
+           #:get-form
+           #:pasteboard-types
+           #:show-drop-target
+           #:test-pasteboard
+           #:indexing-available-p
+           #:index-items
+           #:spotlight-search
+           #:delete-our-items
+           #:test-spotlight #:report-workspace
            ;; Metal compute (examples/metal.lisp).
            #:default-device #:device-name #:metal-available-p
            #:compile-kernel #:run-kernel #:gpu-map #:float-buffer #:buffer-floats

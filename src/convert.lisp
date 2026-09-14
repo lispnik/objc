@@ -187,6 +187,83 @@ what INVOKE's argument conversion promises."
       ;; A cons, not a vector.  See the note above.
       (:range (cons (cffi:mem-aref pointer :uint64 0) (cffi:mem-aref pointer :uint64 1))))))
 
+;;; Any declared structure, from a sequence ------------------------------------
+;;;
+;;; The four Cocoa structures above have hand-written converters.  A structure
+;;; declared with DEFINE-OBJC-STRUCT has a known layout too -- its fields and
+;;; their types are the node -- so a sequence with one element per field can
+;;; be written into it by the same rule, generalised: each element is coerced
+;;; to its field's type and stored at its field's offset.  Before this, such a
+;;; structure could only be returned from a Lisp method, or passed to a
+;;; message, as a pointer to foreign memory filled in by hand.
+
+(defun struct-field-offsets (node)
+  "The byte offset of each field of NODE, laid out as NODE-SIZE-AND-ALIGNMENT
+lays them out: each field aligned to its own alignment, a union's all at zero."
+  (let* ((node (resolve-struct-layout node))
+         (unionp (eq (first node) :union))
+         (offset 0)
+         (offsets '()))
+    (dolist (field (third node) (nreverse offsets))
+      (multiple-value-bind (size align) (node-size-and-alignment field)
+        (if unionp
+            (push 0 offsets)
+            (progn
+              (setf offset (* (ceiling offset align) align))
+              (push offset offsets)
+              (incf offset size)))))))
+
+(defun struct-sequence-p (value)
+  "A sequence that could stand for a structure: a vector or a list, not a string."
+  (or (and (vectorp value) (not (stringp value)))
+      (listp value)))
+
+(defun write-struct-field (pointer node value)
+  "Store VALUE as a field of type NODE at POINTER."
+  (etypecase node
+    (keyword
+     (ecase node
+       (:char (setf (cffi:mem-ref pointer :int8) value))
+       (:uchar (setf (cffi:mem-ref pointer :uint8) value))
+       (:short (setf (cffi:mem-ref pointer :int16) value))
+       (:ushort (setf (cffi:mem-ref pointer :uint16) value))
+       ((:int :long) (setf (cffi:mem-ref pointer :int32) value))
+       ((:uint :ulong) (setf (cffi:mem-ref pointer :uint32) value))
+       (:long-long (setf (cffi:mem-ref pointer :int64) value))
+       (:ulong-long (setf (cffi:mem-ref pointer :uint64) value))
+       (:float (setf (cffi:mem-ref pointer :float) (coerce value 'single-float)))
+       (:double (setf (cffi:mem-ref pointer :double) (coerce value 'double-float)))
+       ;; The manual's contract for a BOOL is the integer 1 or 0; a generalized
+       ;; boolean is taken too, since a slot is where one is most tempting.
+       (:bool (setf (cffi:mem-ref pointer :uint8)
+                    (cond ((eql value 0) 0) ((null value) 0) (t 1))))
+       ((:id :class :sel :cstring :block)
+        (setf (cffi:mem-ref pointer :pointer) (or value (cffi:null-pointer))))))
+    (cons
+     (ecase (first node)
+       (:pointer (setf (cffi:mem-ref pointer :pointer) (or value (cffi:null-pointer))))
+       (:qualified (write-struct-field pointer (third node) value))
+       ((:struct :union) (write-struct-from-sequence pointer node value))
+       ((:array :bitfield)
+        (error "A ~(~a~) field cannot be written from a sequence; fill the ~
+                structure in foreign memory and pass the pointer instead."
+               (first node)))))))
+
+(defun write-struct-from-sequence (pointer node value)
+  "Write VALUE, one element per field of NODE, into the structure at POINTER.
+A nested structure field takes a sequence of its own."
+  (let* ((node (resolve-struct-layout node))
+         (fields (third node)))
+    (unless (= (length value) (length fields))
+      (error "~S has ~D element~:P, but ~A has ~D field~:P."
+             value (length value)
+             (or (second node) "the structure") (length fields)))
+    (loop for field in fields
+          for offset in (struct-field-offsets node)
+          for element in (coerce value 'list)
+          do (write-struct-field (cffi:inc-pointer pointer offset) field element))
+    pointer))
+
 ;;; Argument marshalling -----------------------------------------------------
 
 (defun marshal-argument (value node)
@@ -203,6 +280,10 @@ Temporaries are registered for release when the call unwinds."
          (register-temporary (lambda () (cffi:foreign-free buffer)))
          (cond ((and kind (or (vectorp value) (consp value)))
                 (write-cocoa-struct (sap-of buffer) kind value))
+               ;; Any other structure, from a sequence with one element per
+               ;; field; see WRITE-STRUCT-FROM-SEQUENCE.
+               ((struct-sequence-p value)
+                (write-struct-from-sequence buffer node value))
                ((cffi:pointerp value)
                 ;; "Otherwise it is assumed to be a foreign pointer ... and is copied."
                 (dotimes (i size)

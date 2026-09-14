@@ -79,12 +79,16 @@ The manual, for a result type of NSRect: \"If the value is a vector of four
 elements of the form #(x y width height), the x, y, width and height are used to
 form the returned rectangle.  Otherwise it is assumed to be a foreign pointer to
 a cocoa:ns-rect and is copied.\"  The same for NSSize, NSPoint and NSRange, and
-for any other structure type a pointer is the only option."
+for any other structure a pointer is what the manual offers, and a sequence
+with one element per field is taken here as well."
   (let ((kind (cocoa-struct-kind node)))
     (cond
       ((null value) nil)
       ((and kind (or (vectorp value) (consp value)))
        (write-cocoa-struct result-sap kind value))
+      ;; Any other structure, from a sequence with one element per field.
+      ((struct-sequence-p value)
+       (write-struct-from-sequence (pointer-of result-sap) node value))
       ((cffi:pointerp value)
        (let ((size (node-size-and-alignment node))
              (target (pointer-of result-sap)))

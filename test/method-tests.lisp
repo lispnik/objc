@@ -53,6 +53,50 @@
     ((self test-methods))
   (cons 7 8))
 
+;;; A declared structure, in and out, as a sequence.
+;;;
+;;; The Cocoa structures have hand-written converters.  One declared with
+;;; DEFINE-OBJC-STRUCT is written from a sequence by the generic rule: one
+;;; element per field, coerced to the field's type, at the field's offset.
+;;; UIEdgeInsets-shaped, because that is the structure that first wanted it.
+
+(objc:define-objc-struct (test-insets (:foreign-name "ObjcTestInsets"))
+  (:top :double)
+  (:left :double)
+  (:bottom :double)
+  (:right :double))
+
+(objc:define-objc-struct (test-mixed (:foreign-name "ObjcTestMixed"))
+  (:flag :char)
+  (:count :int)
+  (:weight :double)
+  (:inner (:struct test-insets)))
+
+(objc:define-objc-method ("insetsAsVector" (:struct test-insets))
+    ((self test-methods))
+  #(1 2 3 4))
+
+(objc:define-objc-method ("insetsAsList" (:struct test-insets))
+    ((self test-methods))
+  (list 5 6 7 8))
+
+(objc:define-objc-method ("sumOfInsets:" :double)
+    ((self test-methods) (insets (:struct test-insets)))
+  ;; A declared structure ARRIVES as a pointer to its bytes, as the manual
+  ;; has it; only the outbound and result directions take a sequence.
+  (loop for i below 4 sum (cffi:mem-aref insets :double i)))
+
+(objc:define-objc-method ("mixedAsSequence" (:struct test-mixed))
+    ((self test-methods))
+  ;; A char, an int, a double, and a nested structure as a sequence of
+  ;; its own: alignment puts the double at 8 and the inner at 16.
+  (list 1 2 3.5 #(10 20 30 40)))
+
+(objc:define-objc-method ("weightOfMixed:" :double)
+    ((self test-methods) (mixed (:struct test-mixed)))
+  (+ (cffi:mem-ref mixed :double 8)
+     (cffi:mem-ref mixed :double (+ 16 24))))
+
 ;;; The receiver, and the pointer variable.
 
 (objc:define-objc-method ("selfIsLispObject" :int)
@@ -125,6 +169,56 @@ v0-v3 rather than through a pointer.  This is the -drawRect: shape."
 (test ns-range-result-from-a-lisp-method-is-a-cons
   (with-objc
     (is (equal '(7 . 8) (objc:invoke (a-test-object) "rangeOfIt")))))
+
+(test a-declared-struct-result-may-be-a-sequence
+  "A method whose result type is a DEFINE-OBJC-STRUCT may return a vector or
+a list with one element per field, as a Cocoa one may; before, only a
+pointer to foreign memory was accepted and the error named the structure."
+  (with-objc
+    (cffi:with-foreign-object (p :double 4)
+      (objc:invoke-into p (a-test-object) "insetsAsVector")
+      (is (equalp #(1d0 2d0 3d0 4d0)
+                  (coerce (loop for i below 4 collect (cffi:mem-aref p :double i)) 'vector))))
+    (cffi:with-foreign-object (p :double 4)
+      (objc:invoke-into p (a-test-object) "insetsAsList")
+      (is (equalp #(5d0 6d0 7d0 8d0)
+                  (coerce (loop for i below 4 collect (cffi:mem-aref p :double i)) 'vector))))))
+
+(test a-declared-struct-argument-may-be-a-sequence
+  "The outbound direction too: a vector or a list where a message wants a
+declared structure by value, written field by field at the field offsets."
+  (with-objc
+    (is (= 10d0 (objc:invoke (a-test-object) "sumOfInsets:" #(1 2 3 4))))
+    (is (= 26d0 (objc:invoke (a-test-object) "sumOfInsets:" '(5 6 7 8))))
+    ;; A pointer still works, as the manual says.
+    (cffi:with-foreign-object (p :double 4)
+      (dotimes (i 4) (setf (cffi:mem-aref p :double i) (float (1+ i) 1d0)))
+      (is (= 10d0 (objc:invoke (a-test-object) "sumOfInsets:" p))))))
+
+(test a-declared-struct-with-mixed-fields-lays-out-by-alignment
+  "Fields of different sizes, and a nested structure given as a sequence
+of its own: each lands at the offset the ABI gives it."
+  (with-objc
+    ;; The node as a signature carries it: parsed from the encoding the
+    ;; declaration registered, with the fields in it.
+    (is (equal '(0 4 8 16)
+               (objc::struct-field-offsets
+                (objc::parse-type (objc::struct-encoding-for-symbol 'test-mixed)))))
+    (is (= (+ 3.5d0 40d0)
+           (objc:invoke (a-test-object) "weightOfMixed:" (list 1 2 3.5 #(10 20 30 40)))))
+    (cffi:with-foreign-object (p :uint8 48)
+      (objc:invoke-into p (a-test-object) "mixedAsSequence")
+      (is (= 1 (cffi:mem-ref p :int8 0)))
+      (is (= 2 (cffi:mem-ref p :int32 4)))
+      (is (= 3.5d0 (cffi:mem-ref p :double 8)))
+      (is (= 40d0 (cffi:mem-ref p :double (+ 16 24)))))))
+
+(test a-sequence-of-the-wrong-length-is-refused-by-name
+  (with-objc
+    (signals error (objc:invoke (a-test-object) "sumOfInsets:" #(1 2 3)))
+    (handler-case (progn (objc:invoke (a-test-object) "sumOfInsets:" #(1 2 3)) (fail "no error"))
+      (error (condition)
+        (is (search "4 fields" (princ-to-string condition)))))))
 
 (test the-receiver-is-the-lisp-object
   (with-objc

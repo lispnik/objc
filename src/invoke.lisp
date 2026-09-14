@@ -25,22 +25,26 @@ receivers as opaque pointers."
 ;;; Method designators -------------------------------------------------------
 
 (defun parse-method-designator (method)
-  "Return (VALUES SELECTOR-NAME ARG-TYPES RESULT-TYPE N-FIXED).
+  "Return (VALUES SELECTOR-NAME ARG-TYPES RESULT-TYPE N-FIXED EXPLICIT-P).
 
 METHOD is either a selector string, or the list form the manual documents:
 
   (method-name arg-types &key result-type variadic-num-of-fixed)
 
 The list form exists for signatures the runtime's encoding cannot express --
-vector types -- and for variadic methods, where the ABI genuinely differs."
+vector types -- and for variadic methods, where the ABI genuinely differs.
+EXPLICIT-P is true for the list form, whose ARG-TYPES may well be empty: a
+getter returning a SIMD vector, -[GKAgent2D position], takes nothing and
+has a result the runtime encodes as nothing, so the empty list is the whole
+point and must not read as \"use the runtime's view\"."
   (etypecase method
-    (string (values method nil nil nil))
-    (symbol (values (string method) nil nil nil))
+    (string (values method nil nil nil nil))
+    (symbol (values (string method) nil nil nil nil))
     (cons
      (destructuring-bind (name arg-types &key (result-type :void)
                                               (variadic-num-of-fixed nil))
          method
-       (values name arg-types result-type variadic-num-of-fixed)))))
+       (values name arg-types result-type variadic-num-of-fixed t)))))
 
 (defparameter +known-variadic-selectors+
   '("stringWithFormat:" "initWithFormat:" "localizedStringWithFormat:"
@@ -200,7 +204,7 @@ Anything the manual does not name a conversion for is returned unchanged --
 (defun %invoke (receiver method args disposition)
   (with-fp-traps-masked
     (with-call-temporaries
-      (multiple-value-bind (selector-name explicit-arg-types explicit-result n-fixed)
+      (multiple-value-bind (selector-name explicit-arg-types explicit-result n-fixed explicit-p)
           (parse-method-designator method)
         (maybe-warn-variadic selector-name n-fixed)
         (when (gethash selector-name *traced-selectors*)
@@ -210,10 +214,10 @@ Anything the manual does not name a conversion for is returned unchanged --
           (when (and (cffi:pointerp pointer) (cffi:null-pointer-p pointer))
             (return-from %invoke nil))
           (multiple-value-bind (trampoline result-node arg-nodes)
-              (if explicit-arg-types
-                  ;; The explicit list form replaces the runtime's view entirely;
-                  ;; self and _cmd are prepended because the caller does not
-                  ;; write them.
+              (if explicit-p
+                  ;; The explicit list form replaces the runtime's view entirely,
+                  ;; even when its argument list is empty; self and _cmd are
+                  ;; prepended because the caller does not write them.
                   (let* ((result (node-for-fli-type explicit-result))
                          (nodes (list* :id :sel (mapcar #'node-for-fli-type
                                                         explicit-arg-types))))

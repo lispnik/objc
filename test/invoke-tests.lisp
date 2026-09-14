@@ -409,3 +409,34 @@ is how this survived so long, and it is why half a revert proves nothing."
             do (is (= value (objc:invoke number accessor))
                    "~A -> ~A did not round trip ~S~@[ (~A)~]"
                    constructor accessor value reason)))))
+
+;;; A SIMD signature the runtime cannot encode -------------------------------
+
+(defun packed-float-pair (x y)
+  "A vector_float2 as the double occupying the same eight bytes."
+  (cffi:with-foreign-object (p :float 2)
+    (setf (cffi:mem-aref p :float 0) (float x 1.0)
+          (cffi:mem-aref p :float 1) (float y 1.0))
+    (cffi:mem-ref p :double)))
+
+(defun unpacked-float-pair (double)
+  (cffi:with-foreign-object (p :double)
+    (setf (cffi:mem-ref p :double) double)
+    (list (cffi:mem-aref p :float 0) (cffi:mem-aref p :float 1))))
+
+(test the-list-form-carries-a-simd-signature-even-with-no-arguments
+  "Clang encodes a SIMD type as nothing: -[GKAgent2D setPosition:] is
+\"v24@0:816\", an empty type between the offsets, and -[GKAgent2D position]
+is \"16@0:8\", a signature with no result at all.  The list form of a method
+name spells the signature where the runtime cannot, and a vector_float2 is
+eight bytes in a SIMD register, which is how a double travels too.  The
+getter's argument list is EMPTY, and that used to read as \"no explicit
+signature\" and fall back to the runtime's unparseable one."
+  (with-runtime
+    (objc:ensure-objc-initialized
+     :modules '("/System/Library/Frameworks/GameplayKit.framework/GameplayKit"))
+    (let ((agent (objc:alloc-init-object "GKAgent2D")))
+      (objc:invoke agent '("setPosition:" (:double)) (packed-float-pair 3.0 4.0))
+      (is (equal '(3.0 4.0)
+                 (unpacked-float-pair
+                  (objc:invoke agent '("position" () :result-type :double))))))))

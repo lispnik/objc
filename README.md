@@ -121,6 +121,11 @@ where `SYS:` resolves to a readable directory on the Mac.
   call passes its variable arguments on the stack and a fixed-arity call passes
   them in registers, so `+stringWithFormat:` without it reads garbage. LispWorks
   fails silently here; this warns once, naming the fix.
+- **A chain of sends is `invoke*`.** `(objc:invoke* "CSSearchableIndex"
+  "defaultSearchableIndex" ("indexSearchableItems:completionHandler:" items
+  done))` is the manual's nested `invoke`s spelled forwards, and expands to
+  exactly them. Not a LispWorks interface; the spotlight example is written
+  on it.
 - **SIMD vectors need `declare-objc-signature`.** Clang writes *nothing* for a
   `vector_float2`: `-[GKAgent2D setPosition:]` is recorded as `v24@0:816`, an
   empty type between two offsets, and `position` as `16@0:8`, a signature with

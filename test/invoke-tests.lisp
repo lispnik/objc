@@ -547,3 +547,24 @@ short and byte lanes, must agree with it bit for bit."
             (is (equalp value (objc::unpack-vector node (objc::pack-vector node value))))))
         (objc:declare-objc-signature "setPosition:" '((:vector :float 2)))
         (objc:declare-objc-signature "position" '() :result-type '(:vector :float 2)))))
+
+
+;;; A chain of sends -----------------------------------------------------------
+
+(test invoke-star-is-the-nesting-spelled-forwards
+  "INVOKE* sends each message to the result of the one before, and expands
+to the nested INVOKEs it stands for: the same objects, the same conversions,
+nothing added.  A send with no arguments may be a bare selector."
+  (with-runtime
+    (is (= 11 (objc:invoke* "NSString"
+                            ("stringWithUTF8String:" "hello world")
+                            ("uppercaseString")
+                            "length")))
+    (is (string= "HELLO WORLD"
+                 (objc:ns-string-to-string
+                  (objc:invoke* "NSString" ("stringWithUTF8String:" "hello world") "uppercaseString"))))
+    (is (equal '(objc:invoke (objc:invoke "NSString" "stringWithUTF8String:" "x") "length")
+               (macroexpand-1 '(objc:invoke* "NSString" ("stringWithUTF8String:" "x") ("length")))))
+    ;; The list form of a method name goes through untouched.
+    (is (equal '(objc:invoke (objc:invoke obj "a") ("b:" (:double)) 1d0)
+               (macroexpand-1 '(objc:invoke* obj "a" (("b:" (:double)) 1d0)))))))

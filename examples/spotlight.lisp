@@ -33,16 +33,17 @@
 (defun searchable-item (identifier title text &key (keywords '()))
   "A CSSearchableItem under our domain: a title, a description, keywords."
   (let* ((type (objc:invoke "UTType" "typeWithIdentifier:" "public.text"))
-         (attributes (objc:invoke (objc:invoke (objc:invoke "CSSearchableItemAttributeSet" "alloc")
-                                               "initWithContentType:" type)
-                                  "autorelease")))
+         (attributes (objc:invoke* "CSSearchableItemAttributeSet"
+                                   "alloc"
+                                   ("initWithContentType:" type)
+                                   "autorelease")))
     (objc:invoke attributes "setTitle:" title)
     (objc:invoke attributes "setContentDescription:" text)
     (objc:invoke attributes "setKeywords:" (coerce keywords 'vector))
-    (objc:invoke (objc:invoke (objc:invoke "CSSearchableItem" "alloc")
-                              "initWithUniqueIdentifier:domainIdentifier:attributeSet:"
-                              identifier +domain+ attributes)
-                 "autorelease")))
+    (objc:invoke* "CSSearchableItem"
+                  "alloc"
+                  ("initWithUniqueIdentifier:domainIdentifier:attributeSet:" identifier +domain+ attributes)
+                  "autorelease")))
 
 (defun index-items (items &key (timeout 10))
   "Index ITEMS, a list of CSSearchableItems, and wait for the index to say so.
@@ -54,8 +55,9 @@ Returns T, or the error's description."
                                                     t
                                                     (objc:ns-string-to-string (objc:invoke error "localizedDescription"))))
                                   (bt:signal-semaphore semaphore)))
-      (objc:invoke (objc:invoke "CSSearchableIndex" "defaultSearchableIndex")
-                   "indexSearchableItems:completionHandler:" (coerce items 'vector) done)
+      (objc:invoke* "CSSearchableIndex"
+                    "defaultSearchableIndex"
+                    ("indexSearchableItems:completionHandler:" (coerce items 'vector) done))
       (bt:wait-on-semaphore semaphore :timeout timeout))
     outcome))
 
@@ -63,8 +65,9 @@ Returns T, or the error's description."
   (let ((semaphore (bt:make-semaphore)))
     (objc:with-objc-block (done 'index-completion
                                 (lambda (error) (declare (ignore error)) (bt:signal-semaphore semaphore)))
-      (objc:invoke (objc:invoke "CSSearchableIndex" "defaultSearchableIndex")
-                   "deleteSearchableItemsWithDomainIdentifiers:completionHandler:" (vector +domain+) done)
+      (objc:invoke* "CSSearchableIndex"
+                    "defaultSearchableIndex"
+                    ("deleteSearchableItemsWithDomainIdentifiers:completionHandler:" (vector +domain+) done))
       (bt:wait-on-semaphore semaphore :timeout timeout))))
 
 (defun spotlight-search (query-string &key (timeout 10))
@@ -76,13 +79,14 @@ such as \"title == \\\"*Lisp*\\\"cd\", found through CSSearchQuery's two blocks.
                                  (lambda (items)
                                    (loop for i below (objc:invoke items "count")
                                          do (push (objc:ns-string-to-string
-                                                   (objc:invoke (objc:invoke items "objectAtIndex:" i) "uniqueIdentifier"))
+                                                   (objc:invoke* items ("objectAtIndex:" i) "uniqueIdentifier"))
                                                   found))))
       (objc:with-objc-block (done 'index-completion
                                   (lambda (error) (declare (ignore error)) (bt:signal-semaphore semaphore)))
-        (let ((query (objc:invoke (objc:invoke (objc:invoke "CSSearchQuery" "alloc")
-                                               "initWithQueryString:attributes:" query-string (vector "title"))
-                                  "autorelease")))
+        (let ((query (objc:invoke* "CSSearchQuery"
+                                   "alloc"
+                                   ("initWithQueryString:attributes:" query-string (vector "title"))
+                                   "autorelease")))
           (objc:invoke query "setFoundItemsHandler:" batch)
           (objc:invoke query "setCompletionHandler:" done)
           (objc:invoke query "start")

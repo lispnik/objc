@@ -278,6 +278,33 @@ char * to a string, and BOOL to 0 or 1.  Use INVOKE-BOOL for T and NIL, and
 INVOKE-INTO for any other structure type."
   (%invoke class-or-object-pointer method args :default))
 
+(defmacro invoke* (receiver &rest sends)
+  "Send a chain of messages, each to the result of the one before.
+
+    (invoke* \"CSSearchableIndex\"
+             (\"defaultSearchableIndex\")
+             (\"indexSearchableItems:completionHandler:\" items done))
+
+is exactly
+
+    (invoke (invoke \"CSSearchableIndex\" \"defaultSearchableIndex\")
+            \"indexSearchableItems:completionHandler:\" items done)
+
+and expands to it: nothing runs that INVOKE would not, and there is no
+intermediate object to name.  Each send is a list of a method designator --
+a selector string, or the list form INVOKE takes -- and its arguments; a
+send with no arguments may be the bare selector string.  The receiver is
+whatever INVOKE accepts.
+
+Not a LispWorks interface: the manual's idiom is the nesting, and this is a
+reading of it, added beside INVOKE the way the block API was."
+  (reduce (lambda (form send)
+            (let ((send (if (stringp send) (list send) send)))
+              (destructuring-bind (method &rest args) send
+                `(invoke ,form ,method ,@args))))
+          sends
+          :initial-value receiver))
+
 (defun invoke-bool (class-or-object-pointer method &rest args)
   "Like INVOKE, but a BOOL result of NO returns NIL and anything else T."
   (%invoke class-or-object-pointer method args :boolean))

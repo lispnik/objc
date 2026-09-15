@@ -33,6 +33,10 @@
    #:ensure-objc-initialized
    ;; Invoking ---------------------------------------------------------------
    #:invoke
+   ;; INVOKE* is NOT a LispWorks interface: a chain of sends, each to the
+   ;; result of the last, expanding to the manual's nesting.  Listed with
+   ;; the other additions in the seam test.
+   #:invoke*
    #:invoke-bool
    #:invoke-into
    #:can-invoke-p

@@ -130,6 +130,11 @@ vector, so -[GKAgent2D setPosition:] is recorded as taking no arguments, and
 LispWorks -- which has the same runtime to read -- has no answer either.  One
 symbol beside INVOKE, listed separately for the same reason the blocks are.")
 
+(defparameter +chain-additions+
+  '("INVOKE*")
+  "A chain of sends, each to the result of the last.  The manual's idiom is
+the nesting and this expands to exactly that; one macro beside INVOKE.")
+
 (defparameter +ecl-additions+
   '()
   "Nothing, now.  There was DEFINE-OBJC-TRAMPOLINE, for a variadic send on a
@@ -150,6 +155,7 @@ accidental export through as soon as someone adjusted the number to match."
     (let ((expected (sort (append (copy-list +lispworks-objc-symbols+)
                                   (copy-list +objc-additions+)
                                   (copy-list +signature-additions+)
+                                  (copy-list +chain-additions+)
                                   #+ecl (copy-list +ecl-additions+))
                           #'string<))
           (actual (exported :objc)))

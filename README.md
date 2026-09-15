@@ -55,9 +55,20 @@ passed and returned by value in both directions, `define-objc-struct`,
 integration with `objc-object-copied` and `objc-object-destroyed`, and
 `invoke-into`'s full set of result dispositions.
 
-Past it, one deliberate addition: **creating Objective-C blocks** from Lisp
-closures, which LispWorks does in its FLI and has no `OBJC` interface for. See
-[Blocks](#blocks).
+Past it, three deliberate additions, each named in the seam test so an
+accidental export still fails: **creating Objective-C blocks** from Lisp
+closures, which LispWorks does in its FLI and has no `OBJC` interface for, see
+[Blocks](#blocks); **`declare-objc-signature`**, for the methods whose type
+encoding the runtime cannot write, see [SIMD vectors](#simd-vectors); and
+**`invoke*`**, a chain of sends each to the result of the one before, which
+expands to exactly the nested `invoke`s the manual would have you write:
+
+```lisp
+(objc:invoke* "CSSearchableItem"
+              "alloc"
+              ("initWithUniqueIdentifier:domainIdentifier:attributeSet:" id domain attributes)
+              "autorelease")
+```
 
 934 checks on SBCL, green on a clean GitHub runner as well as locally.
 Behaviour the manual leaves ambiguous was settled by running LispWorks Personal
@@ -149,9 +160,10 @@ where `SYS:` resolves to a readable directory on the Mac.
   or `fli:allocate-foreign-object` needs rewriting against CFFI. The examples
   carry a six-function `fli` shim for the handful of operators the manual's own
   examples use, and that is deliberately as far as it goes.
-- **SBCL only.** Dynamic dispatch is built on `sb-alien`, for reasons set out in
-  `src/abi.lisp`. It is confined to that one file, which a test enforces, so
-  porting is one file's work — but it is not portable today.
+- **SBCL and ECL only.** Dynamic dispatch is built on `sb-alien` on SBCL and
+  on ECL's dynamic FFI and compiled trampolines on ECL, each confined to one
+  file that a test enforces, so another Lisp is one file's work — but only
+  those two have it today.
 - **AppKit from a REPL needs care.** The event loop helpers in `OBJC.RUNLOOP` are
   additions, not LispWorks API; driving the event loop is CAPI's job there and
   there is no CAPI here. See the notes under Examples.
@@ -360,11 +372,15 @@ each one deliberate:
   a deliberate choice to fail loudly rather than a difference measured against
   it. The manual's own struct-returning example uses `invoke-into`.
 
-- **`OBJC` exports eight symbols LispWorks does not**: the block API below.
-  LispWorks has no block interface in `OBJC` at all — there it is
-  `fli:allocate-foreign-block`, and there is no FLI here. It is the one
-  deliberate widening of the package, and the seam test names the eight
-  explicitly so an accidental forty-ninth export still fails.
+- **`OBJC` exports ten symbols LispWorks does not.** Eight are the block API
+  below — LispWorks has no block interface in `OBJC` at all; there it is
+  `fli:allocate-foreign-block`, and there is no FLI here. One is
+  `declare-objc-signature`, for a method whose encoding the runtime cannot
+  write, which LispWorks, reading the same runtime, cannot call either. One is
+  `invoke*`, a chain of sends that expands to the manual's nesting; a reading
+  of the idiom, not a change to it. Each is a deliberate widening of the
+  package, and the seam test names all ten explicitly so an accidental
+  export still fails.
 
 ## Blocks
 

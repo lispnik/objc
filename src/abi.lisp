@@ -125,8 +125,8 @@ know an alien type at all."
     (cons
      (ecase (first node)
        ;; An eight-byte SIMD vector travels as a double: one SIMD register,
-       ;; the same one.  See types.lisp.
-       (:vector 'sb-alien:double-float)
+       ;; the same one.  A sixteen-byte one as the type made above.
+       (:vector (if (= 8 (vector-byte-size node)) 'sb-alien:double-float 'objc-simd-128))
        (:pointer 'sb-alien:system-area-pointer)
        (:qualified (alien-type (third node)))
        (:array 'sb-alien:system-area-pointer)
@@ -135,6 +135,135 @@ know an alien type at all."
 
 (defun struct-node-p (node)
   (and (consp node) (member (first node) '(:struct :union))))
+
+;;; 128-bit SIMD vectors ---------------------------------------------------------
+;;;
+;;; A sixteen-byte vector -- float4, float3 (sixteen bytes, not twelve),
+;;; double2, int4 -- travels in one 128-bit register: the whole of v0 on
+;;; arm64, xmm0 on x86-64.  sb-alien has no type for a value of that shape.
+;;; It also has no way to add one: the alien type classes are a fixed table
+;;; indexed by name, and ALIEN-TYPE is a sealed structure.  What it does have
+;;; is a class whose methods are function slots, and a type object whose width
+;;; is a slot.  So a second instance of the double-float type is made, marked
+;;; 128 bits wide, and the double-float class's methods are replaced with
+;;; dispatchers: a 128-bit instance gets a NEON register and a simd-pack, and
+;;; an ordinary double goes to the method SBCL installed, untouched.
+;;;
+;;; The Lisp-side carrier is a (SIMD-PACK (UNSIGNED-BYTE 64)): two words,
+;;; which is all a register full of lanes is until something reads it as
+;;; floats.  Lanes are written and read through a foreign buffer.
+;;;
+;;; Measured before it was written, against GameplayKit's GKAgent3D, whose
+;;; position is a vector_float3: setPosition: then position gives the lanes
+;;; back, and a Lisp callback taking and returning a float4 does too, through
+;;; the widened callback wrapper in abi-neon.lisp.  arm64 only for now: the
+;;; register file names and the callback wrapper are per architecture, and
+;;; the x86-64 half has not been written or measured.
+
+(defun wide-vector-supported-p ()
+  "Whether this build carries a sixteen-byte SIMD vector by value."
+  (and (member :arm64 *features*) (member :darwin *features*) t))
+
+(defvar *wide-alien-type* nil
+  "The double-float type instance marked 128 bits wide, once installed.")
+
+(defun wide-alien-type-p (type)
+  (and (sb-alien::alien-float-type-p type)
+       (eql (sb-alien::alien-type-bits type) 128)))
+
+(defun %effective-alien-method (reader class)
+  "The method CLASS would use for READER's slot, walking includes as
+INVOKE-ALIEN-TYPE-METHOD does."
+  (loop for c = class then (sb-alien::alien-type-class-include c)
+        while c
+        do (let ((method (funcall reader c)))
+             (when method (return method)))))
+
+(defmacro %override-alien-method (class slot (&rest args) &body wide-body)
+  "Replace SLOT's method on CLASS with one that runs WIDE-BODY for a 128-bit
+instance and the method that was there for anything else."
+  (let ((reader (intern (format nil "ALIEN-TYPE-CLASS-~A" slot) :sb-alien)))
+    `(let ((original (%effective-alien-method #',reader ,class)))
+       (setf (,reader ,class)
+             (lambda (type ,@args)
+               (declare (ignorable ,@args))
+               (if (wide-alien-type-p type)
+                   (progn ,@wide-body)
+                   (funcall original type ,@args)))))))
+
+(defun install-wide-alien-type ()
+  "Make OBJC-SIMD-128 an alien type: a double-float marked 128 bits wide, and
+the double-float class taught to pass it in a NEON register.  Once per image."
+  (when (and (wide-vector-supported-p) (null *wide-alien-type*))
+    (let* ((double (sb-alien::parse-alien-type 'sb-alien:double-float nil))
+           (wide (copy-structure double))
+           (dd (sb-kernel:find-defstruct-description
+                'sb-alien::alien-double-float-type))
+           (nbits (- sb-vm:n-positive-fixnum-bits 5)))
+      (flet ((slot (name)
+               (sb-kernel:dsd-index (find name (sb-kernel:dd-slots dd)
+                                          :key #'sb-kernel:dsd-name))))
+        (setf (sb-kernel:%instance-ref wide (slot 'sb-alien::bits)) 128
+              (sb-kernel:%instance-ref wide (slot 'sb-alien::alignment)) 128
+              ;; The top five bits of the hash are the class id; keep those
+              ;; and give the rest a value of its own, so the fun-type cache
+              ;; never files a wide signature under a double one.
+              (sb-kernel:%instance-ref wide (slot 'sb-alien::hash))
+              (logior (logand (sb-alien::alien-type-hash double) (ash 31 nbits))
+                      (logand (sxhash "objc-simd-128") (1- (ash 1 nbits))))))
+      (let ((class (sb-alien::alien-type-class wide))
+            (neon (sb-c:sc-number-or-lose 'sb-vm::int-neon-reg))
+            (neon-stack (sb-c:sc-number-or-lose 'sb-vm::int-neon-stack)))
+        (%override-alien-method class unparse (state) 'objc-simd-128)
+        (%override-alien-method class type= (other) (and (wide-alien-type-p other) t))
+        (%override-alien-method class lisp-rep () '(sb-ext:simd-pack (unsigned-byte 64)))
+        (%override-alien-method class alien-rep (context) '(sb-ext:simd-pack (unsigned-byte 64)))
+        (%override-alien-method class naturalize-gen (alien) alien)
+        (%override-alien-method class deport-gen (value)
+          `(the (sb-ext:simd-pack (unsigned-byte 64)) ,value))
+        (%override-alien-method class extract-gen (sap offset)
+          `(sb-kernel:%make-simd-pack-ub64
+            (sb-sys:sap-ref-64 ,sap (/ ,offset 8))
+            (sb-sys:sap-ref-64 ,sap (+ (/ ,offset 8) 8))))
+        (%override-alien-method class deposit-gen (sap offset value)
+          `(multiple-value-bind (lo hi) (sb-ext:%simd-pack-ub64s ,value)
+             (setf (sb-sys:sap-ref-64 ,sap (/ ,offset 8)) lo
+                   (sb-sys:sap-ref-64 ,sap (+ (/ ,offset 8) 8)) hi)))
+        (%override-alien-method class arg-tn (state)
+          ;; The ninth floating-point argument goes on the stack, through a
+          ;; VOP for word-sized values the image no longer carries.  No
+          ;; Objective-C method has nine; refuse rather than corrupt.
+          (when (>= (sb-vm::arg-state-fp-registers state) 8)
+            (error "A 16-byte SIMD vector must be among the first eight ~
+                    floating-point arguments of a call."))
+          (sb-vm::float-arg state 'sb-vm::simd-pack-ub64 neon neon-stack 16))
+        (%override-alien-method class result-tn (state)
+          (sb-vm::make-wired-tn* 'sb-vm::simd-pack-ub64 neon 0)))
+      (setf (sb-int:info :alien-type :kind 'objc-simd-128) :primitive
+            (sb-int:info :alien-type :translator 'objc-simd-128)
+            (lambda (type env) (declare (ignore type env)) wide))
+      (setf *wide-alien-type* wide))))
+
+(install-wide-alien-type)
+
+(defun %pack-wide-vector (node value)
+  "VALUE's lanes as the simd-pack that travels in a 128-bit register."
+  (unless (wide-vector-supported-p)
+    (error 'unsupported-type-encoding
+           :encoding node
+           :detail "a 16-byte SIMD vector is carried on SBCL for Apple silicon only"))
+  (cffi:with-foreign-object (p :uint64 2)
+    (setf (cffi:mem-aref p :uint64 0) 0 (cffi:mem-aref p :uint64 1) 0)
+    (write-vector-elements p node value)
+    (sb-kernel:%make-simd-pack-ub64 (cffi:mem-aref p :uint64 0)
+                                    (cffi:mem-aref p :uint64 1))))
+
+(defun %unpack-wide-vector (node pack)
+  "The lanes of PACK, a simd-pack, as a Lisp vector."
+  (cffi:with-foreign-object (p :uint64 2)
+    (multiple-value-bind (lo hi) (sb-ext:%simd-pack-ub64s pack)
+      (setf (cffi:mem-aref p :uint64 0) lo (cffi:mem-aref p :uint64 1) hi))
+    (read-vector-elements p node)))
 
 ;;; Dispatch entry points ----------------------------------------------------
 
@@ -377,7 +506,9 @@ that sends the reader to the wrong file."
   "A form for the value to return when a Lisp method body signals."
   (cond ((struct-node-p node) nil)
         ((member node '(:float)) 0.0)
-        ((or (member node '(:double)) (vector-node-p node)) 0d0)
+        ((member node '(:double)) 0d0)
+        ((vector-node-p node)
+         (if (= 8 (vector-byte-size node)) 0d0 '(sb-kernel:%make-simd-pack-ub64 0 0)))
         ((member node '(:void :unknown)) nil)
         ;; 0, not NIL: the alien type is (UNSIGNED 8) and NIL is not one.
         ((eq node :bool) 0)

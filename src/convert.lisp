@@ -350,16 +350,22 @@ WRITE-STRUCT-FROM-SEQUENCE, and what INVOKE returns for a declared structure."
       (coerce (loop for i below count collect (cffi:mem-aref pointer type i)) 'vector))))
 
 (defun pack-vector (node value)
-  "VALUE, a Lisp sequence, as the double whose eight bytes are its lanes."
-  (cffi:with-foreign-object (p :double)
-    (write-vector-elements p node value)
-    (cffi:mem-ref p :double)))
+  "VALUE, a Lisp sequence, as what carries it across the FFI: the double whose
+eight bytes are its lanes, or for a sixteen-byte vector the backend's own
+carrier -- see %PACK-WIDE-VECTOR in the seam file."
+  (if (= 8 (vector-byte-size node))
+      (cffi:with-foreign-object (p :double)
+        (write-vector-elements p node value)
+        (cffi:mem-ref p :double))
+      (%pack-wide-vector node value)))
 
-(defun unpack-vector (node double)
-  "The lanes packed in DOUBLE, as a Lisp vector."
-  (cffi:with-foreign-object (p :double)
-    (setf (cffi:mem-ref p :double) (coerce double 'double-float))
-    (read-vector-elements p node)))
+(defun unpack-vector (node carrier)
+  "The lanes packed in CARRIER, as a Lisp vector."
+  (if (= 8 (vector-byte-size node))
+      (cffi:with-foreign-object (p :double)
+        (setf (cffi:mem-ref p :double) (coerce carrier 'double-float))
+        (read-vector-elements p node))
+      (%unpack-wide-vector node carrier)))
 
 ;;; Argument marshalling -----------------------------------------------------
 

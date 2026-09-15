@@ -126,7 +126,9 @@ where `SYS:` resolves to a readable directory on the Mac.
   empty type between two offsets, and `position` as `16@0:8`, a signature with
   no result. `invoke` notices the hole and signals, naming the selector and the
   fix, instead of miscounting arguments; declared once, by selector, the vector
-  goes in and comes out as a Lisp vector. See [SIMD vectors](#simd-vectors).
+  goes in and comes out as a Lisp vector. Eight-byte vectors everywhere;
+  sixteen-byte ones -- `float3`, `float4` -- on SBCL for Apple silicon, through
+  a 128-bit alien type of this library's own. See [SIMD vectors](#simd-vectors).
 - **arm64 is the only architecture this has run on.** The two differ in the
   Objective-C ABI in two ways that matter, and both are handled by measuring the
   runtime rather than by read-time conditionals: `BOOL` encodes as `c` on Intel
@@ -452,12 +454,27 @@ exactly how a double travels on arm64 and x86-64, and *not* how a struct of two
 floats travels, which is a homogeneous aggregate and goes in two registers. So
 `float2`, `int2`, `short4` and the rest of the eight-byte family are carried
 as the double occupying the same bytes, packed and unpacked on the Lisp side,
-and the backends never see a vector at all. The sixteen-byte family --
-`float4`, `float3` (sixteen bytes, not twelve), `double2`, `int4` -- travels in
-a 128-bit register that neither sb-alien nor libffi can name, and is refused
-where it is written rather than corrupted downstream; so is a structure with a
-vector field, which Clang cannot encode either, so the runtime would lay it out
-without the field.
+and the backends never see a vector at all.
+
+The sixteen-byte family -- `float4`, `float3` (sixteen bytes, not twelve),
+`double2`, `int4` -- travels in a 128-bit register, the whole of `v0` on arm64,
+and no alien type can name a value of that shape. **On SBCL for Apple silicon
+it is carried anyway**, both directions, `invoke` and `call-objc-block` as
+well as a Lisp method or block taking or returning one. sb-alien's type
+classes are a fixed table and `alien-type` is sealed, so a class cannot be
+added; instead a second instance of the double-float type is marked 128 bits
+wide, and that class's methods dispatch on the width -- a NEON register and a
+`simd-pack` for the wide one, SBCL's own method for a double. Callbacks go
+through SBCL's arm64 callback wrapper with two branches added for the wide
+type, in `src/abi-neon.lisp`, installed as a dispatcher so a signature with no
+vector in it never leaves SBCL's own code. Measured against `GKAgent3D`, whose
+position is a `vector_float3`. One limit: a sixteen-byte vector must be among
+the first eight floating-point arguments of a call, which every Objective-C
+method satisfies. Elsewhere -- ECL, and SBCL on Intel, whose register names
+and wrapper have not been written -- the sixteen-byte family is refused where
+it is written, naming this. A structure with a vector field is refused
+everywhere: Clang cannot encode it either, so the runtime would lay it out
+without the field. Matrices, `float4x4` and kin, are the next shape.
 
 **Only one libdispatch thread may be inside Lisp at a time.** This is SBCL's
 limit, not GCD's, and it is worth knowing before writing anything concurrent. A

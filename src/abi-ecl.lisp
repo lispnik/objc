@@ -117,6 +117,23 @@ architecture this file targets."
 
 ;;; Foreign types -----------------------------------------------------------
 
+(defun wide-vector-supported-p ()
+  "A sixteen-byte SIMD vector needs a 128-bit register the dynamic FFI cannot
+name; the compiled trampolines could, and have not been taught to yet."
+  nil)
+
+(defun %pack-wide-vector (node value)
+  (declare (ignore value))
+  (error 'unsupported-type-encoding
+         :encoding node
+         :detail "a 16-byte SIMD vector is not carried on ECL yet; SBCL on Apple silicon carries it"))
+
+(defun %unpack-wide-vector (node pack)
+  (declare (ignore pack))
+  (error 'unsupported-type-encoding
+         :encoding node
+         :detail "a 16-byte SIMD vector is not carried on ECL yet"))
+
 (defun ecl-foreign-type (node)
   "The ECL foreign type keyword for encoding node NODE.
 

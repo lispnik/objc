@@ -460,3 +460,27 @@ signature with a hole, so it cannot reach a method the runtime describes."
       (objc:invoke agent "setMaxSpeed:" 70.0)
       (is (= 70.0 (objc:invoke agent "maxSpeed")))
       (remhash "setMaxSpeed:" objc::*signature-overrides*))))
+
+
+(test a-sixteen-byte-vector-crosses-in-a-full-register
+  "GKAgent3D's position is a vector_float3: sixteen bytes in the whole of v0,
+which no alien type could name until abi.lisp made one.  In through
+setPosition: and back through position, as Lisp vectors of three lanes.  Where
+the seam does not carry sixteen bytes, the type is refused where it is
+written, and this test says so rather than passing on nothing."
+  (if (not (objc::wide-vector-supported-p))
+      (skip "sixteen-byte SIMD vectors are not carried by this build")
+  (with-runtime
+    (ensure-gameplaykit)
+    (objc:declare-objc-signature "setPosition:" '((:vector :float 3)))
+    (objc:declare-objc-signature "position" '() :result-type '(:vector :float 3))
+    (let ((agent (objc:alloc-init-object "GKAgent3D")))
+      (objc:invoke agent "setPosition:" #(1.5 2.5 3.5))
+      (is (equalp #(1.5 2.5 3.5) (objc:invoke agent "position")))
+      ;; The list form, per call, the same.
+      (objc:invoke agent '("setPosition:" ((:vector :float 3))) #(-1.0 0.5 8.0))
+      (is (equalp #(-1.0 0.5 8.0)
+                  (objc:invoke agent '("position" () :result-type (:vector :float 3))))))
+    ;; The float2 declarations of the other test again, so order does not matter.
+    (objc:declare-objc-signature "setPosition:" '((:vector :float 2)))
+    (objc:declare-objc-signature "position" '() :result-type '(:vector :float 2)))))

@@ -314,6 +314,13 @@ Accepts what DEFINE-OBJC-METHOD and INVOKE's explicit arg-types list accept."
   '(:char :uchar :short :ushort :int :uint :long-long :ulong-long :float :double)
   "The scalar nodes a (:VECTOR ELEMENT COUNT) may be made of.")
 
+(defun vector-byte-size (node)
+  "The bytes a SIMD vector occupies: its lanes, with a three-lane vector
+padded to four as the simd types are -- float3 is sixteen bytes, not twelve."
+  (destructuring-bind (element count) (rest node)
+    (let ((lanes (if (= count 3) 4 count)))
+      (* lanes (node-size-and-alignment element)))))
+
 (defun check-vector-node (node)
   "NODE, if it names a SIMD vector this library can carry; signals otherwise."
   (destructuring-bind (element count) (rest node)
@@ -323,14 +330,20 @@ Accepts what DEFINE-OBJC-METHOD and INVOKE's explicit arg-types list accept."
     (unless (and (integerp count) (plusp count))
       (error 'unsupported-type-encoding
              :encoding node :detail "a SIMD vector needs a positive element count"))
-    (let ((size (* count (node-size-and-alignment element))))
-      (unless (= size 8)
-        (error 'unsupported-type-encoding
-               :encoding node
-               :detail (format nil "a ~d-byte SIMD vector travels in a 128-bit ~
-                                    register, which neither sb-alien nor libffi ~
-                                    can carry; only 8-byte vectors are supported"
-                               size))))
+    (let ((size (vector-byte-size node)))
+      (cond ((= size 8))
+            ((= size 16)
+             (unless (wide-vector-supported-p)
+               (error 'unsupported-type-encoding
+                      :encoding node
+                      :detail (format nil "a 16-byte SIMD vector travels in a 128-bit ~
+                                           register; SBCL on Apple silicon carries ~
+                                           it and this build does not"))))
+            (t
+             (error 'unsupported-type-encoding
+                    :encoding node
+                    :detail (format nil "a ~d-byte SIMD vector is not a shape ~
+                                         any register carries" size)))))
     node))
 
 ;;; Sizes without Foundation -------------------------------------------------
@@ -355,7 +368,8 @@ Accepts what DEFINE-OBJC-METHOD and INVOKE's explicit arg-types list accept."
        (:pointer (values 8 8))
        (:qualified (node-size-and-alignment (third node)))
        (:bitfield (values 0 1))
-       (:vector (check-vector-node node) (values 8 8))
+       (:vector (check-vector-node node)
+        (let ((size (vector-byte-size node))) (values size size)))
        (:array (multiple-value-bind (size align)
                    (node-size-and-alignment (third node))
                  (values (* size (second node)) align)))

@@ -10,9 +10,11 @@
 (defparameter +seam-file+ "abi.lisp"
   "The one source file allowed to use sb-alien and sb-sys.")
 
-(defparameter +seam-exceptions+ '("runloop.lisp")
+(defparameter +seam-exceptions+ '("runloop.lisp" "abi-neon.lisp")
   "runloop.lisp uses SB-THREAD:MAIN-THREAD-P, which is a threading question
-rather than a foreign-ABI one and has no portable equivalent.")
+rather than a foreign-ABI one and has no portable equivalent.  abi-neon.lisp
+is the seam's arm64 annex: SBCL's own callback wrapper with a 128-bit vector
+branch, written in SB-VM because it is assembler, and loaded only there.")
 
 (defparameter +minimum-source-files+ 20
   "A floor under the file count src/ must produce, well below the real number.

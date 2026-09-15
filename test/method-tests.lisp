@@ -365,3 +365,19 @@ at both ends.  Refused at DEFINE-OBJC-STRUCT, naming the structure."
     (eval '(objc:define-objc-struct (test-anchor (:foreign-name "LispTestAnchor"))
              (:tag :int)
              (:at (:vector :float 2))))))
+
+
+(test a-lisp-method-takes-and-returns-a-sixteen-byte-vector
+  "The IMP is a callback whose float4 argument arrives in the whole of a NEON
+register and whose float4 result leaves the same way, through the widened
+callback wrapper in abi-neon.lisp; the body sees a Lisp vector.  Defined
+inside the test, because where sixteen bytes are not carried the definition
+itself is refused, before any test could skip."
+  (if (not (objc::wide-vector-supported-p))
+      (skip "sixteen-byte SIMD vectors are not carried by this build")
+      (with-objc
+        (eval '(objc:define-objc-method ("scaled:by:" (:vector :float 4))
+                   ((self simd-object) (v (:vector :float 4)) (k :double))
+                 (map 'vector (lambda (x) (* k x)) v)))
+        (let ((object (objc:alloc-init-object "LispSimdObject")))
+          (is (equalp #(2.0 4.0 6.0 8.0) (objc:invoke object "scaled:by:" #(1 2 3 4) 2d0)))))))

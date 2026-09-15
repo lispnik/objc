@@ -51,6 +51,9 @@ Lisp method can take and return C structs by value like any other."
                  ;; The implementation seam. abi.lisp is sb-alien; abi-ecl
                  ;; is ECL's dynamic FFI, with a narrower reach.
                  #+sbcl (:file "abi")
+                 ;; SBCL's arm64 callback wrapper with a 128-bit vector
+                 ;; branch, in SB-VM; abi.lisp explains.
+                 #+(and sbcl arm64 darwin) (:file "abi-neon")
                  #+ecl (:file "abi-ecl")
                  (:file "selectors")
                  (:file "classes")

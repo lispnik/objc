@@ -226,19 +226,47 @@ no trampoline and a two-argument method never keys like a one-argument one."
   (is (string= "16@0:8" (objc::method-type-encoding '(:vector :float 2) '())))
   (is (string= "v@:d" (objc::method-type-encoding :void '(:double)))))
 
-(test a-simd-vector-is-eight-bytes-or-refused
-  "Eight bytes is one SIMD register and a double's worth of it; sixteen is a
-128-bit register neither sb-alien nor libffi can name, and float3 is sixteen
-bytes too, not twelve.  Refused where it is written rather than corrupted
-downstream."
+(test a-simd-vector-is-eight-or-sixteen-bytes-or-refused
+  "Eight bytes is one SIMD register and a double's worth of it.  Sixteen is a
+128-bit register: carried where the seam says it can be -- SBCL on Apple
+silicon -- and refused where it cannot, at the point it is written rather than
+corrupted downstream.  float3 is sixteen bytes, not twelve: three lanes pad
+to four, as the simd types do.  Thirty-two bytes is no register at all."
   (is (= 8 (objc::node-size-and-alignment '(:vector :float 2))))
   (is (= 8 (objc::node-size-and-alignment '(:vector :int 2))))
   (is (= 8 (objc::node-size-and-alignment '(:vector :short 4))))
   (is (equal '(:vector :float 2) (objc::node-for-fli-type '(:vector :float 2))))
-  (signals error (objc::node-size-and-alignment '(:vector :float 4)))
-  (signals error (objc::node-size-and-alignment '(:vector :float 3)))
-  (signals error (objc::node-size-and-alignment '(:vector :double 2)))
+  (is (= 16 (objc::vector-byte-size '(:vector :float 3))))
+  (is (= 16 (objc::vector-byte-size '(:vector :float 4))))
+  (is (= 16 (objc::vector-byte-size '(:vector :double 2))))
+  (if (objc::wide-vector-supported-p)
+      (progn
+        (is (= 16 (objc::node-size-and-alignment '(:vector :float 4))))
+        (is (= 16 (objc::node-size-and-alignment '(:vector :float 3))))
+        (is (= 16 (objc::node-size-and-alignment '(:vector :int 4)))))
+      (progn
+        (signals error (objc::node-size-and-alignment '(:vector :float 4)))
+        (signals error (objc::node-size-and-alignment '(:vector :float 3)))))
+  (signals error (objc::node-size-and-alignment '(:vector :float 8)))
+  (signals error (objc::node-size-and-alignment '(:vector :double 4)))
   (signals error (objc::node-for-fli-type '(:vector :string 2))))
+
+(test a-sixteen-byte-vector-packs-into-its-carrier-and-back
+  (if (objc::wide-vector-supported-p)
+      (progn
+        (is (equalp #(1.0 2.0 3.0 4.0)
+                    (objc::unpack-vector '(:vector :float 4)
+                                         (objc::pack-vector '(:vector :float 4) #(1 2 3 4)))))
+        (is (equalp #(1.5 2.5 3.5)
+                    (objc::unpack-vector '(:vector :float 3)
+                                         (objc::pack-vector '(:vector :float 3) '(1.5 2.5 3.5)))))
+        (is (equalp #(-1 2 -3 4)
+                    (objc::unpack-vector '(:vector :int 4)
+                                         (objc::pack-vector '(:vector :int 4) #(-1 2 -3 4)))))
+        (is (equalp #(1d0 -2d0)
+                    (objc::unpack-vector '(:vector :double 2)
+                                         (objc::pack-vector '(:vector :double 2) #(1 -2))))))
+      (signals error (objc::pack-vector '(:vector :float 4) #(1 2 3 4)))))
 
 (test a-simd-vector-packs-into-a-double-and-back
   (is (equalp #(3.0 4.0)

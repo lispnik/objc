@@ -458,3 +458,12 @@ vector and one may be returned, carried as a double both ways."
     (let ((type '((:vector :float 2) ((:vector :float 2) :int))))
       (objc:with-objc-block (b type (lambda (v n) (vector (* n (aref v 0)) (* n (aref v 1)))))
         (is (equalp #(3.0 6.0) (objc:call-objc-block type b #(1.0 2.0) 3)))))))
+
+
+(test a-block-takes-and-returns-a-sixteen-byte-vector
+  (if (not (objc::wide-vector-supported-p))
+      (skip "sixteen-byte SIMD vectors are not carried by this build")
+      (with-runtime
+        (let ((type '((:vector :float 4) ((:vector :float 4) :int))))
+          (objc:with-objc-block (b type (lambda (v n) (map 'vector (lambda (x) (* n x)) v)))
+            (is (equalp #(3.0 6.0 9.0 12.0) (objc:call-objc-block type b #(1.0 2.0 3.0 4.0) 3))))))))

@@ -121,6 +121,13 @@ LispWorks promises and what this library adds stays legible.
 Named for the library rather than for SBCL, which it was when SBCL was the only
 implementation.")
 
+(defparameter +signature-additions+
+  '("DECLARE-OBJC-SIGNATURE")
+  "Spelling a signature the runtime cannot: Clang writes nothing for a SIMD
+vector, so -[GKAgent2D setPosition:] is recorded as taking no arguments, and
+LispWorks -- which has the same runtime to read -- has no answer either.  One
+symbol beside INVOKE, listed separately for the same reason the blocks are.")
+
 (defparameter +ecl-additions+
   '()
   "Nothing, now.  There was DEFINE-OBJC-TRAMPOLINE, for a variadic send on a
@@ -140,6 +147,7 @@ accidental export through as soon as someone adjusted the number to match."
                  #'string<)))
     (let ((expected (sort (append (copy-list +lispworks-objc-symbols+)
                                   (copy-list +objc-additions+)
+                                  (copy-list +signature-additions+)
                                   #+ecl (copy-list +ecl-additions+))
                           #'string<))
           (actual (exported :objc)))

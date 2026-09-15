@@ -162,6 +162,9 @@ BOOL argument into NO without erroring."
        ((:id :class :sel :cstring :block) :pointer-void)))
     (cons
      (ecase (first node)
+       ;; An eight-byte SIMD vector travels as a double: one SIMD register,
+       ;; the same one.  See types.lisp.
+       (:vector :double)
        (:pointer :pointer-void)
        (:qualified (ecl-foreign-type (third node)))
        ;; An array or a struct only ever reaches here already reduced to
@@ -194,6 +197,7 @@ matters."
     (keyword (ecl-foreign-type node))
     (cons
      (ecase (first node)
+       (:vector :double)
        (:pointer :pointer-void)
        (:qualified (ecl-dffi-type (third node)))
        (:array (list :array (ecl-dffi-type (third node)) (second node)))
@@ -455,6 +459,7 @@ correctly if simply told the truth."
     (keyword (values (%c-scalar-name node) definitions))
     (cons
      (ecase (first node)
+       (:vector (values "double" definitions))
        (:pointer (values "void *" definitions))
        (:qualified (%c-type-name (third node) definitions))
        (:array
@@ -832,7 +837,7 @@ that sends the reader to the wrong file."
   "The value to return when a Lisp implementation body signals."
   (cond ((struct-node-p node) nil)
         ((eq node :float) 0.0)
-        ((eq node :double) 0d0)
+        ((or (eq node :double) (vector-node-p node)) 0d0)
         ((member node '(:void :unknown)) nil)
         ;; 0 and not NIL: the foreign type is a byte.
         ((eq node :bool) 0)

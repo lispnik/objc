@@ -66,6 +66,8 @@ DEFINE-OBJC-CLASS-METHOD body."))
               (cffi:foreign-string-to-lisp pointer :encoding :utf-8)))
          `(pointer-of ,raw)))
     ((eq node :bool) `(not (eql 0 ,raw)))
+    ;; A SIMD vector arrives as the double occupying its bytes.
+    ((vector-node-p node) `(unpack-vector ',node ,raw))
     ((member node '(:class :sel :block)) `(pointer-of ,raw))
     ((and (consp node) (member (first node) '(:pointer :array))) `(pointer-of ,raw))
     ((and (consp node) (eq (first node) :qualified))
@@ -136,6 +138,8 @@ releases the temporary itself."
      (cond ((eq value t) 1) ((null value) 0) (t value)))
     ((eq node :float) (coerce value 'single-float))
     ((eq node :double) (coerce value 'double-float))
+    ;; A SIMD vector leaves as the double occupying its bytes.
+    ((vector-node-p node) (pack-vector node value))
     ((or (member node '(:block))
          (and (consp node) (member (first node) '(:pointer :array))))
      (sap-of (cond ((null value) (cffi:null-pointer))
@@ -265,11 +269,28 @@ sends to the superclass's class methods."
   "The type encoding string for a method, self and _cmd included.
 This is what class_addMethod records, and what the runtime hands back to anyone
 who asks for the method's signature later."
-  (with-output-to-string (out)
-    (write-string (canonical-encoding result-node) out)
-    (write-string "@:" out)
-    (dolist (node arg-nodes)
-      (write-string (canonical-encoding node) out))))
+  (flet ((encoding (node)
+           ;; A SIMD vector is written as Clang writes it, which is nothing:
+           ;; the runtime and every introspecting consumer expect that, and
+           ;; the hole it leaves is what the recorded signature fills.
+           (if (vector-node-p node) "" (canonical-encoding node))))
+    (if (or (vector-node-p result-node) (some #'vector-node-p arg-nodes))
+        ;; With a hole, the frame offsets Clang writes go in too, because
+        ;; they are what makes the hole visible: a leading offset says the
+        ;; result is missing, and an argument written as nothing between two
+        ;; offsets is one the parser can count against the selector.
+        ;; Without them "@:" would read as an id result and a lone _cmd.
+        (with-output-to-string (out)
+          (let ((slots (+ 2 (length arg-nodes))))
+            (format out "~a~d@0:8" (encoding result-node) (* 8 slots))
+            (loop for node in arg-nodes
+                  for offset from 16 by 8
+                  do (format out "~a~d" (encoding node) offset))))
+        (with-output-to-string (out)
+          (write-string (encoding result-node) out)
+          (write-string "@:" out)
+          (dolist (node arg-nodes)
+            (write-string (encoding node) out))))))
 
 ;;; Installation -------------------------------------------------------------
 
@@ -326,6 +347,13 @@ one, in either definition order."
 (defun install-imp (objc-class selector class-method-p result-node arg-nodes
                     encoding body-maker)
   "Build and install an IMP for SELECTOR on OBJC-CLASS."
+  ;; A method with a SIMD vector in its signature registers an encoding with
+  ;; a hole in it, as Clang would; recording the signature here is what lets
+  ;; INVOKE call the method back without being told it a second time.
+  (when (or (vector-node-p result-node) (some #'vector-node-p arg-nodes))
+    ;; ARG-NODES begins with self and _cmd here; the table holds the
+    ;; declared arguments only.
+    (setf (signature-override selector) (cons result-node (cddr arg-nodes))))
   (let* ((target (if class-method-p (%object-get-class objc-class) objc-class))
          ;; The superclass to send to for CURRENT-SUPER, captured at install
          ;; time.  NOT object_getClass(self) at call time, which for a

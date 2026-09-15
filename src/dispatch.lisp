@@ -86,6 +86,44 @@ trampoline is otherwise identical."
         (setf (gethash key *trampoline-by-signature*)
               (build-trampoline kind result-node arg-nodes n-fixed)))))
 
+;;; Signatures the runtime cannot encode ---------------------------------------
+;;;
+;;; Clang writes nothing for a SIMD vector, so a method that takes or returns
+;;; one has a signature with a hole in it -- see the note in encoding.lisp.
+;;; This table is where such a signature is spelled once, by selector, and it
+;;; is consulted only when the runtime's own signature has a hole: a method the
+;;; runtime describes completely is never second-guessed.
+
+(defvar *signature-overrides* (make-hash-table :test 'equal)
+  "Selector name -> (RESULT-NODE . ARG-NODES), the declared arguments only.")
+
+(defun signature-override (selector-name)
+  (gethash selector-name *signature-overrides*))
+
+(defun (setf signature-override) (signature selector-name)
+  (setf (gethash selector-name *signature-overrides*) signature))
+
+(defun declare-objc-signature (selector arg-types &key (result-type :void))
+  "Declare the signature of SELECTOR, for methods whose encoding has a hole.
+
+Clang cannot encode a SIMD vector type, so -[GKAgent2D setPosition:] is
+recorded by the runtime as taking no arguments and -[GKAgent2D position] as
+returning nothing.  ARG-TYPES and RESULT-TYPE are what the list form of a
+method name takes -- FLI type descriptors, (:VECTOR :FLOAT 2) among them --
+and after
+
+  (declare-objc-signature \"setPosition:\" '((:vector :float 2)))
+  (declare-objc-signature \"position\" '() :result-type '(:vector :float 2))
+
+plain INVOKE passes and returns a Lisp vector.  The declaration is consulted
+only for a selector whose runtime signature is incomplete; a method the
+runtime describes fully is never affected.  Returns SELECTOR."
+  (let ((selector (string selector)))
+    (setf (signature-override selector)
+          (cons (node-for-fli-type result-type)
+                (mapcar #'node-for-fli-type arg-types)))
+    selector))
+
 (defun resolve-signature (kind class selector-name receiver)
   "Return (VALUES TRAMPOLINE RESULT-NODE ARG-NODES) for a send.
 
@@ -114,7 +152,17 @@ exception that would abort the process."
                :class-name (and (objc-pointer-p class) (%class-get-name class))
                :superclass-name (when (eq kind :super)
                                   (and (objc-pointer-p class) (%class-get-name class)))))
-      (multiple-value-bind (result args) (parse-method-encoding encoding)
+      (multiple-value-bind (result args) (parse-method-encoding encoding selector-name)
+        ;; A hole in the signature means a type the runtime could not write
+        ;; down.  Either it was declared, and the declaration is the
+        ;; signature, or the call cannot be made and says why.
+        (when (signature-unencodable-p result args)
+          (let ((override (signature-override selector-name)))
+            (unless override
+              (error 'unencodable-signature
+                     :selector selector-name :encoding encoding))
+            (setf result (car override)
+                  args (list* :id :sel (cdr override)))))
         (let ((trampoline (trampoline-for kind result args nil)))
           (setf (gethash key *trampoline-by-method*) trampoline
                 (gethash key *signature-by-method*) (cons result args))

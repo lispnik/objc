@@ -447,3 +447,14 @@ the feature."
          (setf escaped b)
          (error "unwind")))
       (is-false (objc:objc-block-live-p escaped)))))
+
+
+;;; SIMD vectors through a block ------------------------------------------------
+
+(test a-block-takes-and-returns-a-simd-vector
+  "Same conversions as a method: a vector_float2 argument arrives as a Lisp
+vector and one may be returned, carried as a double both ways."
+  (with-runtime
+    (let ((type '((:vector :float 2) ((:vector :float 2) :int))))
+      (objc:with-objc-block (b type (lambda (v n) (vector (* n (aref v 0)) (* n (aref v 1)))))
+        (is (equalp #(3.0 6.0) (objc:call-objc-block type b #(1.0 2.0) 3)))))))

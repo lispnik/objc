@@ -17,6 +17,19 @@
 ;;;;   (:array COUNT NODE)
 ;;;;   (:bitfield WIDTH)
 ;;;;   (:qualified QUALIFIERS NODE)
+;;;;   (:vector ELEMENT COUNT)   a SIMD vector -- see the note below
+;;;;   :unencodable            a type the encoding could not carry at all
+;;;;
+;;;; Clang writes NOTHING for a SIMD vector type: -[GKAgent2D setPosition:]
+;;;; encodes as "v24@0:816", an empty type between two offsets, and its
+;;;; getter as "16@0:8", a signature with no result.  So a vector node never
+;;;; comes out of the parser; it comes from a signature spelled in Lisp -- the
+;;;; list form of a method name, DECLARE-OBJC-SIGNATURE, DEFINE-OBJC-METHOD --
+;;;; and UNPARSE-TYPE writes it back the way Clang would, as nothing.  What
+;;;; the parser can do is notice the hole: a method encoding that starts with
+;;;; an offset has no result type, and one with fewer argument types than its
+;;;; selector has colons is missing some, and those become :UNENCODABLE nodes
+;;;; so that INVOKE can say what happened rather than miscount arguments.
 ;;;;
 ;;;; Five things here are load-bearing, and each is a real bug if missed:
 ;;;;
@@ -190,14 +203,22 @@ anything it does not understand rather than returning a plausible guess."
                     :detail (format nil "unknown type character ~C" char)))
            (values (cdr entry) (1+ start))))))))
 
-(defun parse-method-encoding (string)
+(defun parse-method-encoding (string &optional selector-name)
   "Parse a whole method type encoding.
 Returns (VALUES RESULT-NODE ARGUMENT-NODES), where ARGUMENT-NODES always begins
 with the receiver and the selector -- every Objective-C method takes self and
-_cmd before its declared arguments, and the encoding says so."
+_cmd before its declared arguments, and the encoding says so.
+
+A type Clang could not encode -- a SIMD vector -- is written as nothing, and
+the two places that shows are marked :UNENCODABLE: a string that begins with
+a frame offset has no result type, and, given SELECTOR-NAME, fewer declared
+arguments than the selector has colons means that many are missing.  Which
+of the arguments is the missing one the encoding cannot say, so the marks go
+at the end and the caller is told to spell the whole signature."
   (let ((index 0)
         (length (length string))
-        (nodes '()))
+        (nodes '())
+        (no-result (and (plusp (length string)) (%digit-char-p (char string 0)))))
     (setf index (skip-offsets string index))
     (loop while (< index length)
           do (multiple-value-bind (node next) (parse-type string index)
@@ -207,7 +228,26 @@ _cmd before its declared arguments, and the encoding says so."
       (when (null nodes)
         (error 'unsupported-type-encoding
                :encoding string :detail "empty method encoding"))
-      (values (first nodes) (rest nodes)))))
+      (multiple-value-bind (result args)
+          (if no-result
+              (values :unencodable nodes)
+              (values (first nodes) (rest nodes)))
+        (when selector-name
+          (let ((missing (- (selector-argument-count selector-name)
+                            (max 0 (- (length args) 2)))))
+            (when (plusp missing)
+              (setf args (append args (make-list missing :initial-element :unencodable))))))
+        (values result args)))))
+
+(defun vector-node-p (node)
+  (and (consp node) (eq (first node) :vector)))
+
+(defun unencodable-node-p (node)
+  (eq node :unencodable))
+
+(defun signature-unencodable-p (result-node arg-nodes)
+  "Whether the runtime's encoding left a hole anywhere in this signature."
+  (or (unencodable-node-p result-node) (some #'unencodable-node-p arg-nodes)))
 
 (defun unparse-type (node)
   "Serialise NODE back to an Objective-C type encoding string.
@@ -219,6 +259,8 @@ and signals instead."
     (keyword
      (case node
        (:id "@") (:block "@?")
+       ;; What Clang writes for a type it cannot encode: nothing.
+       (:unencodable "")
        (t (let ((entry (rassoc node +primitive-encodings+)))
             (unless entry
               (error 'unsupported-type-encoding
@@ -226,6 +268,8 @@ and signals instead."
             (string (car entry))))))
     (cons
      (ecase (first node)
+       ;; A SIMD vector, as Clang writes it: nothing.  See the file header.
+       (:vector "")
        (:pointer (concatenate 'string "^" (unparse-type (second node))))
        (:array (format nil "[~D~A]" (second node) (unparse-type (third node))))
        (:bitfield (format nil "b~D" (second node)))
@@ -258,12 +302,24 @@ not having to reason about whether that is safe."
   (with-output-to-string (out)
     (labels ((emit (node)
                (etypecase node
-                 (keyword (write-string (if (eq node :block) "@?"
-                                            (if (eq node :id) "@"
-                                                (string (car (rassoc node +primitive-encodings+)))))
+                 (keyword (write-string (cond ((eq node :block) "@?")
+                                              ((eq node :id) "@")
+                                              ;; A hole needs a key of its own:
+                                              ;; nothing at all would make a
+                                              ;; two-argument signature key the
+                                              ;; same as a one-argument one.
+                                              ((eq node :unencodable) "<?>")
+                                              (t (string (car (rassoc node +primitive-encodings+)))))
                                         out))
                  (cons
                   (ecase (first node)
+                    ;; Distinct from the double it travels as, on purpose: the
+                    ;; key is also what a Lisp method's own signature would
+                    ;; be canonicalised to, and two methods that take a
+                    ;; float2 and a double are not the same method.
+                    (:vector (format out "<~a~d>"
+                                     (car (rassoc (second node) +primitive-encodings+))
+                                     (third node)))
                     (:pointer (write-char #\^ out) (emit (second node)))
                     (:array (format out "[~D" (second node)) (emit (third node))
                             (write-char #\] out))

@@ -185,3 +185,69 @@ because such a node still needs to be distinguishable."
   (is (= 2 (objc::selector-argument-count "setWidth:height:")))
   (is (= 2 (objc::selector-argument-count "setObject:forKey:")))
   (is (= 3 (objc::selector-argument-count "webView:didReceiveTitle:forFrame:"))))
+
+
+;;; SIMD vectors, and the holes they leave --------------------------------------
+
+(test a-hole-in-the-encoding-is-marked-not-miscounted
+  "Clang writes nothing for a SIMD vector.  Live, from GameplayKit:
+-[GKAgent2D position] is \"16@0:8\", a signature that begins with its frame
+size because the result type is missing, and -[GKAgent2D setPosition:] is
+\"v24@0:816\", where the argument between the offsets 8 and 16 is nothing.
+Before, the first parsed as an id-returning method with a lone _cmd and the
+second as a method with no arguments; now the hole is a node of its own."
+  (destructuring-bind (result args) (parse-method "16@0:8")
+    (is (eq :unencodable result))
+    (is (equal '(:id :sel) args)))
+  (multiple-value-bind (result args)
+      (objc::parse-method-encoding "v24@0:816" "setPosition:")
+    (is (eq :void result))
+    (is (equal '(:id :sel :unencodable) args)))
+  ;; A complete encoding is untouched by knowing the selector.
+  (multiple-value-bind (result args)
+      (objc::parse-method-encoding "v24@0:8@16" "setDelegate:")
+    (is (eq :void result))
+    (is (equal '(:id :sel :id) args)))
+  (is (objc::signature-unencodable-p :unencodable '(:id :sel)))
+  (is (objc::signature-unencodable-p :void '(:id :sel :unencodable)))
+  (is (not (objc::signature-unencodable-p :void '(:id :sel :double)))))
+
+(test a-simd-vector-unparses-as-clang-writes-it
+  "Nothing -- and a canonical key that is still distinct from the double it
+travels as and from a hole, so two signatures that differ only there share
+no trampoline and a two-argument method never keys like a one-argument one."
+  (is (string= "" (objc::unparse-type '(:vector :float 2))))
+  (is (string= "" (objc::unparse-type :unencodable)))
+  (is (string= "<f2>" (objc::canonical-encoding '(:vector :float 2))))
+  (is (string= "<?>" (objc::canonical-encoding :unencodable)))
+  (is (string/= (objc::canonical-encoding '(:vector :float 2))
+                (objc::canonical-encoding :double)))
+  (is (string= "v24@0:816" (objc::method-type-encoding :void '((:vector :float 2)))))
+  (is (string= "16@0:8" (objc::method-type-encoding '(:vector :float 2) '())))
+  (is (string= "v@:d" (objc::method-type-encoding :void '(:double)))))
+
+(test a-simd-vector-is-eight-bytes-or-refused
+  "Eight bytes is one SIMD register and a double's worth of it; sixteen is a
+128-bit register neither sb-alien nor libffi can name, and float3 is sixteen
+bytes too, not twelve.  Refused where it is written rather than corrupted
+downstream."
+  (is (= 8 (objc::node-size-and-alignment '(:vector :float 2))))
+  (is (= 8 (objc::node-size-and-alignment '(:vector :int 2))))
+  (is (= 8 (objc::node-size-and-alignment '(:vector :short 4))))
+  (is (equal '(:vector :float 2) (objc::node-for-fli-type '(:vector :float 2))))
+  (signals error (objc::node-size-and-alignment '(:vector :float 4)))
+  (signals error (objc::node-size-and-alignment '(:vector :float 3)))
+  (signals error (objc::node-size-and-alignment '(:vector :double 2)))
+  (signals error (objc::node-for-fli-type '(:vector :string 2))))
+
+(test a-simd-vector-packs-into-a-double-and-back
+  (is (equalp #(3.0 4.0)
+              (objc::unpack-vector '(:vector :float 2)
+                                   (objc::pack-vector '(:vector :float 2) #(3 4)))))
+  (is (equalp #(-1 70000)
+              (objc::unpack-vector '(:vector :int 2)
+                                   (objc::pack-vector '(:vector :int 2) '(-1 70000)))))
+  (is (equalp #(1 2 3 4)
+              (objc::unpack-vector '(:vector :short 4)
+                                   (objc::pack-vector '(:vector :short 4) #(1 2 3 4)))))
+  (signals error (objc::pack-vector '(:vector :float 2) #(1.0 2.0 3.0))))

@@ -55,7 +55,21 @@ runtime identifies a structure type by its name." name))
   "Record a structure type so it is usable everywhere a type is expected."
   (let* ((nodes (loop for (nil slot-type) in slots
                       collect (node-for-fli-type slot-type)))
-         (encoding (unparse-type (list :struct foreign-name nodes))))
+         (encoding (progn
+                     ;; Clang cannot encode a SIMD vector inside a structure
+                     ;; either: it writes nothing for the field, the runtime
+                     ;; lays the structure out without it, and every call
+                     ;; passing it by value is then wrong at BOTH ends.  A
+                     ;; layout the runtime cannot agree with is refused here,
+                     ;; where it was written.
+                     (when (some #'vector-node-p nodes)
+                       (error 'unsupported-type-encoding
+                              :encoding foreign-name
+                              :detail "a structure with a SIMD vector field has no ~
+                                       Objective-C encoding, so the runtime would ~
+                                       lay it out without the field; pass such a ~
+                                       structure through a pointer of your own"))
+                     (unparse-type (list :struct foreign-name nodes)))))
     (setf (struct-encoding-for-symbol name) encoding
           (gethash foreign-name *struct-symbols*) name
           (gethash foreign-name *struct-layout-overrides*) encoding)

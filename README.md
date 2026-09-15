@@ -121,6 +121,12 @@ where `SYS:` resolves to a readable directory on the Mac.
   call passes its variable arguments on the stack and a fixed-arity call passes
   them in registers, so `+stringWithFormat:` without it reads garbage. LispWorks
   fails silently here; this warns once, naming the fix.
+- **SIMD vectors need `declare-objc-signature`.** Clang writes *nothing* for a
+  `vector_float2`: `-[GKAgent2D setPosition:]` is recorded as `v24@0:816`, an
+  empty type between two offsets, and `position` as `16@0:8`, a signature with
+  no result. `invoke` notices the hole and signals, naming the selector and the
+  fix, instead of miscounting arguments; declared once, by selector, the vector
+  goes in and comes out as a Lisp vector. See [SIMD vectors](#simd-vectors).
 - **arm64 is the only architecture this has run on.** The two differ in the
   Objective-C ABI in two ways that matter, and both are handled by measuring the
   runtime rather than by read-time conditionals: `BOOL` encodes as `c` on Intel
@@ -415,6 +421,43 @@ struct, which `call-objc-block` hands back as a vector. The one gap is a
 result struct that was never declared: with no layout to read by, the only
 answer would be a pointer into a buffer the call frees on its way out, so it
 signals instead.
+
+### SIMD vectors
+
+Objective-C's type encoding has no spelling for a SIMD vector, so Clang writes
+nothing where one goes. The runtime then describes `-[GKAgent2D setPosition:]`
+as a method with no arguments and `-[GKAgent2D position]` as one with no
+result, and LispWorks, reading the same runtime, has no answer either. Here the
+parser marks the hole rather than miscounting, and a hole in a signature is an
+error that says what to declare:
+
+```lisp
+(objc:declare-objc-signature "setPosition:" '((:vector :float 2)))
+(objc:declare-objc-signature "position" '() :result-type '(:vector :float 2))
+
+(objc:invoke agent "setPosition:" #(3.0 4.0))
+(objc:invoke agent "position")                  ; => #(3.0 4.0)
+```
+
+`(:vector element count)` is the type, an FLI descriptor like any other: it
+goes in `define-objc-method` and `define-objc-block-type` too, where the body
+sees a Lisp vector and may return one, and a method defined that way records
+its own signature so `invoke` needs no telling. The list form of a method name
+takes it per call, `'("setPosition:" ((:vector :float 2)))`, for a one-off. A
+declaration is consulted only for a selector whose runtime signature has a
+hole; a method the runtime describes fully is never second-guessed.
+
+How it crosses: an eight-byte vector travels in one SIMD register, which is
+exactly how a double travels on arm64 and x86-64, and *not* how a struct of two
+floats travels, which is a homogeneous aggregate and goes in two registers. So
+`float2`, `int2`, `short4` and the rest of the eight-byte family are carried
+as the double occupying the same bytes, packed and unpacked on the Lisp side,
+and the backends never see a vector at all. The sixteen-byte family --
+`float4`, `float3` (sixteen bytes, not twelve), `double2`, `int4` -- travels in
+a 128-bit register that neither sb-alien nor libffi can name, and is refused
+where it is written rather than corrupted downstream; so is a structure with a
+vector field, which Clang cannot encode either, so the runtime would lay it out
+without the field.
 
 **Only one libdispatch thread may be inside Lisp at a time.** This is SBCL's
 limit, not GCD's, and it is worth knowing before writing anything concurrent. A

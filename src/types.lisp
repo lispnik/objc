@@ -210,6 +210,8 @@ public API and matches LispWorks exactly."
        (:bool 'objc-c++-bool)
        (:unknown 'objc-unknown)
        (:block 'objc-at-question-mark)
+       ;; The runtime could not describe it either; this is the honest report.
+       (:unencodable 'objc-unknown)
        (t (let ((entry (assoc node +node-fli-types+)))
             (unless entry
               (error 'unsupported-type-encoding
@@ -217,6 +219,8 @@ public API and matches LispWorks exactly."
             (cdr entry)))))
     (cons
      (ecase (first node)
+       ;; No LispWorks spelling exists; the node is its own descriptor.
+       (:vector node)
        (:pointer (list :pointer (fli-type-for-node (second node))))
        (:array (list :c-array (fli-type-for-node (third node)) (second node)))
        (:bitfield (list :bitfield (second node)))
@@ -279,6 +283,10 @@ Accepts what DEFINE-OBJC-METHOD and INVOKE's explicit arg-types list accept."
                     (t (error 'unsupported-type-encoding :encoding type))))
        (:pointer (list :pointer (node-for-fli-type (second type))))
        (:c-array (list :array (third type) (node-for-fli-type (second type))))
+       ;; (:vector :float 2): a SIMD vector, spelled as the node itself since
+       ;; LispWorks has no descriptor for one.  Checked here so a bad one
+       ;; fails where it was written.
+       (:vector (check-vector-node (list :vector (second type) (third type))))
        ((:struct :union)
         (let ((encoding (struct-encoding-for-symbol (second type))))
           (unless encoding
@@ -287,6 +295,43 @@ Accepts what DEFINE-OBJC-METHOD and INVOKE's explicit arg-types list accept."
           (parse-type encoding)))
        (t (error 'unsupported-type-encoding :encoding type))))
     (t (error 'unsupported-type-encoding :encoding type))))
+
+;;; SIMD vectors --------------------------------------------------------------
+;;;
+;;; A vector_float2 is eight bytes that travel in one SIMD register, which is
+;;; exactly how a double travels on arm64 and x86-64 alike -- and NOT how a
+;;; struct of two floats travels, which is a homogeneous aggregate and goes in
+;;; two registers, s0 and s1.  So an eight-byte vector crosses the FFI as the
+;;; double occupying the same bytes, packed and unpacked on the Lisp side, and
+;;; the backends never see a vector at all.
+;;;
+;;; A sixteen-byte vector -- float4, float3 (which is sixteen bytes, not
+;;; twelve), double2, int4 -- travels in one 128-bit register, and neither
+;;; sb-alien nor libffi can name a value of that shape, so those are refused
+;;; here rather than corrupted downstream.  The matrices are built of them.
+
+(defparameter +vector-element-nodes+
+  '(:char :uchar :short :ushort :int :uint :long-long :ulong-long :float :double)
+  "The scalar nodes a (:VECTOR ELEMENT COUNT) may be made of.")
+
+(defun check-vector-node (node)
+  "NODE, if it names a SIMD vector this library can carry; signals otherwise."
+  (destructuring-bind (element count) (rest node)
+    (unless (member element +vector-element-nodes+)
+      (error 'unsupported-type-encoding
+             :encoding node :detail "not a SIMD element type"))
+    (unless (and (integerp count) (plusp count))
+      (error 'unsupported-type-encoding
+             :encoding node :detail "a SIMD vector needs a positive element count"))
+    (let ((size (* count (node-size-and-alignment element))))
+      (unless (= size 8)
+        (error 'unsupported-type-encoding
+               :encoding node
+               :detail (format nil "a ~d-byte SIMD vector travels in a 128-bit ~
+                                    register, which neither sb-alien nor libffi ~
+                                    can carry; only 8-byte vectors are supported"
+                               size))))
+    node))
 
 ;;; Sizes without Foundation -------------------------------------------------
 ;;;
@@ -310,6 +355,7 @@ Accepts what DEFINE-OBJC-METHOD and INVOKE's explicit arg-types list accept."
        (:pointer (values 8 8))
        (:qualified (node-size-and-alignment (third node)))
        (:bitfield (values 0 1))
+       (:vector (check-vector-node node) (values 8 8))
        (:array (multiple-value-bind (size align)
                    (node-size-and-alignment (third node))
                  (values (* size (second node)) align)))

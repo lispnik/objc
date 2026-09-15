@@ -89,7 +89,11 @@
    #:call-objc-block
    #:objc-block
    #:objc-block-pointer
-   #:objc-block-live-p))
+   #:objc-block-live-p
+   ;; Signatures the runtime cannot encode -- NOT a LispWorks interface ------
+   ;; Clang writes nothing for a SIMD vector, so the only way to call a method
+   ;; that takes one is to say what it takes.  One symbol, beside INVOKE.
+   #:declare-objc-signature))
 
 (defpackage #:cocoa
   (:use #:cl #:alexandria)

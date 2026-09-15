@@ -51,6 +51,24 @@ CFFI pointers are system area pointers on SBCL, which otherwise print as
               (cffi:pointer-address object))
       (format nil "~S" object)))
 
+(define-condition unencodable-signature (objc-error)
+  ((selector :initarg :selector :reader unencodable-signature-selector)
+   (encoding :initarg :encoding :reader unencodable-signature-encoding))
+  (:report
+   (lambda (condition stream)
+     (let ((selector (unencodable-signature-selector condition)))
+       (format stream "~A has a type Objective-C cannot encode -- a SIMD vector, ~
+                       most likely: the runtime records its signature as ~S.  ~
+                       Spell the signature yourself, once, with ~
+                       (objc:declare-objc-signature ~S '(...)) or per call with the ~
+                       list form of the method name, '(~S (...) :result-type ...); ~
+                       (:vector :float 2) is a vector_float2."
+               selector (unencodable-signature-encoding condition)
+               selector selector))))
+  (:documentation
+   "Signalled when a method's runtime type encoding has a hole in it -- Clang
+writes nothing for a SIMD vector -- and nothing declared what belongs there."))
+
 (define-condition no-such-method (objc-error)
   ((selector :initarg :selector :reader no-such-method-selector)
    (receiver :initarg :receiver :initform nil :reader no-such-method-receiver)

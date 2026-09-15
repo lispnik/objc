@@ -243,6 +243,7 @@ lays them out: each field aligned to its own alignment, a union's all at zero."
      (ecase (first node)
        (:pointer (setf (cffi:mem-ref pointer :pointer) (or value (cffi:null-pointer))))
        (:qualified (write-struct-field pointer (third node) value))
+       (:vector (write-vector-elements pointer node value))
        ((:struct :union) (write-struct-from-sequence pointer node value))
        ((:array :bitfield)
         (error "A ~(~a~) field cannot be written from a sequence; fill the ~
@@ -275,7 +276,7 @@ structure of the same kind: what READ-STRUCT-TO-SEQUENCE can read."
                   (etypecase field
                     (keyword t)
                     (cons (case (first field)
-                            ((:pointer) t)
+                            ((:pointer :vector) t)
                             ((:qualified) (struct-readable-p (third field)))
                             ((:struct) (struct-readable-p field))
                             (t nil)))))
@@ -301,6 +302,7 @@ structure of the same kind: what READ-STRUCT-TO-SEQUENCE can read."
      (ecase (first node)
        (:pointer (cffi:mem-ref pointer :pointer))
        (:qualified (read-struct-field pointer (third node)))
+       (:vector (read-vector-elements pointer node))
        (:struct (read-struct-to-sequence pointer node))))))
 
 (defun read-struct-to-sequence (pointer node)
@@ -312,6 +314,52 @@ WRITE-STRUCT-FROM-SEQUENCE, and what INVOKE returns for a declared structure."
                   for offset in (struct-field-offsets node)
                   collect (read-struct-field (cffi:inc-pointer pointer offset) field))
             'vector)))
+
+;;; SIMD vectors ---------------------------------------------------------------
+;;;
+;;; An eight-byte vector crosses as the double occupying the same bytes; see
+;;; types.lisp for why a double and not a struct.  Packing goes through a
+;;; foreign buffer because that is the one honest way to reinterpret bits.
+
+(defun vector-element-cffi-type (element)
+  (ecase element
+    (:char :int8) (:uchar :uint8) (:short :int16) (:ushort :uint16)
+    (:int :int32) (:uint :uint32) (:long-long :int64) (:ulong-long :uint64)
+    (:float :float) (:double :double)))
+
+(defun write-vector-elements (pointer node value)
+  "Store VALUE, a sequence with one element per lane, at POINTER as NODE."
+  (destructuring-bind (element count) (rest node)
+    (unless (and (typep value 'sequence) (not (stringp value)) (= (length value) count))
+      (error "Cannot pass ~S as a ~d-element SIMD vector of ~(~a~)." value count element))
+    (let ((type (vector-element-cffi-type element))
+          (i 0))
+      (map nil (lambda (x)
+                 (setf (cffi:mem-aref pointer type i)
+                       (case element
+                         (:float (coerce x 'single-float))
+                         (:double (coerce x 'double-float))
+                         (t x)))
+                 (incf i))
+           value))))
+
+(defun read-vector-elements (pointer node)
+  "The NODE vector at POINTER, as a Lisp vector with one element per lane."
+  (destructuring-bind (element count) (rest node)
+    (let ((type (vector-element-cffi-type element)))
+      (coerce (loop for i below count collect (cffi:mem-aref pointer type i)) 'vector))))
+
+(defun pack-vector (node value)
+  "VALUE, a Lisp sequence, as the double whose eight bytes are its lanes."
+  (cffi:with-foreign-object (p :double)
+    (write-vector-elements p node value)
+    (cffi:mem-ref p :double)))
+
+(defun unpack-vector (node double)
+  "The lanes packed in DOUBLE, as a Lisp vector."
+  (cffi:with-foreign-object (p :double)
+    (setf (cffi:mem-ref p :double) (coerce double 'double-float))
+    (read-vector-elements p node)))
 
 ;;; Argument marshalling -----------------------------------------------------
 
@@ -383,6 +431,9 @@ Temporaries are registered for release when the call unwinds."
 
       ((eq node :char)
        (cond ((eq value t) 1) ((null value) 0) (t value)))
+
+      ;; A SIMD vector, as the double that occupies its bytes.
+      ((vector-node-p node) (pack-vector node value))
 
       ((consp node) (marshal-argument value (third node))) ; :qualified
 

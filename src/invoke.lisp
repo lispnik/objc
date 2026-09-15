@@ -136,6 +136,9 @@ argument of INVOKE-INTO."
   ;; instead of a string, which then fails somewhere far from here.
   (when (and (consp node) (eq (first node) :qualified))
     (return-from unmarshal-scalar (unmarshal-scalar raw (third node))))
+  ;; A SIMD vector came back as the double occupying its bytes.
+  (when (vector-node-p node)
+    (return-from unmarshal-scalar (unpack-vector node raw)))
   (case node
     ;; The manual says a BOOL result from INVOKE is 0 or 1, and LispWorks 8.1
     ;; does exactly that on Apple silicon -- verified, and worth stating,

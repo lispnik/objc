@@ -329,3 +329,39 @@ method is correctly invisible there."
     (signals error (objc:invoke "ObjcClassMethodBase" "instanceAnswer"))
     (is (= 20 (objc:invoke (objc:alloc-init-object "ObjcClassMethodBase")
                            "instanceAnswer")))))
+
+
+;;; SIMD vectors in a Lisp method ----------------------------------------------
+
+(objc:define-objc-class simd-object () ()
+  (:objc-class-name "LispSimdObject"))
+
+(objc:define-objc-method ("doubled:" (:vector :float 2))
+    ((self simd-object) (v (:vector :float 2)))
+  (vector (* 2 (aref v 0)) (* 2 (aref v 1))))
+
+(objc:define-objc-method ("lanes" (:vector :int 2))
+    ((self simd-object))
+  #(-7 70000))
+
+(test a-lisp-method-takes-and-returns-a-simd-vector
+  "The IMP is declared with a double where the vector goes -- one SIMD
+register either way -- and the body sees a Lisp vector.  The encoding
+registered with the runtime has a hole in it, as Clang's would, and the
+signature was recorded at install time, so INVOKE needs no telling."
+  (with-objc
+    (let ((object (objc:alloc-init-object "LispSimdObject")))
+      (is (equalp #(3.0 5.0) (objc:invoke object "doubled:" #(1.5 2.5))))
+      (is (equalp #(-7 70000) (objc:invoke object "lanes")))
+      (is (string= "16@0:8"
+                   (nth-value 2 (objc:objc-class-method-signature "LispSimdObject" "lanes")))
+          "registered as Clang would have written it"))))
+
+(test a-structure-with-a-simd-field-is-refused-where-it-is-written
+  "Clang cannot encode that either: the field is written as nothing and the
+runtime lays the structure out without it, so a by-value pass would be wrong
+at both ends.  Refused at DEFINE-OBJC-STRUCT, naming the structure."
+  (signals error
+    (eval '(objc:define-objc-struct (test-anchor (:foreign-name "LispTestAnchor"))
+             (:tag :int)
+             (:at (:vector :float 2))))))

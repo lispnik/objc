@@ -124,6 +124,9 @@ know an alien type at all."
        ((:id :class :sel :cstring :block) 'sb-alien:system-area-pointer)))
     (cons
      (ecase (first node)
+       ;; An eight-byte SIMD vector travels as a double: one SIMD register,
+       ;; the same one.  See types.lisp.
+       (:vector 'sb-alien:double-float)
        (:pointer 'sb-alien:system-area-pointer)
        (:qualified (alien-type (third node)))
        (:array 'sb-alien:system-area-pointer)
@@ -374,7 +377,7 @@ that sends the reader to the wrong file."
   "A form for the value to return when a Lisp method body signals."
   (cond ((struct-node-p node) nil)
         ((member node '(:float)) 0.0)
-        ((member node '(:double)) 0d0)
+        ((or (member node '(:double)) (vector-node-p node)) 0d0)
         ((member node '(:void :unknown)) nil)
         ;; 0, not NIL: the alien type is (UNSIGNED 8) and NIL is not one.
         ((eq node :bool) 0)

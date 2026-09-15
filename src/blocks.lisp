@@ -574,6 +574,8 @@ BLOCK is an OBJC-BLOCK, a raw pointer, or anything OBJC-OBJECT-POINTER accepts."
                      buffer this call frees on the way out.  Declare it with ~
                      DEFINE-OBJC-STRUCT and it comes back as a vector of its fields."
                     (unparse-type result-node)))
+            ((vector-node-p result-node)
+             (unpack-vector result-node (call (sap-of (cffi:null-pointer)))))
             (t (call (sap-of (cffi:null-pointer))))))))))
 
 (defun block-pointer-of (block)

@@ -123,7 +123,7 @@ Verified against LispWorks 8.1:
          (method (and (objc-pointer-p class) (find-method-for class method-name))))
     (when method
       (let ((encoding (method-encoding method)))
-        (multiple-value-bind (result args) (parse-method-encoding encoding)
+        (multiple-value-bind (result args) (parse-method-encoding encoding method-name)
           (values (mapcar #'fli-type-for-node args)
                   (fli-type-for-node result)
                   encoding))))))

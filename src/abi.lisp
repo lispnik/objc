@@ -127,6 +127,11 @@ know an alien type at all."
        ;; An eight-byte SIMD vector travels as a double: one SIMD register,
        ;; the same one.  A sixteen-byte one as the type made above.
        (:vector (if (= 8 (vector-byte-size node)) 'sb-alien:double-float 'objc-simd-128))
+       ;; A matrix has no single alien type: a builder passes its columns as
+       ;; separate arguments, returns them as VALUES from a call, and takes
+       ;; the marked type of the right width for a callback's result.  See
+       ;; NODE-ARGUMENT-TYPES and MATRIX-RESULT-TYPE.
+       (:matrix (error "A matrix has no single alien type; the builders expand it."))
        (:pointer 'sb-alien:system-area-pointer)
        (:qualified (alien-type (third node)))
        (:array 'sb-alien:system-area-pointer)
@@ -167,9 +172,23 @@ know an alien type at all."
 (defvar *wide-alien-type* nil
   "The double-float type instance marked 128 bits wide, once installed.")
 
+(defparameter +wide-alien-widths+ '(128 256 384 512)
+  "The widths a marked instance may have: one register, or two to four for a
+matrix result coming back from a Lisp callback in v0-v3.  A matrix ARGUMENT
+never needs one, since the callable takes its columns as separate wide
+parameters; a matrix result of a call-out comes back as VALUES of them.")
+
 (defun wide-alien-type-p (type)
   (and (sb-alien::alien-float-type-p type)
-       (eql (sb-alien::alien-type-bits type) 128)))
+       (member (sb-alien::alien-type-bits type) +wide-alien-widths+)
+       t))
+
+(defun wide-alien-type-registers (type)
+  (/ (sb-alien::alien-type-bits type) 128))
+
+(defun wide-alien-type-name (bits)
+  (ecase bits
+    (128 'objc-simd-128) (256 'objc-simd-256) (384 'objc-simd-384) (512 'objc-simd-512)))
 
 (defun %effective-alien-method (reader class)
   "The method CLASS would use for READER's slot, walking includes as
@@ -191,26 +210,32 @@ instance and the method that was there for anything else."
                    (progn ,@wide-body)
                    (funcall original type ,@args)))))))
 
+(defun %make-marked-double-type (bits)
+  "A fresh instance of the double-float alien type marked BITS wide."
+  (let* ((double (sb-alien::parse-alien-type 'sb-alien:double-float nil))
+         (wide (copy-structure double))
+         (dd (sb-kernel:find-defstruct-description
+              'sb-alien::alien-double-float-type))
+         (nbits (- sb-vm:n-positive-fixnum-bits 5)))
+    (flet ((slot (name)
+             (sb-kernel:dsd-index (find name (sb-kernel:dd-slots dd)
+                                        :key #'sb-kernel:dsd-name))))
+      (setf (sb-kernel:%instance-ref wide (slot 'sb-alien::bits)) bits
+            (sb-kernel:%instance-ref wide (slot 'sb-alien::alignment)) 128
+            ;; The top five bits of the hash are the class id; keep those
+            ;; and give the rest a value of its own, so the fun-type cache
+            ;; never files a wide signature under a double one.
+            (sb-kernel:%instance-ref wide (slot 'sb-alien::hash))
+            (logior (logand (sb-alien::alien-type-hash double) (ash 31 nbits))
+                    (logand (sxhash (wide-alien-type-name bits)) (1- (ash 1 nbits))))))
+    wide))
+
 (defun install-wide-alien-type ()
-  "Make OBJC-SIMD-128 an alien type: a double-float marked 128 bits wide, and
-the double-float class taught to pass it in a NEON register.  Once per image."
+  "Make OBJC-SIMD-128 an alien type -- a double-float marked 128 bits wide,
+the double-float class taught to pass it in a NEON register -- and its
+wider siblings for matrix results.  Once per image."
   (when (and (wide-vector-supported-p) (null *wide-alien-type*))
-    (let* ((double (sb-alien::parse-alien-type 'sb-alien:double-float nil))
-           (wide (copy-structure double))
-           (dd (sb-kernel:find-defstruct-description
-                'sb-alien::alien-double-float-type))
-           (nbits (- sb-vm:n-positive-fixnum-bits 5)))
-      (flet ((slot (name)
-               (sb-kernel:dsd-index (find name (sb-kernel:dd-slots dd)
-                                          :key #'sb-kernel:dsd-name))))
-        (setf (sb-kernel:%instance-ref wide (slot 'sb-alien::bits)) 128
-              (sb-kernel:%instance-ref wide (slot 'sb-alien::alignment)) 128
-              ;; The top five bits of the hash are the class id; keep those
-              ;; and give the rest a value of its own, so the fun-type cache
-              ;; never files a wide signature under a double one.
-              (sb-kernel:%instance-ref wide (slot 'sb-alien::hash))
-              (logior (logand (sb-alien::alien-type-hash double) (ash 31 nbits))
-                      (logand (sxhash "objc-simd-128") (1- (ash 1 nbits))))))
+    (let ((wide (%make-marked-double-type 128)))
       ;; The NEON storage classes and the arm64 argument-state helpers are
       ;; arm64 symbols; on Intel they do not exist, and READING them there
       ;; would intern into the locked SB-VM package.  So they are found by
@@ -223,38 +248,126 @@ the double-float class taught to pass it in a NEON register.  Once per image."
              (pack-type (funcall vm-symbol "SIMD-PACK-UB64"))
              (fp-registers (funcall vm-symbol "ARG-STATE-FP-REGISTERS"))
              (float-arg (funcall vm-symbol "FLOAT-ARG"))
-             (make-wired-tn (funcall vm-symbol "MAKE-WIRED-TN*")))
-        (%override-alien-method class unparse (state) 'objc-simd-128)
-        (%override-alien-method class type= (other) (and (wide-alien-type-p other) t))
-        (%override-alien-method class lisp-rep () '(sb-ext:simd-pack (unsigned-byte 64)))
-        (%override-alien-method class alien-rep (context) '(sb-ext:simd-pack (unsigned-byte 64)))
+             (make-wired-tn (funcall vm-symbol "MAKE-WIRED-TN*"))
+             (result-count (funcall vm-symbol "RESULT-STATE-NUM-RESULTS"))
+             (set-result-count (fdefinition (list 'setf (funcall vm-symbol "RESULT-STATE-NUM-RESULTS")))))
+        (%override-alien-method class unparse (state)
+          (wide-alien-type-name (sb-alien::alien-type-bits type)))
+        (%override-alien-method class type= (other)
+          (and (wide-alien-type-p other)
+               (= (sb-alien::alien-type-bits type) (sb-alien::alien-type-bits other))))
+        ;; One register is a simd-pack; several are a vector of them.
+        (%override-alien-method class lisp-rep ()
+          (if (= 1 (wide-alien-type-registers type))
+              '(sb-ext:simd-pack (unsigned-byte 64))
+              'simple-vector))
+        (%override-alien-method class alien-rep (context)
+          (if (= 1 (wide-alien-type-registers type))
+              '(sb-ext:simd-pack (unsigned-byte 64))
+              'simple-vector))
         (%override-alien-method class naturalize-gen (alien) alien)
         (%override-alien-method class deport-gen (value)
-          `(the (sb-ext:simd-pack (unsigned-byte 64)) ,value))
+          (if (= 1 (wide-alien-type-registers type))
+              `(the (sb-ext:simd-pack (unsigned-byte 64)) ,value)
+              `(the simple-vector ,value)))
         (%override-alien-method class extract-gen (sap offset)
-          `(sb-kernel:%make-simd-pack-ub64
-            (sb-sys:sap-ref-64 ,sap (/ ,offset 8))
-            (sb-sys:sap-ref-64 ,sap (+ (/ ,offset 8) 8))))
+          (let ((n (wide-alien-type-registers type)))
+            (if (= n 1)
+                `(sb-kernel:%make-simd-pack-ub64
+                  (sb-sys:sap-ref-64 ,sap (/ ,offset 8))
+                  (sb-sys:sap-ref-64 ,sap (+ (/ ,offset 8) 8)))
+                `(let ((base (/ ,offset 8)))
+                   (vector ,@(loop for i below n
+                                   collect `(sb-kernel:%make-simd-pack-ub64
+                                             (sb-sys:sap-ref-64 ,sap (+ base ,(* 16 i)))
+                                             (sb-sys:sap-ref-64 ,sap (+ base ,(+ 8 (* 16 i)))))))))))
         (%override-alien-method class deposit-gen (sap offset value)
-          `(multiple-value-bind (lo hi) (sb-ext:%simd-pack-ub64s ,value)
-             (setf (sb-sys:sap-ref-64 ,sap (/ ,offset 8)) lo
-                   (sb-sys:sap-ref-64 ,sap (+ (/ ,offset 8) 8)) hi)))
+          (let ((n (wide-alien-type-registers type)))
+            (if (= n 1)
+                `(multiple-value-bind (lo hi) (sb-ext:%simd-pack-ub64s ,value)
+                   (setf (sb-sys:sap-ref-64 ,sap (/ ,offset 8)) lo
+                         (sb-sys:sap-ref-64 ,sap (+ (/ ,offset 8) 8)) hi))
+                `(let ((base (/ ,offset 8)) (columns ,value))
+                   ,@(loop for i below n
+                           collect `(multiple-value-bind (lo hi)
+                                        (sb-ext:%simd-pack-ub64s (svref columns ,i))
+                                      (setf (sb-sys:sap-ref-64 ,sap (+ base ,(* 16 i))) lo
+                                            (sb-sys:sap-ref-64 ,sap (+ base ,(+ 8 (* 16 i)))) hi)))))))
         (%override-alien-method class arg-tn (state)
-          ;; The ninth floating-point argument goes on the stack, through a
-          ;; VOP for word-sized values the image no longer carries.  No
-          ;; Objective-C method has nine; refuse rather than corrupt.
+          ;; One register only: a matrix argument is passed as its columns,
+          ;; each a 128-bit argument of its own.  And the ninth floating-
+          ;; point argument goes on the stack, through a VOP for word-sized
+          ;; values the image no longer carries; no Objective-C method has
+          ;; nine, so refuse rather than corrupt.
+          (unless (= 1 (wide-alien-type-registers type))
+            (error "A matrix is passed as its columns, not as one argument."))
           (when (>= (funcall fp-registers state) 8)
             (error "A 16-byte SIMD vector must be among the first eight ~
                     floating-point arguments of a call."))
           (funcall float-arg state pack-type neon neon-stack 16))
         (%override-alien-method class result-tn (state)
-          (funcall make-wired-tn pack-type neon 0)))
-      (setf (sb-int:info :alien-type :kind 'objc-simd-128) :primitive
-            (sb-int:info :alien-type :translator 'objc-simd-128)
-            (lambda (type env) (declare (ignore type env)) wide))
+          ;; The next NEON register, so that VALUES of these are v0, v1, ...
+          (unless (= 1 (wide-alien-type-registers type))
+            (error "A matrix result of a call is VALUES of its columns."))
+          (let ((n (funcall result-count state)))
+            (funcall set-result-count (1+ n) state)
+            (funcall make-wired-tn pack-type neon n)))
+        ;; The VALUES class allows two results.  A matrix comes back in up
+        ;; to four registers, so when every member is a column carrier the
+        ;; limit is lifted and the members take successive registers: a
+        ;; wide one asks the method above, a double -- a float2 column --
+        ;; is placed here, since SBCL's own double method always says d0.
+        (let* ((fun (sb-alien::parse-alien-type
+                     '(function (sb-alien:values sb-alien:int sb-alien:int) sb-alien:int) nil))
+               (values-class (sb-alien::alien-type-class (sb-alien::alien-fun-type-result-type fun)))
+               (original (%effective-alien-method #'sb-alien::alien-type-class-result-tn values-class))
+               (double-reg (sb-c:sc-number-or-lose (funcall vm-symbol "DOUBLE-REG"))))
+          (setf (sb-alien::alien-type-class-result-tn values-class)
+                (lambda (type state)
+                  (let ((members (sb-alien::alien-values-type-values type)))
+                    (if (and (<= (length members) 4)
+                             (every (lambda (m)
+                                      (or (wide-alien-type-p m)
+                                          (and (sb-alien::alien-float-type-p m)
+                                               (eql (sb-alien::alien-type-bits m) 64))))
+                                    members))
+                        (mapcar (lambda (m)
+                                  (if (wide-alien-type-p m)
+                                      (sb-alien::invoke-alien-type-method :result-tn m state)
+                                      (let ((n (funcall result-count state)))
+                                        (funcall set-result-count (1+ n) state)
+                                        (funcall make-wired-tn 'double-float double-reg n))))
+                                members)
+                        (funcall original type state)))))))
+      (dolist (bits +wide-alien-widths+)
+        (let ((instance (if (= bits 128) wide (%make-marked-double-type bits)))
+              (name (wide-alien-type-name bits)))
+          (setf (sb-int:info :alien-type :kind name) :primitive
+                (sb-int:info :alien-type :translator name)
+                (lambda (type env) (declare (ignore type env)) instance))))
       (setf *wide-alien-type* wide))))
 
 (install-wide-alien-type)
+
+(defun node-argument-types (node)
+  "The alien types NODE occupies as an argument: one, or a matrix's columns."
+  (if (matrix-node-p node)
+      (make-list (third node) :initial-element (alien-type (matrix-column-node node)))
+      (list (alien-type node))))
+
+(defun matrix-call-result-type (node)
+  "A matrix result of a call: VALUES of its columns, in successive registers."
+  `(sb-alien:values ,@(node-argument-types node)))
+
+(defun matrix-callback-result-type (node)
+  "A matrix result of a callback: the marked type as wide as all its columns,
+which the widened wrapper loads into v0-v3.  Only sixteen-byte columns; a
+float2x2 result is two doubles in d0 and d1, which nothing here places."
+  (let ((column (matrix-column-node node)))
+    (unless (= 16 (vector-byte-size column))
+      (error "A matrix with eight-byte columns cannot be returned from a Lisp ~
+              method or block yet; ~a can be passed to one." (unparse-type node)))
+    (wide-alien-type-name (* 128 (third node)))))
 
 (defun %pack-wide-vector (node value)
   "VALUE's lanes as the simd-pack that travels in a 128-bit register."
@@ -366,25 +479,35 @@ while a fixed signature passes them in registers."
                               *msgsend-super-stret-address*
                               *msgsend-super-address*))))
          (result-node (if structp (resolve-struct-layout result-node) result-node))
-         (rtype (alien-type result-node))
+         (matrixp (matrix-node-p result-node))
+         (rtype (if matrixp (matrix-call-result-type result-node) (alien-type result-node)))
          (out (gensym "OUT"))
          (syms (loop for i from 0 below (length arg-nodes)
                      collect (gensym (format nil "A~D-" i))))
-         (atypes (mapcar #'alien-type arg-nodes))
+         ;; A matrix argument is its columns, one alien argument each.
+         (atypes (mapcan #'node-argument-types arg-nodes))
          ;; A struct argument arrives as a SAP and is loaded by value here; a
-         ;; scalar is passed straight through.
+         ;; scalar is passed straight through; a matrix, a vector of column
+         ;; carriers, is spread.
          (args (loop for sym in syms
                      for node in arg-nodes
-                     collect (if (struct-node-p node)
-                                 `(sb-alien:deref
-                                   (sb-alien:sap-alien ,sym (sb-alien:* ,(alien-type node))))
-                                 sym)))
+                     append (cond ((struct-node-p node)
+                                   (list `(sb-alien:deref
+                                           (sb-alien:sap-alien ,sym (sb-alien:* ,(alien-type node))))))
+                                  ((matrix-node-p node)
+                                   (loop for i below (third node) collect `(svref ,sym ,i)))
+                                  (t (list sym)))))
+         ;; N-FIXED counts nodes; a matrix among the fixed ones is several
+         ;; alien arguments, so the split is found by walking the nodes.
+         (n-fixed-types (and n-fixed
+                             (loop for node in (subseq arg-nodes 0 (min n-fixed (length arg-nodes)))
+                                   sum (length (node-argument-types node)))))
          (ftype `(sb-alien:function
                   ,rtype
                   ,@(if n-fixed
-                        (append (subseq atypes 0 (min n-fixed (length atypes)))
+                        (append (subseq atypes 0 (min n-fixed-types (length atypes)))
                                 (list '&optional)
-                                (subseq atypes (min n-fixed (length atypes))))
+                                (subseq atypes (min n-fixed-types (length atypes))))
                         atypes))))
     (compile
      nil
@@ -409,6 +532,8 @@ while a fixed signature passes them in registers."
                        ,call)
                  nil))
              ((eq result-node :void) `(progn ,call nil))
+             ;; The columns come back as values; the contract wants one.
+             (matrixp `(coerce (multiple-value-list ,call) 'simple-vector))
              (t call)))))))
 
 
@@ -433,18 +558,21 @@ This works on any block, whoever made it: one built by MAKE-OBJC-BLOCK, or one
 Cocoa handed us."
   (let* ((structp (struct-node-p result-node))
          (result-node (if structp (resolve-struct-layout result-node) result-node))
-         (rtype (alien-type result-node))
+         (matrixp (matrix-node-p result-node))
+         (rtype (if matrixp (matrix-call-result-type result-node) (alien-type result-node)))
          (out (gensym "OUT"))
          (fn (gensym "INVOKE"))
          (syms (loop for i from 0 below (length arg-nodes)
                      collect (gensym (format nil "A~D-" i))))
-         (atypes (mapcar #'alien-type arg-nodes))
+         (atypes (mapcan #'node-argument-types arg-nodes))
          (args (loop for sym in syms
                      for node in arg-nodes
-                     collect (if (struct-node-p node)
-                                 `(sb-alien:deref
-                                   (sb-alien:sap-alien ,sym (sb-alien:* ,(alien-type node))))
-                                 sym)))
+                     append (cond ((struct-node-p node)
+                                   (list `(sb-alien:deref
+                                           (sb-alien:sap-alien ,sym (sb-alien:* ,(alien-type node))))))
+                                  ((matrix-node-p node)
+                                   (loop for i below (third node) collect `(svref ,sym ,i)))
+                                  (t (list sym)))))
          (ftype `(sb-alien:function ,rtype ,@atypes)))
     (compile
      nil
@@ -470,6 +598,7 @@ Cocoa handed us."
                          ,call)
                    nil))
                ((eq result-node :void) `(progn ,call nil))
+               (matrixp `(coerce (multiple-value-list ,call) 'simple-vector))
                (t call))))))))
 
 
@@ -519,6 +648,9 @@ that sends the reader to the wrong file."
         ((member node '(:double)) 0d0)
         ((vector-node-p node)
          (if (= 8 (vector-byte-size node)) 0d0 '(sb-kernel:%make-simd-pack-ub64 0 0)))
+        ((matrix-node-p node)
+         `(vector ,@(loop repeat (third node)
+                          collect (zero-value-form (matrix-column-node node)))))
         ((member node '(:void :unknown)) nil)
         ;; 0, not NIL: the alien type is (UNSIGNED 8) and NIL is not one.
         ((eq node :bool) 0)
@@ -549,11 +681,26 @@ frame aborts.  LispWorks does the same thing, calling it a catch-all frame --
 its message is \"Capturing attempt to throw out of Cocoa handler\"."
   (let* ((structp (struct-node-p result-node))
          (result-node (if structp (resolve-struct-layout result-node) result-node))
+         (matrixp (matrix-node-p result-node))
+         (result-type (if matrixp
+                          (matrix-callback-result-type result-node)
+                          (alien-type result-node)))
          (syms (loop for i from 0 below (length arg-nodes)
                      collect (intern (format nil "A~D" i) '#:objc)))
+         ;; A matrix parameter is its columns, one alien parameter each, and
+         ;; the body is handed them gathered into a vector.
+         (column-syms (loop for sym in syms
+                            for node in arg-nodes
+                            collect (and (matrix-node-p node)
+                                         (loop for i below (third node)
+                                               collect (intern (format nil "~A-C~D" sym i) '#:objc)))))
          (params (loop for sym in syms
                        for node in arg-nodes
-                       collect (list sym (alien-type node))))
+                       for columns in column-syms
+                       append (if columns
+                                  (loop for c in columns
+                                        collect (list c (alien-type (matrix-column-node node))))
+                                  (list (list sym (alien-type node))))))
          ;; A struct parameter arrives by value, and a callable's parameter is
          ;; not addressable -- (addr p) is rejected with "P is not a valid
          ;; L-value".  Copying it into a WITH-ALIEN local gives us something we
@@ -566,14 +713,16 @@ its message is \"Capturing attempt to throw out of Cocoa handler\"."
                                              sym (alien-type node))))
          (body-args (loop for sym in syms
                           for node in arg-nodes
-                          collect (if (struct-node-p node)
-                                      (let ((temp (first (find sym struct-temps
-                                                               :key #'second))))
-                                        `(sb-alien:alien-sap (sb-alien:addr ,temp)))
-                                      sym)))
+                          for columns in column-syms
+                          collect (cond ((struct-node-p node)
+                                         (let ((temp (first (find sym struct-temps
+                                                                  :key #'second))))
+                                           `(sb-alien:alien-sap (sb-alien:addr ,temp))))
+                                        (columns `(vector ,@columns))
+                                        (t sym))))
          (result-sym (gensym "RESULT")))
     (eval
-     `(sb-alien:define-alien-callable ,name ,(alien-type result-node) ,params
+     `(sb-alien:define-alien-callable ,name ,result-type ,params
         (with-fp-traps-masked
           (sb-alien:with-alien ,(loop for (temp nil type) in struct-temps
                                       collect (list temp type))

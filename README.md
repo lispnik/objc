@@ -474,7 +474,28 @@ method satisfies. Elsewhere -- ECL, and SBCL on Intel, whose register names
 and wrapper have not been written -- the sixteen-byte family is refused where
 it is written, naming this. A structure with a vector field is refused
 everywhere: Clang cannot encode it either, so the runtime would lay it out
-without the field. Matrices, `float4x4` and kin, are the next shape.
+without the field.
+
+**Matrices** come with the sixteen-byte family, on the same build. `(:matrix
+:float 4 4)` is `simd_float4x4`, and its value is a vector of column vectors,
+simd's own layout: `#(#(1 0 0 0) #(0 1 0 0) #(0 0 1 0) #(x y z 1))`. To the ABI
+a matrix is a homogeneous aggregate of short vectors, four registers in a row,
+which is exactly four vector arguments in a row -- so a matrix is passed as
+its columns, returned from a call as `values` of them, and returned from a
+Lisp method or block through a marked type as wide as all its columns, which
+the widened wrapper loads into `v0`-`v3`. The runtime writes `{?=[4]}` for one,
+an anonymous struct of an array of four of nothing, and `{?=}` for a
+quaternion; both parse as holes and take a declaration:
+
+```lisp
+(objc:declare-objc-signature "simdTransform" '() :result-type '(:matrix :float 4 4))
+(objc:declare-objc-signature "setSimdTransform:" '((:matrix :float 4 4)))
+```
+
+Measured against `SCNNode`, which reads the translation back out of the
+fourth column as `simdPosition`. `float2x2`, `float3x3`, `float4x4` and
+`double2x2`; a column wider than sixteen bytes, `double3` or `double4`, is not
+a short vector and travels through memory, so those matrices are refused.
 
 **Only one libdispatch thread may be inside Lisp at a time.** This is SBCL's
 limit, not GCD's, and it is worth knowing before writing anything concurrent. A

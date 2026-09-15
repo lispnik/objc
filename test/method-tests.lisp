@@ -381,3 +381,19 @@ itself is refused, before any test could skip."
                  (map 'vector (lambda (x) (* k x)) v)))
         (let ((object (objc:alloc-init-object "LispSimdObject")))
           (is (equalp #(2.0 4.0 6.0 8.0) (objc:invoke object "scaled:by:" #(1 2 3 4) 2d0)))))))
+
+
+(test a-lisp-method-takes-and-returns-a-matrix
+  "Four column parameters in, gathered into a vector for the body, and a
+result of four registers out, through the marked 512-bit type the widened
+wrapper loads into v0-v3."
+  (if (not (objc::wide-vector-supported-p))
+      (skip "matrices are not carried by this build")
+      (with-objc
+        (eval '(objc:define-objc-method ("doubledMatrix:" (:matrix :float 4 4))
+                   ((self simd-object) (m (:matrix :float 4 4)))
+                 (map 'vector (lambda (column) (map 'vector (lambda (x) (* 2 x)) column)) m)))
+        (let ((object (objc:alloc-init-object "LispSimdObject")))
+          (is (equalp #(#(2.0 0.0 0.0 0.0) #(0.0 4.0 0.0 0.0) #(0.0 0.0 6.0 0.0) #(2.0 4.0 6.0 8.0))
+                      (objc:invoke object "doubledMatrix:"
+                                   #(#(1 0 0 0) #(0 2 0 0) #(0 0 3 0) #(1 2 3 4)))))))))

@@ -34,8 +34,11 @@
   (defconstant +max-register-args+ 8))
 
 (defun objc-wide-alien-type-p (type)
-  "The mark abi.lisp puts on its 128-bit vector type."
-  (and (alien-float-type-p type) (eql (alien-type-bits type) 128)))
+  "The mark abi.lisp puts on its 128-bit vector type, and on the wider ones a
+matrix result takes: 256, 384 or 512 bits, two to four registers."
+  (and (alien-float-type-p type)
+       (member (alien-type-bits type) '(128 256 384 512))
+       t))
 
 (defun objc-wide-callback-wrapper (index result-type argument-types)
   (labels ((make-tn (offset &optional (sc-name 'any-reg))
@@ -76,9 +79,12 @@
                                sum (round-up-to-word (argument-byte-size type))))
              ;; Return value slot count - enough for large struct if needed
              (return-slot-count
-               (if large-struct-return-p
-                   (ceiling (sb-alien::struct-classification-size result-classification) n-word-bytes)
-                   2)))
+               (cond (large-struct-return-p
+                      (ceiling (sb-alien::struct-classification-size result-classification) n-word-bytes))
+                     ;; objc: a wide result is as many words as its registers hold.
+                     ((objc-wide-alien-type-p result-type)
+                      (/ (alien-type-bits result-type) n-word-bits))
+                     (t 2))))
       (setf frame-size (logandc2 (+ frame-size +number-stack-alignment-mask+)
                                  +number-stack-alignment-mask+))
       ;; Return value allocation size - must be 16-byte aligned for stack alignment
@@ -135,7 +141,7 @@
                   ;; objc: a 128-bit SIMD vector, marked as a 128-bit float
                   ;; type.  It arrives in a full v register, so the whole
                   ;; register is stored, and its frame slot is sixteen bytes.
-                  ((objc-wide-alien-type-p type)
+                  ((and (objc-wide-alien-type-p type) (eql (alien-type-bits type) 128))
                    (cond ((< fp-registers 8)
                           (inst str (make-tn fp-registers 'int-neon-reg) target-tn))
                          (t
@@ -271,9 +277,11 @@
                (alien-type-= #.(parse-alien-type 'system-area-pointer nil)
                              result-type))
            (loadw r0-tn nsp-tn))
-          ;; objc: a 128-bit SIMD vector result comes back in the whole of v0.
+          ;; objc: a 128-bit SIMD vector result comes back in the whole of v0;
+          ;; a matrix result, one register per column, in v0 onwards.
           ((objc-wide-alien-type-p result-type)
-           (inst ldr (make-tn 0 'int-neon-reg) (@ nsp-tn)))
+           (dotimes (i (/ (alien-type-bits result-type) 128))
+             (inst ldr (make-tn i 'int-neon-reg) (@ nsp-tn (* 16 i)))))
           ((alien-float-type-p result-type)
            (loadw (make-tn 0
                            (if (alien-single-float-type-p result-type)

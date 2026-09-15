@@ -279,3 +279,44 @@ to four, as the simd types do.  Thirty-two bytes is no register at all."
               (objc::unpack-vector '(:vector :short 4)
                                    (objc::pack-vector '(:vector :short 4) #(1 2 3 4)))))
   (signals error (objc::pack-vector '(:vector :float 2) #(1.0 2.0 3.0))))
+
+
+;;; Matrices --------------------------------------------------------------------
+
+(test a-matrix-encoding-is-a-hole-the-parser-can-see
+  "Live: -[SCNNode simdTransform] is \"{?=[4]}16@0:8\" and its setter
+\"v80@0:8{?=[4]}16\" -- an anonymous struct holding an array of four of
+nothing, which is what Clang writes for four simd_float4 columns.  And a
+quaternion is \"{?=}\", one vector in a struct, no fields at all.  Each is a
+hole, and used to be a parse error."
+  (destructuring-bind (result args) (parse-method "{?=[4]}16@0:8")
+    (is (equal '(:struct nil ((:array 4 :unencodable))) result))
+    (is (equal '(:id :sel) args))
+    (is (objc::signature-unencodable-p result args)))
+  (multiple-value-bind (result args)
+      (objc::parse-method-encoding "v80@0:8{?=[4]}16" "setSimdTransform:")
+    (is (eq :void result))
+    (is (objc::signature-unencodable-p result args)))
+  (is (objc::unencodable-node-p (parse "{?=}")))
+  (is (not (objc::unencodable-node-p (parse "{CGRect=}")))
+      "a named struct with its layout elided is not a hole; the override table resolves it"))
+
+(test a-matrix-is-its-columns
+  (is (equal '(:vector :float 4) (objc::matrix-column-node '(:matrix :float 4 4))))
+  (is (equal '(:vector :float 3) (objc::matrix-column-node '(:matrix :float 3 3))))
+  (is (string= "{?=[4]}" (objc::unparse-type '(:matrix :float 4 4))))
+  (is (string= "{?=[3]}" (objc::unparse-type '(:matrix :float 3 3))))
+  (is (string= "<f4x4>" (objc::canonical-encoding '(:matrix :float 4 4))))
+  (is (string= "{?=[4]}16@0:8" (objc::method-type-encoding '(:matrix :float 4 4) '())))
+  (if (objc::wide-vector-supported-p)
+      (progn
+        (is (equal '(64 16) (multiple-value-list (objc::node-size-and-alignment '(:matrix :float 4 4)))))
+        (is (equal '(48 16) (multiple-value-list (objc::node-size-and-alignment '(:matrix :float 3 3)))))
+        (is (equal '(16 8) (multiple-value-list (objc::node-size-and-alignment '(:matrix :float 2 2)))))
+        (is (equal '(32 16) (multiple-value-list (objc::node-size-and-alignment '(:matrix :double 2 2)))))
+        (signals error (objc::node-size-and-alignment '(:matrix :double 4 4)))
+        (signals error (objc::node-size-and-alignment '(:matrix :float 5 4)))
+        (is (equalp #(#(1.0 2.0 3.0 4.0) #(5.0 6.0 7.0 8.0))
+                    (objc::unpack-matrix '(:matrix :float 2 4)
+                                         (objc::pack-matrix '(:matrix :float 2 4) '((1 2 3 4) (5 6 7 8)))))))
+      (signals error (objc::node-size-and-alignment '(:matrix :float 4 4)))))

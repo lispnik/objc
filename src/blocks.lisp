@@ -576,6 +576,8 @@ BLOCK is an OBJC-BLOCK, a raw pointer, or anything OBJC-OBJECT-POINTER accepts."
                     (unparse-type result-node)))
             ((vector-node-p result-node)
              (unpack-vector result-node (call (sap-of (cffi:null-pointer)))))
+            ((matrix-node-p result-node)
+             (unpack-matrix result-node (call (sap-of (cffi:null-pointer)))))
             (t (call (sap-of (cffi:null-pointer))))))))))
 
 (defun block-pointer-of (block)

@@ -244,6 +244,11 @@ lays them out: each field aligned to its own alignment, a union's all at zero."
        (:pointer (setf (cffi:mem-ref pointer :pointer) (or value (cffi:null-pointer))))
        (:qualified (write-struct-field pointer (third node) value))
        (:vector (write-vector-elements pointer node value))
+       (:matrix (loop with column = (matrix-column-node node)
+                      with stride = (vector-byte-size column)
+                      for c being the elements of value
+                      for i from 0
+                      do (write-vector-elements (cffi:inc-pointer pointer (* i stride)) column c)))
        ((:struct :union) (write-struct-from-sequence pointer node value))
        ((:array :bitfield)
         (error "A ~(~a~) field cannot be written from a sequence; fill the ~
@@ -276,7 +281,7 @@ structure of the same kind: what READ-STRUCT-TO-SEQUENCE can read."
                   (etypecase field
                     (keyword t)
                     (cons (case (first field)
-                            ((:pointer :vector) t)
+                            ((:pointer :vector :matrix) t)
                             ((:qualified) (struct-readable-p (third field)))
                             ((:struct) (struct-readable-p field))
                             (t nil)))))
@@ -303,6 +308,11 @@ structure of the same kind: what READ-STRUCT-TO-SEQUENCE can read."
        (:pointer (cffi:mem-ref pointer :pointer))
        (:qualified (read-struct-field pointer (third node)))
        (:vector (read-vector-elements pointer node))
+       (:matrix (let* ((column (matrix-column-node node))
+                       (stride (vector-byte-size column)))
+                  (coerce (loop for i below (third node)
+                                collect (read-vector-elements (cffi:inc-pointer pointer (* i stride)) column))
+                          'vector)))
        (:struct (read-struct-to-sequence pointer node))))))
 
 (defun read-struct-to-sequence (pointer node)
@@ -366,6 +376,20 @@ carrier -- see %PACK-WIDE-VECTOR in the seam file."
         (setf (cffi:mem-ref p :double) (coerce carrier 'double-float))
         (read-vector-elements p node))
       (%unpack-wide-vector node carrier)))
+
+(defun pack-matrix (node value)
+  "VALUE, a sequence of column sequences, as a vector of column carriers."
+  (destructuring-bind (element columns rows) (rest node)
+    (declare (ignore element rows))
+    (unless (and (typep value 'sequence) (not (stringp value)) (= (length value) columns))
+      (error "Cannot pass ~S as a matrix of ~d columns." value columns))
+    (let ((column (matrix-column-node node)))
+      (map 'vector (lambda (c) (pack-vector column c)) value))))
+
+(defun unpack-matrix (node carriers)
+  "The columns packed in CARRIERS, as a vector of column vectors."
+  (let ((column (matrix-column-node node)))
+    (map 'vector (lambda (c) (unpack-vector column c)) carriers)))
 
 ;;; Argument marshalling -----------------------------------------------------
 
@@ -440,6 +464,8 @@ Temporaries are registered for release when the call unwinds."
 
       ;; A SIMD vector, as the double that occupies its bytes.
       ((vector-node-p node) (pack-vector node value))
+      ;; A matrix, as its columns, each a vector.
+      ((matrix-node-p node) (pack-matrix node value))
 
       ((consp node) (marshal-argument value (third node))) ; :qualified
 

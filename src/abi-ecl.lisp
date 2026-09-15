@@ -182,6 +182,7 @@ BOOL argument into NO without erroring."
        ;; An eight-byte SIMD vector travels as a double: one SIMD register,
        ;; the same one.  See types.lisp.
        (:vector :double)
+       (:matrix (%unsupported "ECL-FOREIGN-TYPE" "a matrix is not carried on ECL yet"))
        (:pointer :pointer-void)
        (:qualified (ecl-foreign-type (third node)))
        ;; An array or a struct only ever reaches here already reduced to
@@ -215,6 +216,7 @@ matters."
     (cons
      (ecase (first node)
        (:vector :double)
+       (:matrix (%unsupported "ECL-DFFI-TYPE" "a matrix is not carried on ECL yet"))
        (:pointer :pointer-void)
        (:qualified (ecl-dffi-type (third node)))
        (:array (list :array (ecl-dffi-type (third node)) (second node)))
@@ -477,6 +479,7 @@ correctly if simply told the truth."
     (cons
      (ecase (first node)
        (:vector (values "double" definitions))
+       (:matrix (%unsupported "%C-TYPE-NAME" "a matrix is not carried on ECL yet"))
        (:pointer (values "void *" definitions))
        (:qualified (%c-type-name (third node) definitions))
        (:array

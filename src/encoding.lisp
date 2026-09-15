@@ -18,6 +18,7 @@
 ;;;;   (:bitfield WIDTH)
 ;;;;   (:qualified QUALIFIERS NODE)
 ;;;;   (:vector ELEMENT COUNT)   a SIMD vector -- see the note below
+;;;;   (:matrix ELEMENT COLUMNS ROWS)   a simd matrix: COLUMNS vectors of ROWS
 ;;;;   :unencodable            a type the encoding could not carry at all
 ;;;;
 ;;;; Clang writes NOTHING for a SIMD vector type: -[GKAgent2D setPosition:]
@@ -30,6 +31,11 @@
 ;;;; an offset has no result type, and one with fewer argument types than its
 ;;;; selector has colons is missing some, and those become :UNENCODABLE nodes
 ;;;; so that INVOKE can say what happened rather than miscount arguments.
+;;;; A matrix is a struct of an array of vectors, and Clang writes the array
+;;;; with its count and no element -- "{?=[4]}" for simd_float4x4 -- which the
+;;;; parser reads as an array of :UNENCODABLE inside an anonymous struct; and
+;;;; a quaternion, one vector in a struct, is "{?=}", an anonymous struct with
+;;;; no fields at all.  Both count as holes.
 ;;;;
 ;;;; Five things here are load-bearing, and each is a real bug if missed:
 ;;;;
@@ -133,12 +139,16 @@ anything it does not understand rather than returning a plausible guess."
                    do (setf count (+ (* count 10)
                                      (- (char-code (char string index)) (char-code #\0))))
                       (incf index))
-             (multiple-value-bind (node next) (parse-type string index)
-               (unless (and (< next length) (char= (char string next) #\]))
-                 (error 'unsupported-type-encoding
-                        :encoding string :position next
-                        :detail "unterminated array encoding"))
-               (values (list :array count node) (1+ next))))))
+             ;; "[4]" -- a count and no element -- is an array of a type
+             ;; Clang could not write: a SIMD vector.  See the file header.
+             (if (and (< index length) (char= (char string index) #\]))
+                 (values (list :array count :unencodable) (1+ index))
+                 (multiple-value-bind (node next) (parse-type string index)
+                   (unless (and (< next length) (char= (char string next) #\]))
+                     (error 'unsupported-type-encoding
+                            :encoding string :position next
+                            :detail "unterminated array encoding"))
+                   (values (list :array count node) (1+ next)))))))
 
         ;; Struct {name=fields} and union (name=fields).  The body is optional:
         ;; "{CGRect=}" and "{CGRect}" both name a struct whose layout the
@@ -242,8 +252,23 @@ at the end and the caller is told to spell the whole signature."
 (defun vector-node-p (node)
   (and (consp node) (eq (first node) :vector)))
 
+(defun matrix-node-p (node)
+  (and (consp node) (eq (first node) :matrix)))
+
 (defun unencodable-node-p (node)
-  (eq node :unencodable))
+  "Whether NODE is a hole, or has one inside: an array of nothing, a struct
+with such a field, or an anonymous struct with no fields at all, which is
+what Clang writes for one SIMD vector wrapped in a struct."
+  (cond ((eq node :unencodable) t)
+        ((atom node) nil)
+        (t (case (first node)
+             (:array (unencodable-node-p (third node)))
+             (:qualified (unencodable-node-p (third node)))
+             (:pointer nil)
+             ((:struct :union)
+              (or (and (null (second node)) (null (third node)))
+                  (some #'unencodable-node-p (third node))))
+             (t nil)))))
 
 (defun signature-unencodable-p (result-node arg-nodes)
   "Whether the runtime's encoding left a hole anywhere in this signature."
@@ -270,6 +295,9 @@ and signals instead."
      (ecase (first node)
        ;; A SIMD vector, as Clang writes it: nothing.  See the file header.
        (:vector "")
+       ;; A matrix, as Clang writes it: an anonymous struct holding an array
+       ;; of COLUMNS of nothing.
+       (:matrix (format nil "{?=[~d]}" (third node)))
        (:pointer (concatenate 'string "^" (unparse-type (second node))))
        (:array (format nil "[~D~A]" (second node) (unparse-type (third node))))
        (:bitfield (format nil "b~D" (second node)))
@@ -320,6 +348,9 @@ not having to reason about whether that is safe."
                     (:vector (format out "<~a~d>"
                                      (car (rassoc (second node) +primitive-encodings+))
                                      (third node)))
+                    (:matrix (format out "<~a~dx~d>"
+                                     (car (rassoc (second node) +primitive-encodings+))
+                                     (third node) (fourth node)))
                     (:pointer (write-char #\^ out) (emit (second node)))
                     (:array (format out "[~D" (second node)) (emit (third node))
                             (write-char #\] out))

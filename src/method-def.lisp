@@ -66,8 +66,10 @@ DEFINE-OBJC-CLASS-METHOD body."))
               (cffi:foreign-string-to-lisp pointer :encoding :utf-8)))
          `(pointer-of ,raw)))
     ((eq node :bool) `(not (eql 0 ,raw)))
-    ;; A SIMD vector arrives as the double occupying its bytes.
+    ;; A SIMD vector arrives as the double occupying its bytes; a matrix as
+    ;; a vector of its columns' carriers.
     ((vector-node-p node) `(unpack-vector ',node ,raw))
+    ((matrix-node-p node) `(unpack-matrix ',node ,raw))
     ((member node '(:class :sel :block)) `(pointer-of ,raw))
     ((and (consp node) (member (first node) '(:pointer :array))) `(pointer-of ,raw))
     ((and (consp node) (eq (first node) :qualified))
@@ -138,8 +140,10 @@ releases the temporary itself."
      (cond ((eq value t) 1) ((null value) 0) (t value)))
     ((eq node :float) (coerce value 'single-float))
     ((eq node :double) (coerce value 'double-float))
-    ;; A SIMD vector leaves as the double occupying its bytes.
+    ;; A SIMD vector leaves as the double occupying its bytes; a matrix as
+    ;; its columns' carriers.
     ((vector-node-p node) (pack-vector node value))
+    ((matrix-node-p node) (pack-matrix node value))
     ((or (member node '(:block))
          (and (consp node) (member (first node) '(:pointer :array))))
      (sap-of (cond ((null value) (cffi:null-pointer))
@@ -273,8 +277,11 @@ who asks for the method's signature later."
            ;; A SIMD vector is written as Clang writes it, which is nothing:
            ;; the runtime and every introspecting consumer expect that, and
            ;; the hole it leaves is what the recorded signature fills.
-           (if (vector-node-p node) "" (canonical-encoding node))))
-    (if (or (vector-node-p result-node) (some #'vector-node-p arg-nodes))
+           (cond ((vector-node-p node) "")
+                 ((matrix-node-p node) (unparse-type node))
+                 (t (canonical-encoding node)))))
+    (if (or (vector-node-p result-node) (matrix-node-p result-node)
+            (some #'vector-node-p arg-nodes) (some #'matrix-node-p arg-nodes))
         ;; With a hole, the frame offsets Clang writes go in too, because
         ;; they are what makes the hole visible: a leading offset says the
         ;; result is missing, and an argument written as nothing between two
@@ -350,7 +357,8 @@ one, in either definition order."
   ;; A method with a SIMD vector in its signature registers an encoding with
   ;; a hole in it, as Clang would; recording the signature here is what lets
   ;; INVOKE call the method back without being told it a second time.
-  (when (or (vector-node-p result-node) (some #'vector-node-p arg-nodes))
+  (when (or (vector-node-p result-node) (matrix-node-p result-node)
+            (some #'vector-node-p arg-nodes) (some #'matrix-node-p arg-nodes))
     ;; ARG-NODES begins with self and _cmd here; the table holds the
     ;; declared arguments only.
     (setf (signature-override selector) (cons result-node (cddr arg-nodes))))

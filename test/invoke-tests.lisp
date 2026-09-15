@@ -484,3 +484,36 @@ written, and this test says so rather than passing on nothing."
     ;; The float2 declarations of the other test again, so order does not matter.
     (objc:declare-objc-signature "setPosition:" '((:vector :float 2)))
     (objc:declare-objc-signature "position" '() :result-type '(:vector :float 2)))))
+
+
+(defun ensure-scenekit ()
+  (objc:ensure-objc-initialized
+   :modules '("/System/Library/Frameworks/SceneKit.framework/SceneKit")))
+
+(test a-matrix-crosses-as-its-columns
+  "SCNNode's simdTransform is a simd_float4x4: four columns, four registers
+each way, VALUES on the way back.  Set one, read it back, and let SceneKit
+say the layout is right: simdPosition is the translation column."
+  (if (not (objc::wide-vector-supported-p))
+      (skip "matrices are not carried by this build")
+      (with-runtime
+        (ensure-scenekit)
+        (ensure-gameplaykit)
+        (objc:declare-objc-signature "simdTransform" '() :result-type '(:matrix :float 4 4))
+        (objc:declare-objc-signature "setSimdTransform:" '((:matrix :float 4 4)))
+        (objc:declare-objc-signature "simdPosition" '() :result-type '(:vector :float 3))
+        (objc:declare-objc-signature "rotation" '() :result-type '(:matrix :float 3 3))
+        (let ((node (objc:alloc-init-object "SCNNode")))
+          (is (equalp #(#(1.0 0.0 0.0 0.0) #(0.0 1.0 0.0 0.0) #(0.0 0.0 1.0 0.0) #(0.0 0.0 0.0 1.0))
+                      (objc:invoke node "simdTransform"))
+              "a fresh node's transform is the identity")
+          (objc:invoke node "setSimdTransform:"
+                       #(#(2 0 0 0) #(0 3 0 0) #(0 0 4 0) #(5 6 7 1)))
+          (is (equalp #(#(2.0 0.0 0.0 0.0) #(0.0 3.0 0.0 0.0) #(0.0 0.0 4.0 0.0) #(5.0 6.0 7.0 1.0))
+                      (objc:invoke node "simdTransform")))
+          (is (equalp #(5.0 6.0 7.0) (objc:invoke node "simdPosition"))
+              "SceneKit read the translation out of the fourth column"))
+        (let ((agent (objc:alloc-init-object "GKAgent3D")))
+          (is (= 3 (length (objc:invoke agent "rotation")))
+              "a float3x3 comes back as three columns")
+          (is (every (lambda (column) (= 3 (length column))) (objc:invoke agent "rotation")))))))

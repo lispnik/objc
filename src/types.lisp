@@ -220,7 +220,7 @@ public API and matches LispWorks exactly."
     (cons
      (ecase (first node)
        ;; No LispWorks spelling exists; the node is its own descriptor.
-       (:vector node)
+       ((:vector :matrix) node)
        (:pointer (list :pointer (fli-type-for-node (second node))))
        (:array (list :c-array (fli-type-for-node (third node)) (second node)))
        (:bitfield (list :bitfield (second node)))
@@ -287,6 +287,8 @@ Accepts what DEFINE-OBJC-METHOD and INVOKE's explicit arg-types list accept."
        ;; LispWorks has no descriptor for one.  Checked here so a bad one
        ;; fails where it was written.
        (:vector (check-vector-node (list :vector (second type) (third type))))
+       ;; (:matrix :float 4 4): columns of vectors, simd_float4x4.
+       (:matrix (check-matrix-node (list :matrix (second type) (third type) (fourth type))))
        ((:struct :union)
         (let ((encoding (struct-encoding-for-symbol (second type))))
           (unless encoding
@@ -346,6 +348,37 @@ padded to four as the simd types are -- float3 is sixteen bytes, not twelve."
                                          any register carries" size)))))
     node))
 
+;;; simd matrices -------------------------------------------------------------
+;;;
+;;; simd_float4x4 is a struct of four simd_float4 columns; to the ABI that is
+;;; a homogeneous aggregate of four short vectors, passed in v0-v3 and
+;;; returned the same way, exactly as four vector arguments in a row would
+;;; be.  So a matrix is carried as its columns, each one a vector, and
+;;; everything a vector can do a matrix of them can.  A column wider than
+;;; sixteen bytes -- double3, double4 -- is not a short vector and travels
+;;; through memory, so those matrices are refused.
+
+(defun matrix-column-node (node)
+  "The vector node one column of the matrix NODE is."
+  (destructuring-bind (element columns rows) (rest node)
+    (declare (ignore columns))
+    (list :vector element rows)))
+
+(defun check-matrix-node (node)
+  (destructuring-bind (element columns rows) (rest node)
+    (declare (ignore element rows))
+    (unless (and (integerp columns) (<= 2 columns 4))
+      (error 'unsupported-type-encoding
+             :encoding node :detail "a matrix has two, three or four columns"))
+    (check-vector-node (matrix-column-node node))
+    (unless (wide-vector-supported-p)
+      (error 'unsupported-type-encoding
+             :encoding node
+             :detail (format nil "a matrix is carried as its columns in ~
+                                  consecutive SIMD registers; SBCL on Apple ~
+                                  silicon carries it and this build does not")))
+    node))
+
 ;;; Sizes without Foundation -------------------------------------------------
 ;;;
 ;;; NSGetSizeAndAlignment is the oracle used in tests, but dispatch cannot
@@ -370,6 +403,9 @@ padded to four as the simd types are -- float3 is sixteen bytes, not twelve."
        (:bitfield (values 0 1))
        (:vector (check-vector-node node)
         (let ((size (vector-byte-size node))) (values size size)))
+       (:matrix (check-matrix-node node)
+        (let ((column (vector-byte-size (matrix-column-node node))))
+          (values (* column (third node)) column)))
        (:array (multiple-value-bind (size align)
                    (node-size-and-alignment (third node))
                  (values (* size (second node)) align)))

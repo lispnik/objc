@@ -470,11 +470,20 @@ type, in `src/abi-neon.lisp`, installed as a dispatcher so a signature with no
 vector in it never leaves SBCL's own code. Measured against `GKAgent3D`, whose
 position is a `vector_float3`. One limit: a sixteen-byte vector must be among
 the first eight floating-point arguments of a call, which every Objective-C
-method satisfies. Elsewhere -- ECL, and SBCL on Intel, whose register names
-and wrapper have not been written -- the sixteen-byte family is refused where
-it is written, naming this. A structure with a vector field is refused
-everywhere: Clang cannot encode it either, so the runtime would lay it out
-without the field.
+method satisfies.
+
+**On ECL the same family crosses a call**, through the compiled C trampolines:
+the dynamic FFI cannot name a value that lives in a 128-bit register, so a
+sixteen-byte vector or a matrix goes the way a structure does there, as a
+pointer to a buffer the generated C loads by value with `simd_float4` and its
+kin from `<simd/simd.h>`, and a result comes back through the out buffer. That
+needs a C compiler, so a Mac has it and a phone does not; and it is calls and
+block calls only -- a Lisp method or block on ECL is a libffi closure, and
+libffi has no vector type, so a callback taking or returning one is refused
+where it is defined. SBCL on Intel, whose register names and wrapper have not
+been written, refuses the family where it is written, naming this. A structure
+with a vector field is refused everywhere: Clang cannot encode it either, so
+the runtime would lay it out without the field.
 
 **Matrices** come with the sixteen-byte family, on the same build. `(:matrix
 :float 4 4)` is `simd_float4x4`, and its value is a vector of column vectors,
@@ -493,9 +502,10 @@ quaternion; both parse as holes and take a declaration:
 ```
 
 Measured against `SCNNode`, which reads the translation back out of the
-fourth column as `simdPosition`. `float2x2`, `float3x3`, `float4x4` and
-`double2x2`; a column wider than sixteen bytes, `double3` or `double4`, is not
-a short vector and travels through memory, so those matrices are refused.
+fourth column as `simdPosition`, under both Lisps. `float2x2`, `float3x3`,
+`float4x4` and `double2x2`; a column wider than sixteen bytes, `double3` or
+`double4`, is not a short vector and travels through memory, so those
+matrices are refused.
 
 **Only one libdispatch thread may be inside Lisp at a time.** This is SBCL's
 limit, not GCD's, and it is worth knowing before writing anything concurrent. A

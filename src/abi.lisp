@@ -211,9 +211,19 @@ the double-float class taught to pass it in a NEON register.  Once per image."
               (sb-kernel:%instance-ref wide (slot 'sb-alien::hash))
               (logior (logand (sb-alien::alien-type-hash double) (ash 31 nbits))
                       (logand (sxhash "objc-simd-128") (1- (ash 1 nbits))))))
-      (let ((class (sb-alien::alien-type-class wide))
-            (neon (sb-c:sc-number-or-lose 'sb-vm::int-neon-reg))
-            (neon-stack (sb-c:sc-number-or-lose 'sb-vm::int-neon-stack)))
+      ;; The NEON storage classes and the arm64 argument-state helpers are
+      ;; arm64 symbols; on Intel they do not exist, and READING them there
+      ;; would intern into the locked SB-VM package.  So they are found by
+      ;; name, here, where only an arm64 build ever arrives.
+      (let* ((class (sb-alien::alien-type-class wide))
+             (vm-symbol (lambda (name) (or (find-symbol name :sb-vm)
+                                           (error "SB-VM has no ~a on this build" name))))
+             (neon (sb-c:sc-number-or-lose (funcall vm-symbol "INT-NEON-REG")))
+             (neon-stack (sb-c:sc-number-or-lose (funcall vm-symbol "INT-NEON-STACK")))
+             (pack-type (funcall vm-symbol "SIMD-PACK-UB64"))
+             (fp-registers (funcall vm-symbol "ARG-STATE-FP-REGISTERS"))
+             (float-arg (funcall vm-symbol "FLOAT-ARG"))
+             (make-wired-tn (funcall vm-symbol "MAKE-WIRED-TN*")))
         (%override-alien-method class unparse (state) 'objc-simd-128)
         (%override-alien-method class type= (other) (and (wide-alien-type-p other) t))
         (%override-alien-method class lisp-rep () '(sb-ext:simd-pack (unsigned-byte 64)))
@@ -233,12 +243,12 @@ the double-float class taught to pass it in a NEON register.  Once per image."
           ;; The ninth floating-point argument goes on the stack, through a
           ;; VOP for word-sized values the image no longer carries.  No
           ;; Objective-C method has nine; refuse rather than corrupt.
-          (when (>= (sb-vm::arg-state-fp-registers state) 8)
+          (when (>= (funcall fp-registers state) 8)
             (error "A 16-byte SIMD vector must be among the first eight ~
                     floating-point arguments of a call."))
-          (sb-vm::float-arg state 'sb-vm::simd-pack-ub64 neon neon-stack 16))
+          (funcall float-arg state pack-type neon neon-stack 16))
         (%override-alien-method class result-tn (state)
-          (sb-vm::make-wired-tn* 'sb-vm::simd-pack-ub64 neon 0)))
+          (funcall make-wired-tn pack-type neon 0)))
       (setf (sb-int:info :alien-type :kind 'objc-simd-128) :primitive
             (sb-int:info :alien-type :translator 'objc-simd-128)
             (lambda (type env) (declare (ignore type env)) wide))

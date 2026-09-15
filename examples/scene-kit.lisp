@@ -203,6 +203,7 @@ exactly right here -- if they are identical, nothing moved."
         (format t "~&~D bytes -> ~A (~{~Dx~D~})~%"
                 (length bytes) path (png-dimensions bytes))
         path)))
+
 ;;; The simd half --------------------------------------------------------------------
 ;;;
 ;;; Everything above places nodes with SCNVector3, three CGFloats in a

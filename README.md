@@ -458,7 +458,11 @@ and the backends never see a vector at all.
 
 The sixteen-byte family -- `float4`, `float3` (sixteen bytes, not twelve),
 `double2`, `int4` -- travels in a 128-bit register, the whole of `v0` on arm64,
-and no alien type can name a value of that shape. **On SBCL for Apple silicon
+and no alien type can name a value of that shape. On SBCL the lanes are packed
+with the kernel's own register instructions, the ones sb-simd's `f32.4` is
+made of, so a vector never touches memory on its way to a register; and a
+`simd-pack` is accepted as the value itself, so an `sb-simd-neon:f32.4` built
+with sb-simd's arithmetic goes to SceneKit as it is. **On SBCL for Apple silicon
 it is carried anyway**, both directions, `invoke` and `call-objc-block` as
 well as a Lisp method or block taking or returning one. sb-alien's type
 classes are a fixed table and `alien-type` is sealed, so a class cannot be

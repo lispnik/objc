@@ -388,24 +388,103 @@ a matrix: here, wherever the vectors themselves are carried."
 returned as a value: structures only, here; a vector or matrix is a value."
   (struct-node-p node))
 
-(defun %pack-wide-vector (node value)
-  "VALUE's lanes as the simd-pack that travels in a 128-bit register."
-  (unless (wide-vector-supported-p)
-    (error 'unsupported-type-encoding
-           :encoding node
-           :detail "a 16-byte SIMD vector is carried on SBCL for Apple silicon only"))
+;;; Packing lanes into the carrier ---------------------------------------------
+;;;
+;;; The carrier is a simd-pack tagged as two 64-bit words, and SBCL's kernel
+;;; builds and reads packs of singles, doubles and 32-bit lanes in registers
+;;; -- the same primitives sb-simd's f32.4 and friends are made of -- so a
+;;; float4 is made with one instruction and retagged in place, and never
+;;; touches memory on the way to v0.  The tags are read from packs the kernel
+;;; makes rather than assumed.  Lanes the kernel has no typed constructor for,
+;;; shorts and bytes, still go through a buffer.
+;;;
+;;; A pack is also accepted as a value in its own right: an sb-simd f32.4
+;;; passes straight through, retagged, so a transform built with sb-simd's
+;;; arithmetic goes to SceneKit without a conversion.
+
+(defvar *pack-tags*
+  (list :single (sb-kernel:%simd-pack-tag (sb-kernel:%make-simd-pack-single 0.0 0.0 0.0 0.0))
+        :double (sb-kernel:%simd-pack-tag (sb-kernel:%make-simd-pack-double 0d0 0d0))
+        :ub32 (sb-kernel:%simd-pack-tag (sb-kernel:%make-simd-pack-ub32 0 0 0 0))
+        :ub64 (sb-kernel:%simd-pack-tag (sb-kernel:%make-simd-pack-ub64 0 0)))
+  "The kernel's tag for each pack shape, measured.")
+
+(declaim (inline %retag-pack))
+(defun %retag-pack (pack tag)
+  "PACK's bits under TAG: the same register, read differently."
+  (sb-kernel:%make-simd-pack tag (sb-kernel:%simd-pack-low pack) (sb-kernel:%simd-pack-high pack)))
+
+(defun %pack-wide-vector-through-memory (node value)
   (cffi:with-foreign-object (p :uint64 2)
     (setf (cffi:mem-aref p :uint64 0) 0 (cffi:mem-aref p :uint64 1) 0)
     (write-vector-elements p node value)
     (sb-kernel:%make-simd-pack-ub64 (cffi:mem-aref p :uint64 0)
                                     (cffi:mem-aref p :uint64 1))))
 
-(defun %unpack-wide-vector (node pack)
-  "The lanes of PACK, a simd-pack, as a Lisp vector."
+(defun %unpack-wide-vector-through-memory (node pack)
   (cffi:with-foreign-object (p :uint64 2)
     (multiple-value-bind (lo hi) (sb-ext:%simd-pack-ub64s pack)
       (setf (cffi:mem-aref p :uint64 0) lo (cffi:mem-aref p :uint64 1) hi))
     (read-vector-elements p node)))
+
+(defun %pack-wide-vector (node value)
+  "VALUE's lanes as the simd-pack that travels in a 128-bit register.
+VALUE is a sequence with one element per lane, or a simd-pack already."
+  (unless (wide-vector-supported-p)
+    (error 'unsupported-type-encoding
+           :encoding node
+           :detail "a 16-byte SIMD vector is carried on SBCL for Apple silicon only"))
+  (when (sb-ext:simd-pack-p value)
+    (return-from %pack-wide-vector (%retag-pack value (getf *pack-tags* :ub64))))
+  (destructuring-bind (element count) (rest node)
+    (unless (and (typep value 'sequence) (not (stringp value)) (= (length value) count))
+      (error "Cannot pass ~S as a ~d-element SIMD vector of ~(~a~)." value count element))
+    (let ((lanes (coerce value 'list)))
+      (flet ((lane (i) (if (< i (length lanes)) (nth i lanes) 0)))
+        (case element
+          (:float
+           (%retag-pack (sb-kernel:%make-simd-pack-single
+                         (coerce (lane 0) 'single-float) (coerce (lane 1) 'single-float)
+                         (coerce (lane 2) 'single-float) (coerce (lane 3) 'single-float))
+                        (getf *pack-tags* :ub64)))
+          (:double
+           (%retag-pack (sb-kernel:%make-simd-pack-double
+                         (coerce (lane 0) 'double-float) (coerce (lane 1) 'double-float))
+                        (getf *pack-tags* :ub64)))
+          ((:int :uint)
+           (%retag-pack (sb-kernel:%make-simd-pack-ub32
+                         (ldb (byte 32 0) (lane 0)) (ldb (byte 32 0) (lane 1))
+                         (ldb (byte 32 0) (lane 2)) (ldb (byte 32 0) (lane 3)))
+                        (getf *pack-tags* :ub64)))
+          ((:long-long :ulong-long)
+           (sb-kernel:%make-simd-pack-ub64 (ldb (byte 64 0) (lane 0)) (ldb (byte 64 0) (lane 1))))
+          (t (%pack-wide-vector-through-memory node value)))))))
+
+(defun %unpack-wide-vector (node pack)
+  "The lanes of PACK, a simd-pack, as a Lisp vector."
+  (destructuring-bind (element count) (rest node)
+    (flet ((take (values) (coerce (subseq values 0 count) 'vector))
+           (signed (x bits) (if (logbitp (1- bits) x) (- x (ash 1 bits)) x)))
+      (case element
+        (:float
+         (take (multiple-value-list
+                (sb-kernel:%simd-pack-singles (%retag-pack pack (getf *pack-tags* :single))))))
+        (:double
+         (take (multiple-value-list
+                (sb-kernel:%simd-pack-doubles (%retag-pack pack (getf *pack-tags* :double))))))
+        (:uint
+         (take (multiple-value-list
+                (sb-kernel:%simd-pack-ub32s (%retag-pack pack (getf *pack-tags* :ub32))))))
+        (:int
+         (take (mapcar (lambda (x) (signed x 32))
+                       (multiple-value-list
+                        (sb-kernel:%simd-pack-ub32s (%retag-pack pack (getf *pack-tags* :ub32)))))))
+        (:ulong-long
+         (take (multiple-value-list (sb-ext:%simd-pack-ub64s (%retag-pack pack (getf *pack-tags* :ub64))))))
+        (:long-long
+         (take (mapcar (lambda (x) (signed x 64))
+                       (multiple-value-list (sb-ext:%simd-pack-ub64s (%retag-pack pack (getf *pack-tags* :ub64)))))))
+        (t (%unpack-wide-vector-through-memory node pack))))))
 
 ;;; Dispatch entry points ----------------------------------------------------
 

@@ -517,3 +517,33 @@ say the layout is right: simdPosition is the translation column."
           (is (= 3 (length (objc:invoke agent "rotation")))
               "a float3x3 comes back as three columns")
           (is (every (lambda (column) (= 3 (length column))) (objc:invoke agent "rotation")))))))
+
+
+;; SBCL only at read time: the kernel pack constructors are named below.
+#+sbcl
+(test a-simd-pack-is-accepted-as-a-sixteen-byte-vector
+  "The carrier is a simd-pack, and SBCL's kernel builds one of singles in a
+register -- the same object sb-simd's f32.4 is -- so a pack is accepted as
+the value itself and lanes never touch memory.  The buffer path, kept for
+short and byte lanes, must agree with it bit for bit."
+  (if (not (objc::wide-vector-supported-p))
+      (skip "sixteen-byte SIMD vectors are not carried by this build")
+      (with-runtime
+        (ensure-gameplaykit)
+        (objc:declare-objc-signature "setPosition:" '((:vector :float 3)))
+        (objc:declare-objc-signature "position" '() :result-type '(:vector :float 3))
+        (let ((agent (objc:alloc-init-object "GKAgent3D")))
+          (objc:invoke agent "setPosition:" (sb-kernel:%make-simd-pack-single 1.0 2.0 3.0 0.0))
+          (is (equalp #(1.0 2.0 3.0) (objc:invoke agent "position"))))
+        (dolist (case '(((:vector :float 4) #(1.5 -2.5 3.5 4.5))
+                        ((:vector :int 4) #(-1 2 -3 4))
+                        ((:vector :uint 4) #(1 2 3 4000000000))
+                        ((:vector :double 2) #(1d0 -2d0))
+                        ((:vector :long-long 2) #(-5 6))))
+          (destructuring-bind (node value) case
+            (is (equalp (multiple-value-list (sb-ext:%simd-pack-ub64s (objc::%pack-wide-vector node value)))
+                        (multiple-value-list (sb-ext:%simd-pack-ub64s (objc::%pack-wide-vector-through-memory node value))))
+                "~a packs the same in registers as through memory" node)
+            (is (equalp value (objc::unpack-vector node (objc::pack-vector node value))))))
+        (objc:declare-objc-signature "setPosition:" '((:vector :float 2)))
+        (objc:declare-objc-signature "position" '() :result-type '(:vector :float 2)))))

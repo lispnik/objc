@@ -461,7 +461,7 @@ vector and one may be returned, carried as a double both ways."
 
 
 (test a-block-takes-and-returns-a-sixteen-byte-vector
-  (if (not (objc::wide-vector-supported-p))
+  (if (not (objc::wide-vector-callbacks-supported-p))
       (skip "sixteen-byte SIMD vectors are not carried by this build")
       (with-runtime
         (let ((type '((:vector :float 4) ((:vector :float 4) :int))))
@@ -470,7 +470,7 @@ vector and one may be returned, carried as a double both ways."
 
 
 (test a-block-takes-and-returns-a-matrix
-  (if (not (objc::wide-vector-supported-p))
+  (if (not (objc::wide-vector-callbacks-supported-p))
       (skip "matrices are not carried by this build")
       (with-runtime
         (let ((type '((:matrix :float 3 3) ((:matrix :float 3 3)))))

@@ -117,22 +117,63 @@ architecture this file targets."
 
 ;;; Foreign types -----------------------------------------------------------
 
+;;; Sixteen-byte SIMD vectors and matrices ---------------------------------------
+;;;
+;;; The dynamic FFI cannot name a value that lives in a 128-bit register, so
+;;; on ECL these cross the way structures do: as a pointer to a buffer that
+;;; the compiled C trampoline loads by value, with simd_float4 and its kin
+;;; from <simd/simd.h>, and a result the C side stores back into the OUT
+;;; buffer.  That needs the compiled trampolines, which need a C compiler,
+;;; so a phone does without; and it is calls only -- a Lisp method or block
+;;; is a libffi closure, and libffi has no vector type -- so callbacks with
+;;; one are refused where they are defined.
+
 (defun wide-vector-supported-p ()
-  "A sixteen-byte SIMD vector needs a 128-bit register the dynamic FFI cannot
-name; the compiled trampolines could, and have not been taught to yet."
+  "Whether a sixteen-byte SIMD vector or a matrix can cross a call here: when
+a trampoline can be compiled, since the dynamic FFI cannot carry one."
+  (compiled-trampolines-available-p))
+
+(defun wide-vector-callbacks-supported-p ()
+  "Never, on ECL: a callback is a libffi closure, and libffi has no vector type."
   nil)
 
-(defun %pack-wide-vector (node value)
-  (declare (ignore value))
-  (error 'unsupported-type-encoding
-         :encoding node
-         :detail "a 16-byte SIMD vector is not carried on ECL yet; SBCL on Apple silicon carries it"))
+(defun result-through-buffer-p (node)
+  "A structure, a sixteen-byte vector or a matrix result is written through
+the OUT buffer by the compiled trampoline; a value is not."
+  (or (struct-node-p node)
+      (and (vector-node-p node) (= 16 (vector-byte-size node)))
+      (matrix-node-p node)))
 
-(defun %unpack-wide-vector (node pack)
-  (declare (ignore pack))
-  (error 'unsupported-type-encoding
-         :encoding node
-         :detail "a 16-byte SIMD vector is not carried on ECL yet"))
+(defun %aggregate-buffer (node writer value)
+  "A foreign buffer holding VALUE as NODE, freed with the call's temporaries."
+  (let* ((size (node-size-and-alignment node))
+         (buffer (cffi:foreign-alloc :uint8 :count (max 1 size))))
+    (dotimes (i size) (setf (cffi:mem-aref buffer :uint8 i) 0))
+    (funcall writer buffer node value)
+    (register-temporary (lambda () (cffi:foreign-free buffer)))
+    buffer))
+
+(defun %pack-wide-vector (node value)
+  (unless (wide-vector-supported-p)
+    (error 'unsupported-type-encoding
+           :encoding node
+           :detail "a 16-byte SIMD vector crosses through a compiled trampoline, ~
+                    and no C compiler is available here"))
+  (%aggregate-buffer node #'write-vector-elements value))
+
+(defun %unpack-wide-vector (node pointer)
+  (read-vector-elements pointer node))
+
+(defun %pack-matrix (node value)
+  (unless (wide-vector-supported-p)
+    (error 'unsupported-type-encoding
+           :encoding node
+           :detail "a matrix crosses through a compiled trampoline, and no C ~
+                    compiler is available here"))
+  (%aggregate-buffer node #'write-struct-field value))
+
+(defun %unpack-matrix (node pointer)
+  (read-struct-field pointer node))
 
 (defun ecl-foreign-type (node)
   "The ECL foreign type keyword for encoding node NODE.
@@ -180,9 +221,13 @@ BOOL argument into NO without erroring."
     (cons
      (ecase (first node)
        ;; An eight-byte SIMD vector travels as a double: one SIMD register,
-       ;; the same one.  See types.lisp.
-       (:vector :double)
-       (:matrix (%unsupported "ECL-FOREIGN-TYPE" "a matrix is not carried on ECL yet"))
+       ;; the same one.  See types.lisp.  A sixteen-byte one is an aggregate
+       ;; to the compiled path and nothing to this one.
+       (:vector (if (= 8 (vector-byte-size node))
+                    :double
+                    (%unsupported "ECL-FOREIGN-TYPE"
+                                  "a 16-byte SIMD vector is an aggregate; the dynamic FFI cannot name one")))
+       (:matrix (%unsupported "ECL-FOREIGN-TYPE" "a matrix is an aggregate; the dynamic FFI cannot name one"))
        (:pointer :pointer-void)
        (:qualified (ecl-foreign-type (third node)))
        ;; An array or a struct only ever reaches here already reduced to
@@ -215,8 +260,11 @@ matters."
     (keyword (ecl-foreign-type node))
     (cons
      (ecase (first node)
-       (:vector :double)
-       (:matrix (%unsupported "ECL-DFFI-TYPE" "a matrix is not carried on ECL yet"))
+       (:vector (if (= 8 (vector-byte-size node))
+                    :double
+                    (%unsupported "ECL-DFFI-TYPE"
+                                  "a 16-byte SIMD vector is an aggregate; libffi cannot name one")))
+       (:matrix (%unsupported "ECL-DFFI-TYPE" "a matrix is an aggregate; libffi cannot name one"))
        (:pointer :pointer-void)
        (:qualified (ecl-dffi-type (third node)))
        (:array (list :array (ecl-dffi-type (third node)) (second node)))
@@ -466,6 +514,25 @@ not mention.")
     (:bool "unsigned char")
     ((:id :class :sel :cstring :block) "void *")))
 
+(defun %simd-c-name (node)
+  "simd_float4, simd_int4, simd_float4x4: the <simd/simd.h> spelling of NODE."
+  (flet ((element-name (element)
+           (ecase element
+             (:char "char") (:uchar "uchar") (:short "short") (:ushort "ushort")
+             (:int "int") (:uint "uint") (:long-long "long") (:ulong-long "ulong")
+             (:float "float") (:double "double"))))
+    (ecase (first node)
+      (:vector (format nil "simd_~a~d" (element-name (second node)) (third node)))
+      (:matrix (format nil "simd_~a~dx~d" (element-name (second node))
+                       (third node) (fourth node))))))
+
+(defun %compiled-aggregate-p (node)
+  "Whether the compiled trampoline passes NODE through a buffer: a structure,
+a sixteen-byte vector, or a matrix."
+  (or (struct-node-p node)
+      (and (vector-node-p node) (= 16 (vector-byte-size node)))
+      (matrix-node-p node)))
+
 (defun %c-type-name (node definitions)
   "The C spelling of NODE, pushing any struct typedefs it needs onto DEFINITIONS.
 
@@ -478,8 +545,11 @@ correctly if simply told the truth."
     (keyword (values (%c-scalar-name node) definitions))
     (cons
      (ecase (first node)
-       (:vector (values "double" definitions))
-       (:matrix (%unsupported "%C-TYPE-NAME" "a matrix is not carried on ECL yet"))
+       ;; An eight-byte vector is the double it travels as; a sixteen-byte
+       ;; one and a matrix are simd's own C types, from <simd/simd.h>.
+       (:vector (values (if (= 8 (vector-byte-size node)) "double" (%simd-c-name node))
+                        definitions))
+       (:matrix (values (%simd-c-name node) definitions))
        (:pointer (values "void *" definitions))
        (:qualified (%c-type-name (third node) definitions))
        (:array
@@ -537,9 +607,12 @@ code, pointing away from the setting that caused it."
   ;; Lisp to suggest why. One counter for the image keeps them distinct wherever
   ;; they land.
   (let* ((definitions '())
-         (structp (struct-node-p result-node))
+         ;; A structure, a sixteen-byte vector or a matrix: passed as a
+         ;; pointer to a buffer the C loads by value, and a result of one
+         ;; stored through OUT.
+         (structp (%compiled-aggregate-p result-node))
          (result-c (multiple-value-bind (type more)
-                       (%c-type-name (if structp
+                       (%c-type-name (if (struct-node-p result-node)
                                          (resolve-struct-layout result-node)
                                          result-node)
                                      definitions)
@@ -553,9 +626,9 @@ code, pointing away from the setting that caused it."
          (entry (ecase kind (:send "objc_msgSend") (:super "objc_msgSendSuper")))
          (lisp-args (loop for i from 0 below (length arg-nodes)
                           collect (format nil "a~d" i)))
-         ;; Struct arguments reach us as SAPs and are dereferenced in the C.
+         ;; Aggregate arguments reach us as SAPs and are dereferenced in the C.
          (ecl-arg-types (loop for node in arg-nodes
-                              collect (if (struct-node-p node)
+                              collect (if (%compiled-aggregate-p node)
                                           :pointer-void
                                           (ecl-foreign-type node))))
          ;; #0 is OUT, so the call's own arguments start at #1. Getting this
@@ -564,7 +637,7 @@ code, pointing away from the setting that caused it."
          (call-args (loop for node in arg-nodes
                           for i from 1
                           for c-type in arg-cs
-                          collect (if (struct-node-p node)
+                          collect (if (%compiled-aggregate-p node)
                                       (format nil "*(~a *)#~d" c-type i)
                                       (format nil "(~a)#~d" c-type i))))
          ;; The prototype. n-fixed marks where the variadic part begins, and
@@ -599,6 +672,7 @@ code, pointing away from the setting that caused it."
        `(ffi:clines "#include <objc/runtime.h>"
                     "#include <objc/message.h>"
                     "#include <stdint.h>"
+                    "#include <simd/simd.h>"
                     ,@(reverse definitions))
        ;; OUT is the struct result buffer; for a scalar result it is a null
        ;; pointer and unused, which keeps one contract for both.
@@ -742,9 +816,9 @@ one compiled now, on a machine with a compiler, for speed."
 (defun %block-caller-source (result-node arg-nodes invoke-offset function-name)
   "The Lisp source for a compiled block caller."
   (let* ((definitions '())
-         (structp (struct-node-p result-node))
+         (structp (%compiled-aggregate-p result-node))
          (result-c (multiple-value-bind (type more)
-                       (%c-type-name (if structp
+                       (%c-type-name (if (struct-node-p result-node)
                                          (resolve-struct-layout result-node)
                                          result-node)
                                      definitions)
@@ -758,7 +832,7 @@ one compiled now, on a machine with a compiler, for speed."
          (lisp-args (loop for i from 0 below (length arg-nodes)
                           collect (format nil "a~d" i)))
          (ecl-arg-types (loop for node in arg-nodes
-                              collect (if (struct-node-p node)
+                              collect (if (%compiled-aggregate-p node)
                                           :pointer-void
                                           (ecl-foreign-type node))))
          ;; #0 is OUT and #1 is the block, so the call's arguments start at #1 --
@@ -766,14 +840,14 @@ one compiled now, on a machine with a compiler, for speed."
          (call-args (loop for node in arg-nodes
                           for i from 1
                           for c-type in arg-cs
-                          collect (if (struct-node-p node)
+                          collect (if (%compiled-aggregate-p node)
                                       (format nil "*(~a *)#~d" c-type i)
                                       (format nil "(~a)#~d" c-type i))))
          (prototype (format nil "~{~a~^,~}" arg-cs)))
     (with-output-to-string (out)
       (format out ";;;; Generated by objc for one block signature.~%")
       (format out "(in-package #:objc)~%~%")
-      (format out "(ffi:clines~%  \"#include <stdint.h>\"")
+      (format out "(ffi:clines~%  \"#include <stdint.h>\"~%  \"#include <simd/simd.h>\"")
       (dolist (definition (reverse definitions))
         (format out "~%  ~s" definition))
       (format out ")~%~%")

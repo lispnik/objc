@@ -574,6 +574,14 @@ BLOCK is an OBJC-BLOCK, a raw pointer, or anything OBJC-OBJECT-POINTER accepts."
                      buffer this call frees on the way out.  Declare it with ~
                      DEFINE-OBJC-STRUCT and it comes back as a vector of its fields."
                     (unparse-type result-node)))
+            ;; A vector or matrix result: a value from the call, or, where
+            ;; the backend's trampoline stores aggregates, through a buffer.
+            ((and (or (vector-node-p result-node) (matrix-node-p result-node))
+                  (result-through-buffer-p result-node))
+             (let ((size (node-size-and-alignment result-node)))
+               (cffi:with-foreign-object (out :uint8 (max 1 size))
+                 (call (sap-of out))
+                 (read-struct-field out result-node))))
             ((vector-node-p result-node)
              (unpack-vector result-node (call (sap-of (cffi:null-pointer)))))
             ((matrix-node-p result-node)

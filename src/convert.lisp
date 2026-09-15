@@ -27,8 +27,10 @@
 ;;; make one call happen is registered here and released when the call unwinds,
 ;;; including on a non-local exit.
 
-(defvar *call-temporaries* nil
-  "Bound per send to a list of thunks that free this call's temporaries.")
+(defvar *call-temporaries* :outside
+  "Bound per send to a list of thunks that free this call's temporaries.
+:OUTSIDE when no send is in progress, so a temporary made then -- packing a
+value at the REPL, say -- is not filed where nothing will ever free it.")
 
 (defmacro with-call-temporaries (&body body)
   `(let ((*call-temporaries* '()))
@@ -36,7 +38,8 @@
        (dolist (thunk *call-temporaries*) (ignore-errors (funcall thunk))))))
 
 (defun register-temporary (thunk)
-  (push thunk *call-temporaries*))
+  (unless (eq *call-temporaries* :outside)
+    (push thunk *call-temporaries*)))
 
 ;;; Strings ------------------------------------------------------------------
 
@@ -244,11 +247,13 @@ lays them out: each field aligned to its own alignment, a union's all at zero."
        (:pointer (setf (cffi:mem-ref pointer :pointer) (or value (cffi:null-pointer))))
        (:qualified (write-struct-field pointer (third node) value))
        (:vector (write-vector-elements pointer node value))
-       (:matrix (loop with column = (matrix-column-node node)
-                      with stride = (vector-byte-size column)
-                      for c being the elements of value
-                      for i from 0
-                      do (write-vector-elements (cffi:inc-pointer pointer (* i stride)) column c)))
+       (:matrix (let* ((column (matrix-column-node node))
+                       (stride (vector-byte-size column))
+                       (i 0))
+                  (map nil (lambda (c)
+                             (write-vector-elements (cffi:inc-pointer pointer (* i stride)) column c)
+                             (incf i))
+                       value)))
        ((:struct :union) (write-struct-from-sequence pointer node value))
        ((:array :bitfield)
         (error "A ~(~a~) field cannot be written from a sequence; fill the ~
@@ -378,18 +383,18 @@ carrier -- see %PACK-WIDE-VECTOR in the seam file."
       (%unpack-wide-vector node carrier)))
 
 (defun pack-matrix (node value)
-  "VALUE, a sequence of column sequences, as a vector of column carriers."
+  "VALUE, a sequence of column sequences, as what carries a matrix across the
+FFI: the seam decides -- a vector of column carriers where the columns go in
+registers one by one, a buffer of the whole thing where C loads it by value."
   (destructuring-bind (element columns rows) (rest node)
     (declare (ignore element rows))
     (unless (and (typep value 'sequence) (not (stringp value)) (= (length value) columns))
       (error "Cannot pass ~S as a matrix of ~d columns." value columns))
-    (let ((column (matrix-column-node node)))
-      (map 'vector (lambda (c) (pack-vector column c)) value))))
+    (%pack-matrix node value)))
 
-(defun unpack-matrix (node carriers)
-  "The columns packed in CARRIERS, as a vector of column vectors."
-  (let ((column (matrix-column-node node)))
-    (map 'vector (lambda (c) (unpack-vector column c)) carriers)))
+(defun unpack-matrix (node carrier)
+  "The columns in CARRIER, as a vector of column vectors."
+  (%unpack-matrix node carrier))
 
 ;;; Argument marshalling -----------------------------------------------------
 

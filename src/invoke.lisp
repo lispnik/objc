@@ -88,6 +88,11 @@ DISPOSITION is :DEFAULT for INVOKE, :BOOLEAN for INVOKE-BOOL, or the RESULT
 argument of INVOKE-INTO."
   (let ((kind (cocoa-struct-kind result-node)))
     (cond
+      ;; A vector or matrix result the backend wrote through OUT-SAP rather
+      ;; than returning: read out before the buffer goes.
+      ((and (or (vector-node-p result-node) (matrix-node-p result-node))
+            (result-through-buffer-p result-node))
+       (read-struct-field (pointer-of out-sap) result-node))
       ;; Struct results were written through OUT-SAP, which belongs to the
       ;; caller's WITH-FOREIGN-OBJECT and is gone once this call returns.  So a
       ;; struct result may only leave here as a value copied OUT of that buffer:
@@ -241,7 +246,9 @@ Anything the manual does not name a conversion for is returned unchanged --
             (let* ((marshalled (loop for value in args
                                      for node in (cddr arg-nodes)
                                      collect (marshal-argument value node)))
-                   (structp (struct-node-p result-node))
+                   ;; A structure always; on a backend whose trampolines load
+                   ;; aggregates from memory, a wide vector or matrix too.
+                   (structp (result-through-buffer-p result-node))
                    (size (if structp (node-size-and-alignment result-node) 0)))
               (if structp
                   (cffi:with-foreign-object (out :uint8 (max 1 size))

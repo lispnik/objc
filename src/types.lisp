@@ -339,8 +339,9 @@ padded to four as the simd types are -- float3 is sixteen bytes, not twelve."
                (error 'unsupported-type-encoding
                       :encoding node
                       :detail (format nil "a 16-byte SIMD vector travels in a 128-bit ~
-                                           register; SBCL on Apple silicon carries ~
-                                           it and this build does not"))))
+                                           register, which this build cannot carry: ~
+                                           SBCL on Apple silicon can, and ECL where ~
+                                           a C compiler lets it compile a trampoline"))))
             (t
              (error 'unsupported-type-encoding
                     :encoding node
@@ -374,9 +375,10 @@ padded to four as the simd types are -- float3 is sixteen bytes, not twelve."
     (unless (wide-vector-supported-p)
       (error 'unsupported-type-encoding
              :encoding node
-             :detail (format nil "a matrix is carried as its columns in ~
-                                  consecutive SIMD registers; SBCL on Apple ~
-                                  silicon carries it and this build does not")))
+             :detail (format nil "a matrix travels in consecutive SIMD registers, ~
+                                  which this build cannot carry: SBCL on Apple ~
+                                  silicon can, and ECL where a C compiler lets it ~
+                                  compile a trampoline")))
     node))
 
 ;;; Sizes without Foundation -------------------------------------------------

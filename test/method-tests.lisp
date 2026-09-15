@@ -373,7 +373,7 @@ register and whose float4 result leaves the same way, through the widened
 callback wrapper in abi-neon.lisp; the body sees a Lisp vector.  Defined
 inside the test, because where sixteen bytes are not carried the definition
 itself is refused, before any test could skip."
-  (if (not (objc::wide-vector-supported-p))
+  (if (not (objc::wide-vector-callbacks-supported-p))
       (skip "sixteen-byte SIMD vectors are not carried by this build")
       (with-objc
         (eval '(objc:define-objc-method ("scaled:by:" (:vector :float 4))
@@ -387,7 +387,7 @@ itself is refused, before any test could skip."
   "Four column parameters in, gathered into a vector for the body, and a
 result of four registers out, through the marked 512-bit type the widened
 wrapper loads into v0-v3."
-  (if (not (objc::wide-vector-supported-p))
+  (if (not (objc::wide-vector-callbacks-supported-p))
       (skip "matrices are not carried by this build")
       (with-objc
         (eval '(objc:define-objc-method ("doubledMatrix:" (:matrix :float 4 4))

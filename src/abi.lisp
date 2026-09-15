@@ -369,6 +369,25 @@ float2x2 result is two doubles in d0 and d1, which nothing here places."
               method or block yet; ~a can be passed to one." (unparse-type node)))
     (wide-alien-type-name (* 128 (third node)))))
 
+(defun %pack-matrix (node value)
+  "A matrix's columns, each packed as a vector: what the builders spread."
+  (let ((column (matrix-column-node node)))
+    (map 'vector (lambda (c) (pack-vector column c)) value)))
+
+(defun %unpack-matrix (node carriers)
+  (let ((column (matrix-column-node node)))
+    (map 'vector (lambda (c) (unpack-vector column c)) carriers)))
+
+(defun wide-vector-callbacks-supported-p ()
+  "Whether a Lisp method or block may take or return a sixteen-byte vector or
+a matrix: here, wherever the vectors themselves are carried."
+  (wide-vector-supported-p))
+
+(defun result-through-buffer-p (node)
+  "Whether a result of type NODE is written through the OUT buffer rather than
+returned as a value: structures only, here; a vector or matrix is a value."
+  (struct-node-p node))
+
 (defun %pack-wide-vector (node value)
   "VALUE's lanes as the simd-pack that travels in a 128-bit register."
   (unless (wide-vector-supported-p)

@@ -658,7 +658,9 @@ unchanged:
 - `examples/metal.lisp` — GPU compute: a shader compiled at run time from a
   string and executed over a Lisp vector. See [Metal compute](#metal-compute).
 - `examples/scene-kit.lisp` — a 3D scene built from Lisp forms and rendered to a
-  PNG with no window. See [A 3D scene, headless](#a-3d-scene-headless).
+  PNG with no window, and the same scene placed by `float4x4` transforms
+  composed in Lisp, SceneKit's own composition read back as a matrix. See
+  [A 3D scene, headless](#a-3d-scene-headless).
 - `examples/audio.lisp` — sound synthesised a sample at a time by a Lisp
   closure, offline or through the speakers. See [Sound](#sound).
 - `examples/shader.lisp` — a shader playground: one expression per pixel,
@@ -1186,7 +1188,34 @@ picture is described where you can read it.
 Lisp reading, so it crosses as a pointer to a filled buffer. Three such
 structures across the examples now, which makes the rule plain: the `#(x y w h)`
 shorthand is a convenience for `NSRect`, `NSPoint`, `NSSize` and `NSRange`, and
-everything else is a buffer.
+everything else is a buffer -- or was, until declared structures learned to
+cross as vectors.
+
+**The simd half** is the same scene placed by transforms. SceneKit's other
+face is `simdPosition`, a `vector_float3`, and `simdTransform`, a
+`simd_float4x4`, neither of which Clang can encode, so the runtime describes
+those methods as taking nothing and returning nothing. Declared once, by
+selector, they take and return Lisp vectors -- a `float3` as `#(x y z)`, a
+matrix as four column vectors -- and a transform composed in Lisp, a rotation
+times a translation as plain arithmetic on columns, is handed over whole:
+
+```lisp
+(objc:invoke node "setSimdTransform:"
+             (matrix-multiply (matrix-rotation-y angle) (matrix-translation 4 0 0)))
+(objc:invoke satellite "simdWorldTransform")   ; => four columns, SceneKit's product
+(report-scene-kit-simd)                          ; writes /tmp/objc-scene-simd.png
+```
+
+<img src="doc/screenshots/scene-kit.png" width="480" alt="A rendered 3D scene: a gold sphere at the centre, five coloured cubes around it on a thin grey ring, each placed by a transform composed in Lisp.">
+
+The test with teeth is the world transform: a satellite sits under an orbit
+node, SceneKit composes the two transforms itself, and the result must agree
+to four decimals with the product Lisp computes from the same two matrices.
+Two implementations of the multiplication agreeing says the columns went over
+in the right order and the right registers, both ways. On SBCL a `simd-pack`
+goes over as the position itself. This half runs wherever the build carries
+sixteen bytes by value -- SBCL on Apple silicon, and ECL with a C compiler --
+and declines by name elsewhere. See [SIMD vectors](#simd-vectors).
 
 ### Sound
 

@@ -424,6 +424,27 @@ SKIPS without a Metal device, which SCNRenderer requires."
             (is-true (getf result :animates) "and the scene time changed the picture")
             (is (= 10 (getf result :nodes)) "camera, two lights, sphere, five boxes, torus"))))))
 
+(test the-scene-kit-example-drives-transforms-as-matrices
+  "examples/scene-kit.lisp's simd half: a node's simd_float4x4 transform set
+whole from a matrix composed in Lisp and read back; a float3 position read
+out of its translation column; and, the one with teeth, a satellite's world
+transform as SceneKit composes it agreeing to four decimals with the product
+Lisp computes from the same two matrices.  On SBCL a simd-pack goes over as
+the position itself.  SKIPS where the build cannot carry sixteen bytes by
+value, and without a Metal device for the render."
+  (with-runtime
+    (let ((result (objc/examples:test-scene-kit-simd)))
+      (cond ((not (getf result :available))
+             (skip "this build does not carry float4x4 by value"))
+            ((and (member :metal result) (null (getf result :metal)))
+             (skip "no Metal device, so no SceneKit renderer"))
+            (t
+             (is-true (getf result :round-trip) "a matrix set is the matrix read back")
+             (is-true (getf result :position) "simdPosition is the translation column")
+             (is-true (getf result :world-agrees) "SceneKit's composition equals Lisp's")
+             #+sbcl (is-true (getf result :pack) "a simd-pack went over as the position")
+             (is-true (getf result :png) "and the scene rendered"))))))
+
 (test the-audio-example-synthesises-a-waveform
   "examples/audio.lisp fills an audio buffer from a Lisp closure -- the block is
 the instrument.  Rendered OFFLINE here, through AVAudioEngine's manual rendering

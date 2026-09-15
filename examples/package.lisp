@@ -126,6 +126,9 @@
            #:make-scene #:add-geometry #:add-camera #:add-light #:render-scene
            #:solar-scene #:ns-image-to-png #:set-position #:set-euler-angles
            #:test-scene-kit #:report-scene-kit
+           #:simd-available-p #:simd-scene #:matrix-multiply #:matrix-translation
+           #:matrix-rotation-y #:matrix-rotation-x #:matrix-scale #:matrix-identity
+           #:test-scene-kit-simd #:report-scene-kit-simd
            ;; Audio synthesis (examples/audio.lisp).
            #:synthesize #:play #:sine #:fm #:chord #:write-wav
            #:make-audio-engine #:render-block-usable-p

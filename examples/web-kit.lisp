@@ -22,7 +22,7 @@
 ;;; runtime dispatches delegate callbacks by selector, not by conformance -- but
 ;;; -conformsToProtocol: would answer NO, and some AppKit code asks.
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (objc::ensure-libobjc)
+  (objc:ensure-objc-initialized)
   (fli:register-module "/System/Library/Frameworks/WebKit.framework/WebKit"))
 
 (objc:define-objc-class web-kit-test-delegate ()

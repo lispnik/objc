@@ -390,12 +390,10 @@ OBJC-BOOL once the measurement said 'c', so a method defined after
 ENSURE-OBJC-INITIALIZED -- the REPL's order, and the order CI reached once the
 examples initialized at compile time -- received 0 and 1 where the same method
 defined before it received NIL and T.  Simulated on any machine by binding the
-measured character: the node stays :BOOL, the written encoding says 'c', and
-the method sees booleans."
+measured character: the node stays :BOOL and the method sees booleans."
   (with-objc
     (let ((objc::*bool-encoding-char* #\c))
       (is (eq :bool (objc::node-for-fli-type 'objc:objc-bool)))
-      (is (string= "c" (objc::unparse-type :bool)))
       (eval '(objc:define-objc-class bool-char-test ()
               ()
               (:objc-class-name "LispBoolCharTest")))

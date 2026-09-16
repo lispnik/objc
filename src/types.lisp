@@ -64,7 +64,17 @@ pointer type.")
 
 ;;; BOOL is measured, not assumed ------------------------------------------
 
-;;; *BOOL-ENCODING-CHAR* itself is defined in encoding.lisp, which writes it.
+(defvar *bool-encoding-char* #\B
+  "The character the runtime uses to encode BOOL on this machine.
+Set at initialization by reading a known BOOL-returning method's encoding, so
+the difference between Intel (a signed char, 'c') and Apple silicon (C99 _Bool,
+'B') is discovered rather than declared.  Defaults to the Apple silicon answer
+so the table is usable before initialization.
+
+Read when an encoding is parsed, never when one is written: a :BOOL node is
+always written as 'B', which the runtime accepts on either machine for a
+one-byte argument, and which is what Clang writes for a C bool on Intel too.
+Writing 'c' there broke the round trip of 'B'.")
 
 (defun %measure-bool-encoding ()
   "Read the BOOL encoding from -[NSObject isProxy] and record it."

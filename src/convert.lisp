@@ -384,14 +384,7 @@ WRITE-STRUCT-FROM-SEQUENCE, and what INVOKE returns for a declared structure."
     (let ((type (vector-element-cffi-type element)))
       (coerce (loop for i below count collect (cffi:mem-aref pointer type i)) 'vector))))
 
-(defun lane-bit-size (element)
-  "Spelled out rather than asked of CFFI: FOREIGN-TYPE-SIZE folds to a constant
-for a literal type and parses a variable one on every call, 53 ns against 6."
-  (ecase element
-    ((:char :uchar) 8)
-    ((:short :ushort) 16)
-    ((:int :uint :float) 32)
-    ((:long-long :ulong-long :double) 64)))
+(declaim (inline lane-bits lane-value))
 
 (defun lane-bits (element value)
   "The bit pattern of VALUE as a lane of ELEMENT, an unsigned integer."
@@ -412,13 +405,17 @@ for a literal type and parses a variable one on every call, 53 ns against 6."
 ;;; The carrier's 64 bits are handled as two 32-bit words, HIGH and LOW, so
 ;;; that every intermediate is a fixnum: a float in the top lane sets bit 62
 ;;; or 63, and one 64-bit integer holding it would be a bignum on every send.
+;;; The lane loop is written out for a simple vector, the value INVOKE is
+;;; given nearly always, and goes through ELT for any other sequence.
 
 (defun pack-vector (node value)
   "VALUE, a Lisp sequence, as what carries it across the FFI: the double whose
 eight bytes are its lanes, or for a sixteen-byte vector the backend's own
 carrier -- see %PACK-WIDE-VECTOR in the seam file."
   (if (= 8 (vector-byte-size node))
-      (destructuring-bind (element count) (rest node)
+      (let ((element (second node))
+            (count (third node)))
+        (declare (fixnum count))
         (unless (and (typep value 'sequence) (not (stringp value)) (= (length value) count))
           (error "Cannot pass ~S as a ~d-element SIMD vector of ~(~a~)." value count element))
         (case element
@@ -430,14 +427,18 @@ carrier -- see %PACK-WIDE-VECTOR in the seam file."
              (%double-float-from-words (ldb (byte 32 32) bits) (ldb (byte 32 0) bits))))
           (t
            (let ((width (lane-bit-size element))
-                 (low 0) (high 0) (i 0))
-             (map nil (lambda (x)
-                        (let ((position (* i width)))
-                          (if (< position 32)
-                              (setf low (dpb (lane-bits element x) (byte width position) low))
-                              (setf high (dpb (lane-bits element x) (byte width (- position 32)) high))))
-                        (incf i))
-                  value)
+                 (low 0) (high 0))
+             (declare (fixnum width low high))
+             (flet ((place (i x)
+                      (declare (fixnum i))
+                      (let ((position (* i width)))
+                        (if (< position 32)
+                            (setf low (dpb (lane-bits element x) (byte width position) low))
+                            (setf high (dpb (lane-bits element x) (byte width (- position 32)) high))))))
+               (declare (inline place))
+               (if (simple-vector-p value)
+                   (dotimes (i count) (place i (svref value i)))
+                   (dotimes (i count) (place i (elt value i)))))
              (%double-float-from-words high low)))))
       (%pack-wide-vector node value)))
 

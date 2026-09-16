@@ -1734,10 +1734,11 @@ once on ECL):
   LispWorks.  It was 539: the NSString was made with -alloc and
   -initWithUTF8String:, two sends, and is now one call of
   CFStringCreateWithBytes on the string's UTF-8, which also keeps a NUL.
-- **An eight-byte vector as a Lisp vector** is 226 ns in and 170 out, from
+- **An eight-byte vector as a Lisp vector** is 193 ns in and 166 out, from
   382 and 372: the lanes are assembled into the carrier double's bits in
-  registers instead of through a foreign buffer.  The 60 ns over the same
-  value passed as a double through the list form is the lane loop.
+  registers instead of through a foreign buffer, with the loop written out
+  for a simple vector.  The 50 ns over the same value passed as a double
+  through the list form is the lane loop and the type check on the value.
 - **The declared-vector rows on ECL** (4 to 7 µs) go through its compiled
   trampolines with buffered aggregates; the same vector as a double through
   the list form is 0.6 µs.  That path is the next thing to look at there.

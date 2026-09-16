@@ -317,12 +317,24 @@ Accepts what DEFINE-OBJC-METHOD and INVOKE's explicit arg-types list accept."
   '(:char :uchar :short :ushort :int :uint :long-long :ulong-long :float :double)
   "The scalar nodes a (:VECTOR ELEMENT COUNT) may be made of.")
 
+(declaim (inline lane-bit-size))
+(defun lane-bit-size (element)
+  "The bits in one lane of a SIMD vector of ELEMENT.  Spelled out rather than
+asked of CFFI: FOREIGN-TYPE-SIZE folds to a constant for a literal type and
+parses a variable one on every call, 53 ns against 6."
+  (ecase element
+    ((:char :uchar) 8)
+    ((:short :ushort) 16)
+    ((:int :uint :float) 32)
+    ((:long-long :ulong-long :double) 64)))
+
 (defun vector-byte-size (node)
   "The bytes a SIMD vector occupies: its lanes, with a three-lane vector
 padded to four as the simd types are -- float3 is sixteen bytes, not twelve."
-  (destructuring-bind (element count) (rest node)
-    (let ((lanes (if (= count 3) 4 count)))
-      (* lanes (node-size-and-alignment element)))))
+  (let* ((element (second node))
+         (count (third node))
+         (lanes (if (= count 3) 4 count)))
+    (ash (* lanes (lane-bit-size element)) -3)))
 
 (defun check-vector-node (node)
   "NODE, if it names a SIMD vector this library can carry; signals otherwise."

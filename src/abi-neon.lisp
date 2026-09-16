@@ -28,10 +28,14 @@
 (in-package :sb-vm)
 
 ;;; Build-time constants of c-call.lisp that the image does not keep.
-(unless (boundp '+number-stack-alignment-mask+)
-  (defconstant +number-stack-alignment-mask+ (1- (* n-word-bytes 2))))
-(unless (boundp '+max-register-args+)
-  (defconstant +max-register-args+ 8))
+;;; Build-time constants of SBCL's arm64 backend that are not in the image.
+;;; At compile time as well, or every reference below is an undefined-variable
+;;; warning at compile and a special-variable lookup at run.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (unless (boundp '+number-stack-alignment-mask+)
+    (defconstant +number-stack-alignment-mask+ (1- (* n-word-bytes 2))))
+  (unless (boundp '+max-register-args+)
+    (defconstant +max-register-args+ 8)))
 
 (defun objc-wide-alien-type-p (type)
   "The mark abi.lisp puts on its 128-bit vector type, and on the wider ones a
@@ -276,18 +280,20 @@ matrix result takes: 256, 384 or 512 bits, two to four registers."
                    (alien-pointer-type-p result-type)
                    (alien-type-= #.(parse-alien-type 'system-area-pointer nil)
                                  result-type))
-               (loadw r0-tn nsp-tn))
+               ;; SBCL's source says LOADW here; that is a macro of its own
+               ;; build and is not in the image, so this is its expansion.
+               (inst ldr r0-tn (@ nsp-tn)))
               ;; objc: a 128-bit SIMD vector result comes back in the whole of v0;
               ;; a matrix result, one register per column, in v0 onwards.
               ((objc-wide-alien-type-p result-type)
                (dotimes (i (/ (alien-type-bits result-type) 128))
                  (inst ldr (make-tn i 'int-neon-reg) (@ nsp-tn (* 16 i)))))
               ((alien-float-type-p result-type)
-               (loadw (make-tn 0
-                               (if (alien-single-float-type-p result-type)
-                                   'single-reg
-                                   'double-reg))
-                      nsp-tn))
+               (inst ldr (make-tn 0
+                                  (if (alien-single-float-type-p result-type)
+                                      'single-reg
+                                      'double-reg))
+                     (@ nsp-tn)))
               ((alien-void-type-p result-type))
               ;; Struct return types
               ((alien-record-type-p result-type)

@@ -43,24 +43,38 @@ value at the REPL, say -- is not filed where nothing will ever free it.")
 
 ;;; Strings ------------------------------------------------------------------
 
+(define-runtime-function ("CFStringCreateWithBytes" %cf-string-create-with-bytes) :pointer
+  (allocator :pointer)
+  (bytes :pointer)
+  (length :long)
+  (encoding :uint32)
+  (external-representation :boolean))
+
+(defconstant +cf-string-encoding-utf8+ #x08000100
+  "kCFStringEncodingUTF8.")
+
 (defun string-to-ns-string (string &optional autoreleasep)
   "Return an NSString containing the characters of STRING.
 
 When AUTORELEASEP is true the result is autoreleased; otherwise YOU are
-responsible for releasing it, which is what the manual specifies.  The
-non-autoreleased case therefore uses -[NSString initWithUTF8String:] rather than
-+stringWithUTF8String:, so the +1 belongs to the caller and not to some pool
-that may not exist on this thread."
+responsible for releasing it, which is what the manual specifies.
+
+Made with CFStringCreateWithBytes on the string's UTF-8, which is one C call
+and comes back at +1, rather than -[NSString alloc] and -initWithUTF8String:,
+two sends: the sends were 394 of the 461 ns a string argument cost
+(bench/RESULTS.md, 2026-09-16).  A CFString is an NSString -- toll-free
+bridged, it is what +stringWithUTF8String: makes anyway -- and taking a byte
+count rather than a C string means a NUL in the Lisp string survives."
   (check-type string string)
-  (let ((bytes (cffi:foreign-string-alloc string :encoding :utf-8)))
-    (unwind-protect
-         (let ((ns (if autoreleasep
-                       (pointer-of (send-raw "NSString" "stringWithUTF8String:" bytes))
-                       (pointer-of
-                        (send-raw (pointer-of (send-raw "NSString" "alloc"))
-                                  "initWithUTF8String:" bytes)))))
-           ns)
-      (cffi:foreign-string-free bytes))))
+  (let* ((octets (babel:string-to-octets string :encoding :utf-8))
+         (ns (cffi:with-pointer-to-vector-data (bytes octets)
+               (%cf-string-create-with-bytes (cffi:null-pointer) bytes (length octets)
+                                             +cf-string-encoding-utf8+ nil))))
+    (when (cffi:null-pointer-p ns)
+      (error "CFStringCreateWithBytes refused ~S." string))
+    (if autoreleasep
+        (pointer-of (send-raw ns "autorelease"))
+        ns)))
 
 (defun ns-string-to-string (ns-string &optional preserve-line-terminators)
   "Return a Lisp string with the characters of NS-STRING.
@@ -333,8 +347,14 @@ WRITE-STRUCT-FROM-SEQUENCE, and what INVOKE returns for a declared structure."
 ;;; SIMD vectors ---------------------------------------------------------------
 ;;;
 ;;; An eight-byte vector crosses as the double occupying the same bytes; see
-;;; types.lisp for why a double and not a struct.  Packing goes through a
-;;; foreign buffer because that is the one honest way to reinterpret bits.
+;;; types.lisp for why a double and not a struct.  The lanes are assembled
+;;; into the double's 64 bits arithmetically -- lane 0 lowest, as on the
+;;; little-endian machines this runs on -- and the seam turns the bits into a
+;;; double and back, which SBCL does without touching memory.  This went
+;;; through a foreign buffer once, the obvious way to reinterpret bits and 240
+;;; ns each way against 13 for the arithmetic (bench/RESULTS.md, 2026-09-16).
+;;; Memory is still the path for a vector inside a struct, and for the wide
+;;; vectors, where there is memory anyway.
 
 (defun vector-element-cffi-type (element)
   (ecase element
@@ -364,22 +384,84 @@ WRITE-STRUCT-FROM-SEQUENCE, and what INVOKE returns for a declared structure."
     (let ((type (vector-element-cffi-type element)))
       (coerce (loop for i below count collect (cffi:mem-aref pointer type i)) 'vector))))
 
+(defun lane-bit-size (element)
+  "Spelled out rather than asked of CFFI: FOREIGN-TYPE-SIZE folds to a constant
+for a literal type and parses a variable one on every call, 53 ns against 6."
+  (ecase element
+    ((:char :uchar) 8)
+    ((:short :ushort) 16)
+    ((:int :uint :float) 32)
+    ((:long-long :ulong-long :double) 64)))
+
+(defun lane-bits (element value)
+  "The bit pattern of VALUE as a lane of ELEMENT, an unsigned integer."
+  (ecase element
+    (:float (%single-float-bits (coerce value 'single-float)))
+    ((:char :short :int :long-long) (ldb (byte (lane-bit-size element) 0) value))
+    ((:uchar :ushort :uint :ulong-long) value)))
+
+(defun lane-value (element bits)
+  "The lane of ELEMENT whose bit pattern is BITS."
+  (ecase element
+    (:float (%single-float-from-bits bits))
+    ((:char :short :int :long-long)
+     (let ((size (lane-bit-size element)))
+       (if (logbitp (1- size) bits) (- bits (ash 1 size)) bits)))
+    ((:uchar :ushort :uint :ulong-long) bits)))
+
+;;; The carrier's 64 bits are handled as two 32-bit words, HIGH and LOW, so
+;;; that every intermediate is a fixnum: a float in the top lane sets bit 62
+;;; or 63, and one 64-bit integer holding it would be a bignum on every send.
+
 (defun pack-vector (node value)
   "VALUE, a Lisp sequence, as what carries it across the FFI: the double whose
 eight bytes are its lanes, or for a sixteen-byte vector the backend's own
 carrier -- see %PACK-WIDE-VECTOR in the seam file."
   (if (= 8 (vector-byte-size node))
-      (cffi:with-foreign-object (p :double)
-        (write-vector-elements p node value)
-        (cffi:mem-ref p :double))
+      (destructuring-bind (element count) (rest node)
+        (unless (and (typep value 'sequence) (not (stringp value)) (= (length value) count))
+          (error "Cannot pass ~S as a ~d-element SIMD vector of ~(~a~)." value count element))
+        (case element
+          ;; One lane the width of the carrier: the double is the value, and
+          ;; a 64-bit integer lane has no fixnum form to keep.
+          (:double (coerce (elt value 0) 'double-float))
+          ((:long-long :ulong-long)
+           (let ((bits (lane-bits element (elt value 0))))
+             (%double-float-from-words (ldb (byte 32 32) bits) (ldb (byte 32 0) bits))))
+          (t
+           (let ((width (lane-bit-size element))
+                 (low 0) (high 0) (i 0))
+             (map nil (lambda (x)
+                        (let ((position (* i width)))
+                          (if (< position 32)
+                              (setf low (dpb (lane-bits element x) (byte width position) low))
+                              (setf high (dpb (lane-bits element x) (byte width (- position 32)) high))))
+                        (incf i))
+                  value)
+             (%double-float-from-words high low)))))
       (%pack-wide-vector node value)))
 
 (defun unpack-vector (node carrier)
   "The lanes packed in CARRIER, as a Lisp vector."
   (if (= 8 (vector-byte-size node))
-      (cffi:with-foreign-object (p :double)
-        (setf (cffi:mem-ref p :double) (coerce carrier 'double-float))
-        (read-vector-elements p node))
+      (destructuring-bind (element count) (rest node)
+        (let ((carrier (coerce carrier 'double-float)))
+          (case element
+            (:double (vector carrier))
+            ((:long-long :ulong-long)
+             (multiple-value-bind (high low) (%double-float-words carrier)
+               (vector (lane-value element (logior (ash high 32) low)))))
+            (t
+             (multiple-value-bind (high low) (%double-float-words carrier)
+               (let ((width (lane-bit-size element))
+                     (lanes (make-array count)))
+                 (dotimes (i count lanes)
+                   (let ((position (* i width)))
+                     (setf (aref lanes i)
+                           (lane-value element
+                                       (if (< position 32)
+                                           (ldb (byte width position) low)
+                                           (ldb (byte width (- position 32)) high))))))))))))
       (%unpack-wide-vector node carrier)))
 
 (defun pack-matrix (node value)

@@ -278,6 +278,19 @@ to four, as the simd types do.  Thirty-two bytes is no register at all."
   (is (equalp #(1 2 3 4)
               (objc::unpack-vector '(:vector :short 4)
                                    (objc::pack-vector '(:vector :short 4) #(1 2 3 4)))))
+  ;; Every lane shape, with the sign bit of the top lane set: the carrier is
+  ;; a double, and a negative top lane makes it a negative one.
+  (dolist (case '(((:vector :float 2) #(-1.5 -2.5))
+                  ((:vector :double 1) #(-3.25d0))
+                  ((:vector :int 2) #(-2147483648 2147483647))
+                  ((:vector :uint 2) #(4294967295 0))
+                  ((:vector :short 4) #(-32768 32767 -1 1))
+                  ((:vector :ushort 4) #(65535 0 1 2))
+                  ((:vector :char 8) #(-128 127 -1 0 1 2 3 -4))
+                  ((:vector :uchar 8) #(255 0 1 2 3 4 5 6))))
+    (destructuring-bind (node lanes) case
+      (is (equalp lanes (objc::unpack-vector node (objc::pack-vector node lanes)))
+          "~S did not survive packing" node)))
   (signals error (objc::pack-vector '(:vector :float 2) #(1.0 2.0 3.0))))
 
 

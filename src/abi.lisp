@@ -388,6 +388,25 @@ a matrix: here, wherever the vectors themselves are carried."
 returned as a value: structures only, here; a vector or matrix is a value."
   (struct-node-p node))
 
+;;; Float bits ------------------------------------------------------------------
+;;;
+;;; An eight-byte vector's lanes are assembled into 64 bits in convert.lisp;
+;;; these turn bits into the double that carries them and back, in registers.
+
+(defun %single-float-bits (x)
+  (ldb (byte 32 0) (sb-kernel:single-float-bits x)))
+
+(defun %single-float-from-bits (bits)
+  (sb-kernel:make-single-float (if (logbitp 31 bits) (- bits #x100000000) bits)))
+
+(defun %double-float-words (x)
+  "The high and low 32-bit words of X's bits, both unsigned."
+  (values (ldb (byte 32 0) (sb-kernel:double-float-high-bits x))
+          (sb-kernel:double-float-low-bits x)))
+
+(defun %double-float-from-words (high low)
+  (sb-kernel:make-double-float (if (logbitp 31 high) (- high #x100000000) high) low))
+
 ;;; Packing lanes into the carrier ---------------------------------------------
 ;;;
 ;;; The carrier is a simd-pack tagged as two 64-bit words, and SBCL's kernel

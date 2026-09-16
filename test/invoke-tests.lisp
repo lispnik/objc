@@ -121,6 +121,18 @@ and does not exist on arm64."
   (with-runtime
     (is (eql 1 (objc:invoke (ns "hello world") "hasPrefix:" "hello")))))
 
+(test string-argument-keeps-every-character
+  "The NSString is made from a byte count, not a C string, so a NUL is a
+character like any other; and the bytes are UTF-8, so nothing outside ASCII
+is lost."
+  (with-runtime
+    (let ((with-nul (format nil "a~cb" (code-char 0))))
+      (is (eql 3 (objc:invoke (objc:invoke "NSString" "stringWithString:" with-nul) "length"))))
+    (is (string= "héllo wörld — ok"
+                 (objc:invoke-into 'string
+                                   (objc:invoke "NSString" "stringWithString:" "héllo wörld — ok")
+                                   "self")))))
+
 (test nil-argument-becomes-a-null-pointer
   (with-runtime
     (let ((array (objc:invoke "NSArray" "array")))

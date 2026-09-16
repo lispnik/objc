@@ -153,6 +153,31 @@ the OUT buffer by the compiled trampoline; a value is not."
     (register-temporary (lambda () (cffi:foreign-free buffer)))
     buffer))
 
+;;; Float bits: ECL has no way to read a float's bits in Lisp, so a foreign
+;;; word is the honest reinterpretation here.
+
+(defun %single-float-bits (x)
+  (cffi:with-foreign-object (p :uint32)
+    (setf (cffi:mem-ref p :float) x)
+    (cffi:mem-ref p :uint32)))
+
+(defun %single-float-from-bits (bits)
+  (cffi:with-foreign-object (p :uint32)
+    (setf (cffi:mem-ref p :uint32) bits)
+    (cffi:mem-ref p :float)))
+
+(defun %double-float-words (x)
+  "The high and low 32-bit words of X's bits, both unsigned."
+  (cffi:with-foreign-object (p :uint32 2)
+    (setf (cffi:mem-ref p :double) x)
+    (values (cffi:mem-aref p :uint32 1) (cffi:mem-aref p :uint32 0))))
+
+(defun %double-float-from-words (high low)
+  (cffi:with-foreign-object (p :uint32 2)
+    (setf (cffi:mem-aref p :uint32 0) low
+          (cffi:mem-aref p :uint32 1) high)
+    (cffi:mem-ref p :double)))
+
 (defun %pack-wide-vector (node value)
   (unless (wide-vector-supported-p)
     (error 'unsupported-type-encoding

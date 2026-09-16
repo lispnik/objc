@@ -383,6 +383,26 @@ itself is refused, before any test could skip."
           (is (equalp #(2.0 4.0 6.0 8.0) (objc:invoke object "scaled:by:" #(1 2 3 4) 2d0)))))))
 
 
+(test a-lisp-method-takes-a-float4-and-returns-a-scalar
+  "A wide argument with a scalar result: the widened wrapper's integer and
+float result loads, which SBCL's source writes with LOADW -- a macro of its
+build that is not in the image, so a wrapper built from the copied source
+failed at the first such method with an undefined function.  A vector-in,
+float-out method is the natural shape (a length, a dot product) and has to
+work; the integer form covers the other load."
+  (if (not (objc::wide-vector-callbacks-supported-p))
+      (skip "sixteen-byte SIMD vectors are not carried by this build")
+      (with-objc
+        (eval '(objc:define-objc-method ("sumOf:" :float)
+                   ((self simd-object) (v (:vector :float 4)))
+                 (reduce #'+ v)))
+        (eval '(objc:define-objc-method ("countAbove:in:" :int)
+                   ((self simd-object) (limit :double) (v (:vector :float 4)))
+                 (count-if (lambda (x) (> x limit)) v)))
+        (let ((object (objc:alloc-init-object "LispSimdObject")))
+          (is (= 10.0 (objc:invoke object "sumOf:" #(1 2 3 4))))
+          (is (= 2 (objc:invoke object "countAbove:in:" 2.5d0 #(1 2 3 4))))))))
+
 (test a-lisp-method-takes-and-returns-a-matrix
   "Four column parameters in, gathered into a vector for the body, and a
 result of four registers out, through the marked 512-bit type the widened

@@ -383,6 +383,30 @@ itself is refused, before any test could skip."
           (is (equalp #(2.0 4.0 6.0 8.0) (objc:invoke object "scaled:by:" #(1 2 3 4) 2d0)))))))
 
 
+(test a-bool-parameter-is-a-bool-whatever-the-runtime-spells-it
+  "On Intel the runtime encodes BOOL as 'c', a signed char, and the library
+measures that at initialization.  NODE-FOR-FLI-TYPE used to answer :CHAR for
+OBJC-BOOL once the measurement said 'c', so a method defined after
+ENSURE-OBJC-INITIALIZED -- the REPL's order, and the order CI reached once the
+examples initialized at compile time -- received 0 and 1 where the same method
+defined before it received NIL and T.  Simulated on any machine by binding the
+measured character: the node stays :BOOL, the written encoding says 'c', and
+the method sees booleans."
+  (with-objc
+    (let ((objc::*bool-encoding-char* #\c))
+      (is (eq :bool (objc::node-for-fli-type 'objc:objc-bool)))
+      (is (string= "c" (objc::unparse-type :bool)))
+      (eval '(objc:define-objc-class bool-char-test ()
+              ()
+              (:objc-class-name "LispBoolCharTest")))
+      (eval '(objc:define-objc-method ("sawFlagAsChar:" objc:objc-object-pointer)
+                 ((self bool-char-test) (flag objc:objc-bool))
+               (declare (ignore self))
+               (objc:invoke "NSString" "stringWithUTF8String:" (format nil "~S" flag))))
+      (let ((object (objc:alloc-init-object "LispBoolCharTest")))
+        (is (string= "T" (objc:invoke-into 'string object "sawFlagAsChar:" t)))
+        (is (string= "NIL" (objc:invoke-into 'string object "sawFlagAsChar:" nil)))))))
+
 (test a-lisp-method-takes-a-float4-and-returns-a-scalar
   "A wide argument with a scalar result: the widened wrapper's integer and
 float result loads, which SBCL's source writes with LOADW -- a macro of its

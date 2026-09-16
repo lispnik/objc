@@ -69,6 +69,15 @@
   "Single-character type encodings.  '@' is handled separately because of the
 '@?' and '@\"ClassName\"' forms.")
 
+(defvar *bool-encoding-char* #\B
+  "The character the runtime uses to encode BOOL on this machine.
+Set at initialization by reading a known BOOL-returning method's encoding
+(%MEASURE-BOOL-ENCODING, types.lisp), so the difference between Intel (a
+signed char, 'c') and Apple silicon (C99 _Bool, 'B') is discovered rather than
+declared.  Defaults to the Apple silicon answer so the table is usable before
+initialization.  Read when a :BOOL node is written back out, so a method
+defined from Lisp declares its BOOL the way the platform's own do.")
+
 (defparameter +qualifier-encodings+
   '((#\r . :const)  (#\n . :in)     (#\N . :inout)
     (#\o . :out)    (#\O . :bycopy) (#\R . :byref)
@@ -286,6 +295,8 @@ and signals instead."
        (:id "@") (:block "@?")
        ;; What Clang writes for a type it cannot encode: nothing.
        (:unencodable "")
+       ;; 'B' or 'c', as this machine's runtime spells BOOL.
+       (:bool (string *bool-encoding-char*))
        (t (let ((entry (rassoc node +primitive-encodings+)))
             (unless entry
               (error 'unsupported-type-encoding

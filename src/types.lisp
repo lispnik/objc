@@ -64,12 +64,7 @@ pointer type.")
 
 ;;; BOOL is measured, not assumed ------------------------------------------
 
-(defvar *bool-encoding-char* #\B
-  "The character the runtime uses to encode BOOL on this machine.
-Set at initialization by reading a known BOOL-returning method's encoding, so
-the difference between Intel (a signed char, 'c') and Apple silicon (C99 _Bool,
-'B') is discovered rather than declared.  Defaults to the Apple silicon answer
-so the table is usable before initialization.")
+;;; *BOOL-ENCODING-CHAR* itself is defined in encoding.lisp, which writes it.
 
 (defun %measure-bool-encoding ()
   "Read the BOOL encoding from -[NSObject isProxy] and record it."
@@ -259,7 +254,13 @@ Accepts what DEFINE-OBJC-METHOD and INVOKE's explicit arg-types list accept."
           ((eq type 'objc-class) :class)
           ((eq type 'sel) :sel)
           ((eq type 'objc-c-string) :cstring)
-          ((eq type 'objc-bool) (if (char= *bool-encoding-char* #\B) :bool :char))
+          ;; A BOOL is a BOOL whatever character this machine's runtime spells
+          ;; it with: the character is UNPARSE-TYPE's concern.  This used to
+          ;; answer :CHAR once the encoding had been measured as 'c', so on
+          ;; Intel a method defined after ENSURE-OBJC-INITIALIZED -- the
+          ;; REPL's order -- received 0 and 1 where one defined before it
+          ;; received NIL and T.
+          ((eq type 'objc-bool) :bool)
           ((eq type 'objc-c++-bool) :bool)
           ((eq type 'objc-unknown) :void)
           ((eq type 'objc-at-question-mark) :block)

@@ -98,9 +98,13 @@ scope SBCL's equivalent has."
   "The CFFI pointer for a SAP. They are the same thing here."
   sap)
 
+(defvar *null-pointer* (cffi:null-pointer)
+  "One null pointer for every send.  CFFI:NULL-POINTER allocates a
+foreign-data object each time on ECL, 29 ns of a 600 ns send.")
+
 (defun sb-sap-zero ()
   "A null pointer, for the OUT argument of a non-struct send."
-  (cffi:null-pointer))
+  *null-pointer*)
 
 ;;; Type nodes ---------------------------------------------------------------
 

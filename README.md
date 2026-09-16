@@ -682,6 +682,9 @@ unchanged:
   PNG with no window, and the same scene placed by `float4x4` transforms
   composed in Lisp, SceneKit's own composition read back as a matrix. See
   [A 3D scene, headless](#a-3d-scene-headless).
+- `examples/scene-view.lisp` — the same scene in an `SCNView` in a window,
+  its orbit turned from Lisp one transform per frame, or by an `SCNAction`
+  with Lisp idle. See [A 3D scene, in a window](#a-3d-scene-in-a-window).
 - `examples/audio.lisp` — sound synthesised a sample at a time by a Lisp
   closure, offline or through the speakers. See [Sound](#sound).
 - `examples/shader.lisp` — a shader playground: one expression per pixel,
@@ -1238,6 +1241,31 @@ goes over as the position itself. This half runs wherever the build carries
 sixteen bytes by value -- SBCL on Apple silicon, and ECL with a C compiler --
 and declines by name elsewhere. See [SIMD vectors](#simd-vectors).
 
+### A 3D scene, in a window
+
+```lisp
+(animate-scene-view :seconds 12)   ; Lisp places every frame; blocks while it does
+(run-scene-view)                   ; SceneKit animates; blocks until the window closes
+(report-scene-view)                ; two seconds, then /tmp/objc-scene-view.png
+```
+
+The same arrangement in an `SCNView` inside an `NSWindow`, moving.  Its
+satellites hang under one orbit node, and `animate-scene-view` turns that node
+from Lisp sixty times a second: a `float4x4` composed here and set whole
+through `setSimdTransform:` where the build carries one, an Euler angle
+through an `SCNVector3` where it does not, with the run loop pumped between
+frames the way the canvas animates.  `run-scene-view` is the other shape of the
+same thing: an `SCNAction` repeated forever, SceneKit rendering on its own
+thread, Lisp idle in AppKit's modal loop until the window is closed.  Drag in
+the view to move the camera; that is SceneKit's own camera control, switched
+on.
+
+<img src="doc/screenshots/scene-view.png" width="480" alt="A frame of the animated scene: the gold sphere with four visible coloured cubes on the grey ring around it, one cube passing behind, taken from the view itself while Lisp was turning the orbit.">
+
+The frame above is the view's own `-snapshot`, which is also how the test
+checks that anything moved: two snapshots twenty Lisp-placed frames apart
+must differ byte for byte.
+
 ### Sound
 
 ```lisp
@@ -1724,12 +1752,14 @@ once on ECL):
   cache was re-keyed, when `-self` fell from 1119 ns.  A struct result is
   286 ns against 1565; a Lisp method called per element by Cocoa is 56 ns
   against 45; a block, 101 against 50.
-- **ECL went from 15.9 µs to 0.57 µs per send.**  cffi's ECL backend runs in
+- **ECL went from 15.9 µs to 0.46 µs per send.**  cffi's ECL backend runs in
   `:dffi` mode, where every `defcfun` call does a `dlsym` before it calls --
   7 µs each with GameplayKit loaded, two per send.  The runtime functions
   now resolve their address once (`define-runtime-function` in
-  `src/library.lisp`).  What is left is the dynamic `libffi` call itself, 119
-  ns for a bare `objc_msgSend`, plus ECL's pointer boxing.
+  `src/library.lisp`), and the plain ones are C calls through that address.
+  What is left is the dynamic `libffi` call itself, 119 ns for a bare
+  `objc_msgSend`, plus ECL's pointer boxing; the send is within about 150 ns
+  of that floor.
 - **A Lisp string as an argument** costs 359 ns on SBCL against 580 on
   LispWorks.  It was 539: the NSString was made with -alloc and
   -initWithUTF8String:, two sends, and is now one call of

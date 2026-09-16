@@ -135,6 +135,7 @@ Lisp method can take and return C structs by value like any other."
                  (:file "workspace")
                  (:file "metal")
                  (:file "scene-kit")
+                 (:file "scene-view")
                  (:file "audio")
                  (:file "shader")
                  (:file "map")

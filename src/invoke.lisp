@@ -74,6 +74,12 @@ as \"r*16@0:8\", a const char *."
 
 DISPOSITION is :DEFAULT for INVOKE, :BOOLEAN for INVOKE-BOOL, or the RESULT
 argument of INVOKE-INTO."
+  ;; The common case first: a scalar result for INVOKE.  Nothing below applies
+  ;; to a keyword node under the default disposition, and on ECL the checks it
+  ;; would walk were 50 ns of a 600 ns send.
+  (when (and (keywordp result-node) (eq disposition :default))
+    (return-from unmarshal-result
+      (if (eq result-node :void) (values) (unmarshal-scalar raw result-node))))
   (let ((kind (cocoa-struct-kind result-node)))
     (cond
       ;; A vector or matrix result the backend wrote through OUT-SAP rather

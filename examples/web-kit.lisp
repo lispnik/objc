@@ -23,8 +23,7 @@
 ;;; -conformsToProtocol: would answer NO, and some AppKit code asks.
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (objc::ensure-libobjc)
-  (objc::register-module "/System/Library/Frameworks/WebKit.framework/WebKit"
-                         :errorp nil))
+  (fli:register-module "/System/Library/Frameworks/WebKit.framework/WebKit"))
 
 (objc:define-objc-class web-kit-test-delegate ()
   ((title :initform nil :accessor web-kit-test-delegate-title)
@@ -71,8 +70,7 @@
                                          url-string))))
 
 (defun make-web-view (rect)
-  (objc::register-module "/System/Library/Frameworks/WebKit.framework/WebKit"
-                         :errorp nil)
+  (fli:register-module "/System/Library/Frameworks/WebKit.framework/WebKit")
   (make-view "WKWebView" rect))
 
 (defun test-web-kit (&optional (url "https://www.lispworks.com/"))

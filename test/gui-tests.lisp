@@ -523,3 +523,20 @@ Without that event an idle loop never notices the flag and this hangs."
                         internal-time-units-per-second)))
         (is (< 1.5 elapsed 10d0)
             "entered -run and -stop: returned from it, in ~,1Fs" elapsed)))))
+
+;;; SceneKit in a window --------------------------------------------------------
+
+(test the-scene-view-example-animates-in-a-window
+  "examples/scene-view.lisp: an SCNView in an NSWindow, the orbit node turned
+from Lisp one transform per frame.  :ANIMATES compares the view's own
+-snapshot before and after twenty frames, byte for byte: if nothing moved on
+screen they are identical.  Skips without a Metal device, which SCNView
+needs, as well as without a window server."
+  (with-gui
+    (if (not (objc/examples::default-device))
+        (skip "no Metal device, so no SCNView")
+        (let ((result (objc/examples:test-scene-view)))
+          (is-true (getf result :visible) "the window showed")
+          (is (= 20 (getf result :frames)) "twenty frames were placed")
+          (is-true (getf result :png) "the view gave a snapshot")
+          (is-true (getf result :animates) "and the frames moved the picture")))))

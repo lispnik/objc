@@ -36,8 +36,7 @@
     pdf-document))
 
 (defun make-pdf-view (rect)
-  (objc::register-module "/System/Library/Frameworks/Quartz.framework/Quartz"
-                         :errorp nil)
+  (fli:register-module "/System/Library/Frameworks/Quartz.framework/Quartz")
   (let ((view (make-view "PDFView" rect :init-function #'init-pdf-kit-test-pane)))
     (objc:invoke view "setFrame:" rect)
     view))

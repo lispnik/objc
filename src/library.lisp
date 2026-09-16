@@ -168,18 +168,48 @@ one or both fire depends on how the image was saved.")
 (add-image-restore-thunk 'clear-runtime-addresses)
 
 #+ecl
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defparameter +runtime-c-types+
+    '((:pointer :pointer-void "void *") (:int :int "int") (:long :long "long")
+      (:unsigned-long :unsigned-long "unsigned long") (:double :double "double")
+      (:void :void "void"))
+    "CFFI type -> ECL FFI type and C type, for the runtime calls that can be a
+C expression.  A :STRING or :BOOLEAN needs CFFI's conversion and stays on the
+CALL-CFUN path; those functions are not on the send path."))
+
+#+ecl
 (defmacro define-runtime-function ((c-name lisp-name) return-type &rest args)
-  (let ((cell (intern (format nil "*ADDRESS-OF-~A*" lisp-name) :objc))
-        (names (mapcar #'first args)))
+  "On ECL, DEFCFUN with the address resolved once.  When every type is plain --
+pointers and numbers -- the compiled form is a C call through that address,
+which is what makes object_getClass 30 ns rather than the 93 of a CALL-CFUN
+with its argument boxing (bench/RESULTS.md, 2026-09-16); anything else, and
+the bytecode form, is CFFI's call through the same pointer."
+  (let* ((cell (intern (format nil "*ADDRESS-OF-~A*" lisp-name) :objc))
+         (names (mapcar #'first args))
+         (types (mapcar #'second args))
+         (plain (and (assoc return-type +runtime-c-types+)
+                     (every (lambda (type) (assoc type +runtime-c-types+)) types)))
+         (call `(cffi:foreign-funcall-pointer
+                 (or ,cell (setf ,cell (%runtime-address ,c-name)))
+                 ()
+                 ,@(loop for (name type) in args append (list type name))
+                 ,return-type)))
     `(progn
        (defvar ,cell nil)
        (pushnew ',cell *runtime-address-cells*)
        (defun ,lisp-name ,names
-         (cffi:foreign-funcall-pointer
-          (or ,cell (setf ,cell (%runtime-address ,c-name)))
-          ()
-          ,@(loop for (name type) in args append (list type name))
-          ,return-type)))))
+         ,(if plain
+              `(ext:with-backend
+                 :bytecodes ,call
+                 :c/c++ (ffi:c-inline ((or ,cell (setf ,cell (%runtime-address ,c-name))) ,@names)
+                                      (:pointer-void ,@(mapcar (lambda (type) (second (assoc type +runtime-c-types+))) types))
+                                      ,(second (assoc return-type +runtime-c-types+))
+                                      ,(format nil "((~a (*)(~{~a~^, ~}))(#0))(~{~a~^, ~})"
+                                               (third (assoc return-type +runtime-c-types+))
+                                               (or (mapcar (lambda (type) (third (assoc type +runtime-c-types+))) types) '("void"))
+                                               (loop for i from 1 to (length names) collect (format nil "#~d" i)))
+                                      :one-liner t))
+              call)))))
 
 (defun %prepare-for-dump ()
   "Close every foreign library before the image is written.

@@ -129,6 +129,10 @@
            #:simd-available-p #:simd-scene #:matrix-multiply #:matrix-translation
            #:matrix-rotation-y #:matrix-rotation-x #:matrix-scale #:matrix-identity
            #:test-scene-kit-simd #:report-scene-kit-simd
+           ;; SceneKit, in a window (examples/scene-view.lisp).
+           #:orbit-scene #:make-scene-window #:animate-scene-view #:run-scene-view
+           #:snapshot-scene-view #:test-scene-view #:report-scene-view
+           #:*scene-window* #:*scene-view* #:*scene-orbit*
            ;; Audio synthesis (examples/audio.lisp).
            #:synthesize #:play #:sine #:fm #:chord #:write-wav
            #:make-audio-engine #:render-block-usable-p
@@ -207,6 +211,9 @@
   (objc::node-size-and-alignment (objc::node-for-fli-type type)))
 
 (defun register-module (path &rest args)
+  "FLI:REGISTER-MODULE, as the ported examples call it for a framework: the
+library's own module loader, which ENSURE-OBJC-INITIALIZED's :MODULES goes
+through too.  Quiet when the framework is not there, as the originals were."
   (declare (ignore args))
   (objc::register-module path :errorp nil))
 

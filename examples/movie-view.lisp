@@ -21,10 +21,8 @@
     player))
 
 (defun make-movie-view (rect)
-  (objc::register-module "/System/Library/Frameworks/AVKit.framework/AVKit"
-                         :errorp nil)
-  (objc::register-module "/System/Library/Frameworks/AVFoundation.framework/AVFoundation"
-                         :errorp nil)
+  (fli:register-module "/System/Library/Frameworks/AVKit.framework/AVKit")
+  (fli:register-module "/System/Library/Frameworks/AVFoundation.framework/AVFoundation")
   (make-view "AVPlayerView" rect))
 
 (defun test-movie-view (&optional path)

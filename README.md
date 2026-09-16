@@ -1699,6 +1699,38 @@ buys code that reads like the headers, and no type checking whatsoever —
 `NSTimeInterval` and `CGFloat` are both doubles and nothing will stop you
 confusing them.
 
+## Performance
+
+`make bench` runs [bench/bench.lisp](bench/bench.lisp) on SBCL and ECL and
+merges the results with a LispWorks column into
+[bench/RESULTS.md](bench/RESULTS.md).  One file, compiled on each Lisp, the
+median of five rounds of 200 000 calls; `make bench-lispworks` prints the two
+forms to type into a LispWorks Listener for the third column, since LispWorks
+Personal cannot be scripted.  The rows are the floors (a Lisp `length`, a bare
+`objc_msgSend` through the FFI), a send for each kind of argument and result,
+a block and a Lisp method called back per element, and the SIMD paths.
+
+What the numbers say, measured 2026-09-16 on an M-series Mac:
+
+- **SBCL is within a factor of two of LispWorks** on a plain send (238 ns
+  against 120 ns for `-length`) and ahead on a struct result (769 against
+  1565 ns for `rangeOfString:`).  A Lisp method called per element by Cocoa
+  costs 60 ns; a block, 108 ns.
+- **The cost of a send depends on where the method lives.**  `-self`,
+  inherited from NSObject through the NSString class cluster, costs 1119 ns
+  on SBCL and 1870 ns on LispWorks, because both ask the runtime for the
+  Method on every send and `class_getInstanceMethod` walks the hierarchy with
+  no cache of its own.  Keying the trampoline cache by class and selector
+  instead of by Method would remove that walk; it is the next thing to do.
+- **ECL is dominated by symbol resolution, not by the call.**  cffi's ECL
+  backend runs in `:dffi` mode here, and in that mode every `defcfun` call
+  does a `dlsym` before it calls; with GameplayKit loaded that `dlsym` costs
+  7 µs and a send makes two of them, which is 14 of the 15.9 µs.  The same
+  call with its address resolved once costs 61 ns.  Resolving the runtime
+  entry points once, in the seam, is the fix.
+- **A Lisp string as an argument** costs 1.5 µs on SBCL against 0.6 µs on
+  LispWorks: the NSString is built through a foreign copy of the UTF-8 bytes.
+
 ## Testing
 
 ```

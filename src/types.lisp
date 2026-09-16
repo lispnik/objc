@@ -208,10 +208,11 @@ public API and matches LispWorks exactly."
        (:sel 'sel)
        (:cstring 'objc-c-string)
        (:bool 'objc-c++-bool)
-       (:unknown 'objc-unknown)
+       ;; An unencodable node is one the runtime could not describe either,
+       ;; so the honest report is the same.  One clause, not two returning
+       ;; the same constant: SBCL merges those and notes the second as dead.
+       ((:unknown :unencodable) 'objc-unknown)
        (:block 'objc-at-question-mark)
-       ;; The runtime could not describe it either; this is the honest report.
-       (:unencodable 'objc-unknown)
        (t (let ((entry (assoc node +node-fli-types+)))
             (unless entry
               (error 'unsupported-type-encoding

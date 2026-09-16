@@ -30,7 +30,7 @@
 find what the first compiled rather than racing to rebuild it."
   (with-runtime
     (objc:invoke (objc:invoke "NSString" "stringWithUTF8String:" "warm") "length")
-    (let ((count (hash-table-count objc::*trampoline-by-method*))
+    (let ((count (objc::send-site-count))
           (result nil))
       (bt:join-thread
        (bt:make-thread
@@ -40,7 +40,7 @@ find what the first compiled rather than racing to rebuild it."
                           (objc:invoke "NSString" "stringWithUTF8String:" "again")
                           "length"))))))
       (is (= 5 result))
-      (is (= count (hash-table-count objc::*trampoline-by-method*))))))
+      (is (= count (objc::send-site-count))))))
 
 (test a-lisp-defined-class-can-be-messaged-from-another-thread
   (with-runtime

@@ -269,9 +269,9 @@ thousands: most Cocoa methods share a handful of shapes."
 (test repeated-sends-hit-the-method-cache
   (with-runtime
     (objc:invoke (ns "a") "length")
-    (let ((count (hash-table-count objc::*trampoline-by-method*)))
+    (let ((count (objc::send-site-count)))
       (dotimes (i 10) (objc:invoke (ns "a") "length"))
-      (is (= count (hash-table-count objc::*trampoline-by-method*))))))
+      (is (= count (objc::send-site-count))))))
 
 ;;; Variadic methods ---------------------------------------------------------
 

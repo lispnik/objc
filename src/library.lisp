@@ -135,6 +135,52 @@ one or both fire depends on how the image was saved.")
 (defun add-image-restore-thunk (function)
   (pushnew function *image-restore-thunks*))
 
+;;; Runtime entry points -------------------------------------------------------
+;;;
+;;; DEFINE-RUNTIME-FUNCTION is DEFCFUN with the address resolved once.  On SBCL
+;;; that is what DEFCFUN already is.  On ECL, CFFI's backend runs in its :DFFI
+;;; mode, where every call of a DEFCFUN'd function begins with
+;;; SI:FIND-FOREIGN-SYMBOL -- a dlsym across every loaded image -- and only then
+;;; calls.  Measured (bench/RESULTS.md, 2026-09-16): 623 ns with Foundation
+;;; alone, 7 µs once GameplayKit is loaded, against 61 ns for the call itself;
+;;; a send makes two such calls, which was 14 of ECL's 15.9 µs per send.  So on
+;;; ECL the address is looked up on first use, kept in a variable of its own,
+;;; and forgotten on image restore, where the libraries land somewhere else.
+
+#-ecl
+(defmacro define-runtime-function ((c-name lisp-name) return-type &rest args)
+  `(cffi:defcfun (,c-name ,lisp-name) ,return-type ,@args))
+
+#+ecl
+(defvar *runtime-address-cells* '()
+  "The variables holding resolved runtime addresses, cleared on restore.")
+
+#+ecl
+(defun %runtime-address (c-name)
+  (or (cffi:foreign-symbol-pointer c-name)
+      (error "The Objective-C runtime function ~S cannot be found." c-name)))
+
+#+ecl
+(defun clear-runtime-addresses ()
+  (dolist (cell *runtime-address-cells*) (setf (symbol-value cell) nil)))
+
+#+ecl
+(add-image-restore-thunk 'clear-runtime-addresses)
+
+#+ecl
+(defmacro define-runtime-function ((c-name lisp-name) return-type &rest args)
+  (let ((cell (intern (format nil "*ADDRESS-OF-~A*" lisp-name) :objc))
+        (names (mapcar #'first args)))
+    `(progn
+       (defvar ,cell nil)
+       (pushnew ',cell *runtime-address-cells*)
+       (defun ,lisp-name ,names
+         (cffi:foreign-funcall-pointer
+          (or ,cell (setf ,cell (%runtime-address ,c-name)))
+          ()
+          ,@(loop for (name type) in args append (list type name))
+          ,return-type)))))
+
 (defun %prepare-for-dump ()
   "Close every foreign library before the image is written.
 

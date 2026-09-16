@@ -127,9 +127,9 @@ _Block_release on our own storage a documented no-op."
                        :name "_NSConcreteStackBlock"
                        :candidates '("libSystem.B.dylib"))))))
 
-(cffi:defcfun ("_Block_copy" %block-copy) :pointer (block :pointer))
-(cffi:defcfun ("_Block_release" %block-release) :void (block :pointer))
-(cffi:defcfun ("_Block_signature" %block-signature) :pointer (block :pointer))
+(define-runtime-function ("_Block_copy" %block-copy) :pointer (block :pointer))
+(define-runtime-function ("_Block_release" %block-release) :void (block :pointer))
+(define-runtime-function ("_Block_signature" %block-signature) :pointer (block :pointer))
 
 ;;; Signatures ---------------------------------------------------------------
 

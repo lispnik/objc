@@ -46,18 +46,6 @@ point and must not read as \"use the runtime's view\"."
          method
        (values name arg-types result-type variadic-num-of-fixed t)))))
 
-(defparameter +known-variadic-selectors+
-  '("stringWithFormat:" "initWithFormat:" "localizedStringWithFormat:"
-    "stringByAppendingFormat:" "appendFormat:" "arrayWithObjects:"
-    "initWithObjects:" "dictionaryWithObjectsAndKeys:" "raise:format:"
-    "predicateWithFormat:")
-  "Selectors that are variadic in Cocoa.
-
-On Apple arm64 a variadic call passes its variable arguments on the stack while
-a fixed-arity call passes them in registers, so calling one of these without
-:VARIADIC-NUM-OF-FIXED reads garbage.  LispWorks fails silently here; we warn
-once, which is the one thing we can add cheaply.")
-
 (defvar *warned-variadic* (make-hash-table :test 'equal))
 
 (defun maybe-warn-variadic (selector-name n-fixed)
@@ -217,25 +205,21 @@ Anything the manual does not name a conversion for is returned unchanged --
     (with-call-temporaries
       (multiple-value-bind (selector-name explicit-arg-types explicit-result n-fixed explicit-p)
           (parse-method-designator method)
-        (maybe-warn-variadic selector-name n-fixed)
-        (when (gethash selector-name *traced-selectors*)
-          (format *trace-output* "~&Invoking Objective-C method ~S ~S.~%"
-                  selector-name receiver))
+        (let ((entry (selector-entry selector-name)))
+          (when (and (selector-entry-variadic-p entry) (null n-fixed))
+            (maybe-warn-variadic selector-name n-fixed))
+          (when (and (plusp (hash-table-count *traced-selectors*))
+                     (gethash selector-name *traced-selectors*))
+            (format *trace-output* "~&Invoking Objective-C method ~S ~S.~%"
+                    selector-name receiver))
         (multiple-value-bind (kind pointer class) (resolve-receiver receiver)
           (when (and (cffi:pointerp pointer) (cffi:null-pointer-p pointer))
             (return-from %invoke nil))
           (multiple-value-bind (trampoline result-node arg-nodes)
               (if explicit-p
-                  ;; The explicit list form replaces the runtime's view entirely,
-                  ;; even when its argument list is empty; self and _cmd are
-                  ;; prepended because the caller does not write them.
-                  (let* ((result (node-for-fli-type explicit-result))
-                         (nodes (list* :id :sel (mapcar #'node-for-fli-type
-                                                        explicit-arg-types))))
-                    (values (trampoline-for kind result nodes
-                                            (and n-fixed (+ n-fixed 2)))
-                            result nodes))
-                  (resolve-signature kind class selector-name receiver))
+                  (explicit-signature kind method explicit-arg-types
+                                      explicit-result n-fixed)
+                  (resolve-signature kind class selector-name receiver entry))
             (let ((expected (- (length arg-nodes) 2)))
               (cond ((< (length args) expected)
                      (error "Too few arguments in ~S to method ~S, wanted ~D."
@@ -253,14 +237,14 @@ Anything the manual does not name a conversion for is returned unchanged --
               (if structp
                   (cffi:with-foreign-object (out :uint8 (max 1 size))
                     (let ((raw (call-with-signature trampoline kind pointer
-                                                    (coerce-to-selector selector-name)
+                                                    (selector-entry-sel entry)
                                                     marshalled (sap-of out))))
                       (unmarshal-result raw result-node (sap-of out) disposition
                                         selector-name)))
                   (let ((raw (call-with-signature trampoline kind pointer
-                                                  (coerce-to-selector selector-name)
+                                                  (selector-entry-sel entry)
                                                   marshalled (sb-sap-zero))))
-                    (unmarshal-result raw result-node (sb-sap-zero) disposition))))))))))
+                    (unmarshal-result raw result-node (sb-sap-zero) disposition)))))))))))
 
 (defun invoke (class-or-object-pointer method &rest args)
   "Call the Objective-C method METHOD on CLASS-OR-OBJECT-POINTER.

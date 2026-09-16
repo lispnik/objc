@@ -362,6 +362,9 @@ one, in either definition order."
     ;; ARG-NODES begins with self and _cmd here; the table holds the
     ;; declared arguments only.
     (setf (signature-override selector) (cons result-node (cddr arg-nodes))))
+  ;; Whatever any class was recorded as answering this selector with may be
+  ;; about to change: this is the one place that changes it.
+  (forget-selector-sites selector)
   (let* ((target (if class-method-p (%object-get-class objc-class) objc-class))
          ;; The superclass to send to for CURRENT-SUPER, captured at install
          ;; time.  NOT object_getClass(self) at call time, which for a

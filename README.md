@@ -1710,26 +1710,31 @@ Personal cannot be scripted.  The rows are the floors (a Lisp `length`, a bare
 `objc_msgSend` through the FFI), a send for each kind of argument and result,
 a block and a Lisp method called back per element, and the SIMD paths.
 
-What the numbers say, measured 2026-09-16 on an M-series Mac:
+What the numbers say, measured 2026-09-16 on an M-series Mac, after the two
+changes the first run of this benchmark called for (a send cache keyed by
+class and selector instead of by Method, and runtime entry points resolved
+once on ECL):
 
-- **SBCL is within a factor of two of LispWorks** on a plain send (238 ns
-  against 120 ns for `-length`) and ahead on a struct result (769 against
-  1565 ns for `rangeOfString:`).  A Lisp method called per element by Cocoa
-  costs 60 ns; a block, 108 ns.
-- **The cost of a send depends on where the method lives.**  `-self`,
-  inherited from NSObject through the NSString class cluster, costs 1119 ns
-  on SBCL and 1870 ns on LispWorks, because both ask the runtime for the
-  Method on every send and `class_getInstanceMethod` walks the hierarchy with
-  no cache of its own.  Keying the trampoline cache by class and selector
-  instead of by Method would remove that walk; it is the next thing to do.
-- **ECL is dominated by symbol resolution, not by the call.**  cffi's ECL
-  backend runs in `:dffi` mode here, and in that mode every `defcfun` call
-  does a `dlsym` before it calls; with GameplayKit loaded that `dlsym` costs
-  7 µs and a send makes two of them, which is 14 of the 15.9 µs.  The same
-  call with its address resolved once costs 61 ns.  Resolving the runtime
-  entry points once, in the seam, is the fix.
-- **A Lisp string as an argument** costs 1.5 µs on SBCL against 0.6 µs on
-  LispWorks: the NSString is built through a foreign copy of the UTF-8 bytes.
+- **SBCL matches LispWorks on a plain send** -- 121 ns against 120 ns for
+  `-length` -- and is ahead everywhere the method is not on the receiver's
+  own class: `-self`, inherited from NSObject through the NSString cluster,
+  is 116 ns on SBCL and 1870 ns on LispWorks.  LispWorks asks the runtime for
+  the Method on every send, and `class_getInstanceMethod` walks the
+  hierarchy with no cache of its own; this library did the same until the
+  cache was re-keyed, when `-self` fell from 1119 ns.  A struct result is
+  286 ns against 1565; a Lisp method called per element by Cocoa is 56 ns
+  against 45; a block, 101 against 50.
+- **ECL went from 15.9 µs to 0.57 µs per send.**  cffi's ECL backend runs in
+  `:dffi` mode, where every `defcfun` call does a `dlsym` before it calls --
+  7 µs each with GameplayKit loaded, two per send.  The runtime functions
+  now resolve their address once (`define-runtime-function` in
+  `src/library.lisp`).  What is left is the dynamic `libffi` call itself, 119
+  ns for a bare `objc_msgSend`, plus ECL's pointer boxing.
+- **A Lisp string as an argument** costs 539 ns on SBCL against 580 on
+  LispWorks; the NSString is built through a foreign copy of the UTF-8 bytes.
+- **The declared-vector rows on ECL** (4 to 7 µs) go through its compiled
+  trampolines with buffered aggregates; the same vector as a double through
+  the list form is 0.6 µs.  That path is the next thing to look at there.
 
 ## Testing
 

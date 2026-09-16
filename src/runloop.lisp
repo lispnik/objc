@@ -27,7 +27,7 @@
 
 (in-package #:objc.runloop)
 
-(cffi:defcfun ("CFRunLoopRunInMode" %cf-run-loop-run-in-mode) :int32
+(objc::define-runtime-function ("CFRunLoopRunInMode" %cf-run-loop-run-in-mode) :int32
   (mode :pointer)
   (seconds :double)
   (return-after-source-handled :boolean))

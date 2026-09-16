@@ -10,9 +10,26 @@
 ;;;;
 ;;;; Two caches, both of which earn their place:
 ;;;;
-;;;;   L1 is keyed on (kind . method-address), an EQUAL hash over a fixnum.  It
-;;;;      hits on the second and every later send of a given selector to a given
-;;;;      class, and costs one probe with no parsing.
+;;;;   L1 is keyed on the selector name and then on the receiver's class: an
+;;;;      EQUAL hash over the string to a SELECTOR-ENTRY, then an EQL hash over
+;;;;      the class address to a SEND-SITE holding the trampoline and the parsed
+;;;;      signature.  It hits on the second and every later send of a selector
+;;;;      to a class, and costs two probes with no parsing and -- this is the
+;;;;      point -- no runtime call.  It used to be keyed on the Method, which
+;;;;      meant class_getInstanceMethod on every send to find the key; libobjc
+;;;;      does not cache that walk, and it measured 34 ns for a method on the
+;;;;      receiver's own class and 1.1 µs for -self inherited through the
+;;;;      NSString cluster (bench/RESULTS.md, 2026-09-16).  The entry also
+;;;;      carries the SEL and whether the selector is a known variadic, so a
+;;;;      send registers nothing and scans nothing.
+;;;;
+;;;;      Keying on the class is sound because a miss is never cached: a
+;;;;      selector the class does not answer today is looked up again
+;;;;      tomorrow.  What is cached is the signature the class answered with,
+;;;;      and Objective-C requires that to stay the same for a selector on a
+;;;;      class -- the runtime's own dispatch assumes it.  The one party that
+;;;;      changes a class's methods from here is DEFINE-OBJC-METHOD, and it
+;;;;      forgets the selector's sites when it installs.
 ;;;;
 ;;;;   L2 is keyed on the canonical signature.  Most Cocoa methods share a small
 ;;;;      number of shapes -- "v@:@" and "@@:" alone cover an enormous fraction
@@ -27,15 +44,71 @@ Objective-C treats a message to nil as a no-op returning zero, so this exists
 for code that relies on that; it is off by default because the usual cause is a
 mistake.  LispWorks has the same switch, also undocumented.")
 
-(defvar *trampoline-by-method* (make-hash-table :test 'equal)
-  "(kind . method-address) -> trampoline.  The fast path.")
-
 (defvar *trampoline-by-signature* (make-hash-table :test 'equal)
   "(kind canonical-signature n-fixed) -> trampoline.  The sharing path.")
 
-(defvar *signature-by-method* (make-hash-table :test 'equal)
-  "(kind . method-address) -> (result-node . arg-nodes), so a cache hit need not
-re-parse the encoding to know how to marshal.")
+(defparameter +known-variadic-selectors+
+  '("stringWithFormat:" "initWithFormat:" "localizedStringWithFormat:"
+    "stringByAppendingFormat:" "appendFormat:" "arrayWithObjects:"
+    "initWithObjects:" "dictionaryWithObjectsAndKeys:" "raise:format:"
+    "predicateWithFormat:")
+  "Selectors that are variadic in Cocoa.
+
+On Apple arm64 a variadic call passes its variable arguments on the stack while
+a fixed-arity call passes them in registers, so calling one of these without
+:VARIADIC-NUM-OF-FIXED reads garbage.  MAYBE-WARN-VARIADIC in invoke.lisp says
+so, once per selector; the check itself is made once, when the selector's
+entry is created.")
+
+(defstruct (send-site (:constructor make-send-site (trampoline result-node arg-nodes)))
+  "What one class answers one selector with: the trampoline for its signature
+and the parsed signature itself, so a hit marshals without re-parsing."
+  trampoline result-node arg-nodes)
+
+(defstruct (selector-entry (:constructor %make-selector-entry (name sel variadic-p)))
+  "Everything a send needs to know about a selector name, found once per name.
+SITES maps a class address to its SEND-SITE for a plain send; SUPER-SITES the
+same for a super send, whose trampolines enter objc_msgSendSuper instead."
+  name sel variadic-p
+  (sites (make-hash-table :test 'eql))
+  (super-sites (make-hash-table :test 'eql)))
+
+(defvar *selector-entries* (make-hash-table :test 'equal)
+  "Selector name -> SELECTOR-ENTRY.  The fast path.")
+
+(defvar *explicit-sites* (make-hash-table :test 'eq)
+  "List-form method designator -> SEND-SITE, keyed on the list itself.  A
+quoted literal is the same object on every send and hits; a freshly consed
+designator misses and is parsed, which is correct and merely slower.")
+
+(defun selector-entry (selector-name)
+  (or (gethash selector-name *selector-entries*)
+      (setf (gethash selector-name *selector-entries*)
+            (%make-selector-entry selector-name
+                                  (coerce-to-selector selector-name)
+                                  (and (member selector-name +known-variadic-selectors+
+                                               :test #'string=)
+                                       t)))))
+
+(defun forget-selector-sites (selector-name)
+  "Drop what every class was recorded as answering SELECTOR-NAME with.
+Called when a method is installed from Lisp, the one change to a class's
+methods this library makes itself."
+  (let ((entry (gethash selector-name *selector-entries*)))
+    (when entry
+      (clrhash (selector-entry-sites entry))
+      (clrhash (selector-entry-super-sites entry)))))
+
+(defun send-site-count ()
+  "How many (class, selector) pairs have a cached signature.  For the tests."
+  (let ((count 0))
+    (maphash (lambda (name entry)
+               (declare (ignore name))
+               (incf count (+ (hash-table-count (selector-entry-sites entry))
+                              (hash-table-count (selector-entry-super-sites entry)))))
+             *selector-entries*)
+    (+ count (hash-table-count *explicit-sites*))))
+
 
 (defstruct (super-reference (:constructor make-super-reference (receiver class)))
   "What CURRENT-SUPER returns: the receiver, and the class to start the method
@@ -124,7 +197,8 @@ runtime describes fully is never affected.  Returns SELECTOR."
                 (mapcar #'node-for-fli-type arg-types)))
     selector))
 
-(defun resolve-signature (kind class selector-name receiver)
+(defun resolve-signature (kind class selector-name receiver
+                          &optional (entry (selector-entry selector-name)))
   "Return (VALUES TRAMPOLINE RESULT-NODE ARG-NODES) for a send.
 
 Signals NO-SUCH-METHOD when the class does not implement the selector.  That
@@ -132,18 +206,20 @@ check is not a convenience: resolving the Method is how the call signature is
 discovered in the first place, and it means an unimplemented selector fails
 here, in Lisp, instead of reaching the runtime and raising an Objective-C
 exception that would abort the process."
-  (let* ((method (and (objc-pointer-p class) (find-method-for class selector-name)))
-         ;; A Method is keyed by its address; a forwarded selector has none and
-         ;; is keyed by where it was found.  Both live in the same tables.
-         (key (cond (method (cons kind (cffi:pointer-address method)))
-                    ((objc-pointer-p class)
-                     (list kind (cffi:pointer-address class) selector-name))))
-         (cached (and key (gethash key *trampoline-by-method*))))
-    (when cached
-      (let ((signature (gethash key *signature-by-method*)))
-        (return-from resolve-signature
-          (values cached (car signature) (cdr signature)))))
-    (let ((encoding (cond (method (method-encoding method))
+  (let* ((sites (if (eq kind :super)
+                    (selector-entry-super-sites entry)
+                    (selector-entry-sites entry)))
+         (address (and (objc-pointer-p class) (cffi:pointer-address class)))
+         (site (and address (gethash address sites))))
+    (when site
+      (return-from resolve-signature
+        (values (send-site-trampoline site)
+                (send-site-result-node site)
+                (send-site-arg-nodes site))))
+    ;; The Method is asked for only here, on the first send of this selector
+    ;; to this class.  A forwarded selector has no Method and the same site.
+    (let* ((method (and address (find-method-for class selector-name)))
+           (encoding (cond (method (method-encoding method))
                           ((eq kind :send) (forwarded-encoding receiver selector-name)))))
       (unless encoding
         (error 'no-such-method
@@ -164,9 +240,28 @@ exception that would abort the process."
             (setf result (car override)
                   args (list* :id :sel (cdr override)))))
         (let ((trampoline (trampoline-for kind result args nil)))
-          (setf (gethash key *trampoline-by-method*) trampoline
-                (gethash key *signature-by-method*) (cons result args))
+          (when address
+            (setf (gethash address sites) (make-send-site trampoline result args)))
           (values trampoline result args))))))
+
+(defun explicit-signature (kind method arg-types result-type n-fixed)
+  "Return (VALUES TRAMPOLINE RESULT-NODE ARG-NODES) for the list-form
+designator METHOD, whose types replace the runtime's view entirely -- even
+when its argument list is empty.  Self and _cmd are prepended because the
+caller does not write them.  Cached on the designator itself for a plain
+send, so the canonical signature is not rebuilt per call."
+  (let ((site (and (eq kind :send) (gethash method *explicit-sites*))))
+    (when site
+      (return-from explicit-signature
+        (values (send-site-trampoline site)
+                (send-site-result-node site)
+                (send-site-arg-nodes site))))
+    (let* ((result (node-for-fli-type result-type))
+           (nodes (list* :id :sel (mapcar #'node-for-fli-type arg-types)))
+           (trampoline (trampoline-for kind result nodes (and n-fixed (+ n-fixed 2)))))
+      (when (eq kind :send)
+        (setf (gethash method *explicit-sites*) (make-send-site trampoline result nodes)))
+      (values trampoline result nodes))))
 
 ;;; Forwarded selectors -------------------------------------------------------
 ;;;
@@ -256,8 +351,10 @@ pointer checks the instance or class methods as appropriate."
          t)))
 
 (defun clear-dispatch-caches ()
-  (clrhash *trampoline-by-method*)
-  (clrhash *trampoline-by-signature*)
-  (clrhash *signature-by-method*))
+  "Class and selector addresses do not survive an image restart, and neither
+do the compiled trampolines."
+  (clrhash *selector-entries*)
+  (clrhash *explicit-sites*)
+  (clrhash *trampoline-by-signature*))
 
 (add-image-restore-thunk 'clear-dispatch-caches)

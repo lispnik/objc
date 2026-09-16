@@ -1739,9 +1739,16 @@ once on ECL):
   registers instead of through a foreign buffer, with the loop written out
   for a simple vector.  The 50 ns over the same value passed as a double
   through the list form is the lane loop and the type check on the value.
-- **The declared-vector rows on ECL** (4 to 7 µs) go through its compiled
-  trampolines with buffered aggregates; the same vector as a double through
-  the list form is 0.6 µs.  That path is the next thing to look at there.
+- **ECL's buffer rows were never about the buffers.**  A struct result was
+  3.2 µs, a string out 3.7, a string in 3.9 and a declared float3 7.0; they
+  are 1.1, 1.0, 2.0 and 1.2 now.  A foreign allocation on ECL is 44 ns.  The
+  costs were CFFI's `mem-aref` with a type or offset chosen at run time,
+  which recasts the pointer per access at 1.4 µs, so every lane loop and the
+  byte copy of a struct result paid it; CFFI's string conversions through
+  babel at 2 to 3 µs for eleven characters where ECL's own are 0.3; and
+  float bits through a foreign word.  The ECL seam now does lane access,
+  `memcpy`, float bits and UTF-8 as C expressions, with the CFFI forms kept
+  for a bytecode load.
 
 ## Testing
 

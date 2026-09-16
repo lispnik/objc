@@ -317,6 +317,15 @@ Accepts what DEFINE-OBJC-METHOD and INVOKE's explicit arg-types list accept."
   '(:char :uchar :short :ushort :int :uint :long-long :ulong-long :float :double)
   "The scalar nodes a (:VECTOR ELEMENT COUNT) may be made of.")
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun vector-element-cffi-type (element)
+    "The CFFI type of one lane of ELEMENT.  Known at compile time as well: the
+seams expand lane access on a literal element into typed access."
+    (ecase element
+      (:char :int8) (:uchar :uint8) (:short :int16) (:ushort :uint16)
+      (:int :int32) (:uint :uint32) (:long-long :int64) (:ulong-long :uint64)
+      (:float :float) (:double :double))))
+
 (declaim (inline lane-bit-size))
 (defun lane-bit-size (element)
   "The bits in one lane of a SIMD vector of ELEMENT.  Spelled out rather than

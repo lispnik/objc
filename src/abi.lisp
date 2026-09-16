@@ -388,6 +388,36 @@ a matrix: here, wherever the vectors themselves are carried."
 returned as a value: structures only, here; a vector or matrix is a value."
   (struct-node-p node))
 
+;;; Lane access ----------------------------------------------------------------
+;;;
+;;; ELEMENT is a literal keyword at every use; CFFI's typed access is a
+;;; SAP-REF here and needs nothing more.
+
+(defmacro %lane-ref (pointer element index)
+  `(cffi:mem-aref ,pointer ,(vector-element-cffi-type element) ,index))
+
+(defmacro %lane-set (pointer element index value)
+  `(setf (cffi:mem-aref ,pointer ,(vector-element-cffi-type element) ,index) ,value))
+
+;;; Strings ---------------------------------------------------------------------
+;;;
+;;; UTF-8 in and out.  SBCL's own converters, which is what CFFI's use anyway.
+
+(defun %utf8-to-string (pointer)
+  "The NUL-terminated UTF-8 at POINTER as a string."
+  (cffi:foreign-string-to-lisp pointer :encoding :utf-8))
+
+(defun %string-to-utf8 (string)
+  "STRING as NUL-terminated UTF-8 in foreign memory; free it with FOREIGN-FREE."
+  (cffi:foreign-string-alloc string :encoding :utf-8))
+
+(defun %call-with-utf8 (string function)
+  "Call FUNCTION with a pointer to STRING's UTF-8 and its byte count, for the
+extent of the call: the octets are pinned, not copied."
+  (let ((octets (sb-ext:string-to-octets string :external-format :utf-8)))
+    (sb-sys:with-pinned-objects (octets)
+      (funcall function (sb-sys:vector-sap octets) (length octets)))))
+
 ;;; Float bits ------------------------------------------------------------------
 ;;;
 ;;; An eight-byte vector's lanes are assembled into 64 bits in convert.lisp;

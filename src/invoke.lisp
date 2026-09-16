@@ -149,7 +149,7 @@ argument of INVOKE-INTO."
     (:cstring (let ((pointer (pointer-of raw)))
                 (if (cffi:null-pointer-p pointer)
                     nil
-                    (cffi:foreign-string-to-lisp pointer :encoding :utf-8))))
+                    (%utf8-to-string pointer))))
     (t (if (and (consp node) (member (first node) '(:pointer :array)))
            (pointer-of raw)
            raw))))

@@ -37,7 +37,7 @@ Lisp method can take and return C structs by value like any other."
   ;; signals CASE-FAILURE -- and libffi cannot make an Apple arm64 variadic
   ;; call, which -[NSString stringWithFormat:] needs.  sb-alien does both.
   ;; See src/abi.lisp, which is the only file allowed to know that.
-  :depends-on (#:cffi #:babel #:alexandria #:closer-mop #:bordeaux-threads
+  :depends-on (#:cffi #:alexandria #:closer-mop #:bordeaux-threads
                #:trivial-features #:float-features)
   :components ((:module "src"
                 :serial t

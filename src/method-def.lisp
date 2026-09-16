@@ -63,7 +63,7 @@ DEFINE-OBJC-CLASS-METHOD body."))
      (if (eq style 'string)
          `(let ((pointer (pointer-of ,raw)))
             (unless (cffi:null-pointer-p pointer)
-              (cffi:foreign-string-to-lisp pointer :encoding :utf-8)))
+              (%utf8-to-string pointer)))
          `(pointer-of ,raw)))
     ((eq node :bool) `(not (eql 0 ,raw)))
     ;; A SIMD vector arrives as the double occupying its bytes; a matrix as
@@ -129,7 +129,7 @@ releases the temporary itself."
     ((eq node :cstring)
      (sap-of (cond ((null value) (cffi:null-pointer))
                    ((cffi:pointerp value) value)
-                   (t (cffi:foreign-string-alloc value :encoding :utf-8)))))
+                   (t (%string-to-utf8 value)))))
     ;; SBCL's (boolean 8) does its conversion on the CALLER's side: an alien
     ;; callable declared to return one wants a 1 or a 0, and returning T is a
     ;; type error against (unsigned-byte 8).  Measured, not assumed.

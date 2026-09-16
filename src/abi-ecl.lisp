@@ -148,35 +148,132 @@ the OUT buffer by the compiled trampoline; a value is not."
   "A foreign buffer holding VALUE as NODE, freed with the call's temporaries."
   (let* ((size (node-size-and-alignment node))
          (buffer (cffi:foreign-alloc :uint8 :count (max 1 size))))
-    (dotimes (i size) (setf (cffi:mem-aref buffer :uint8 i) 0))
+    (%zero-foreign-bytes buffer size)
     (funcall writer buffer node value)
     (register-temporary (lambda () (cffi:foreign-free buffer)))
     buffer))
 
-;;; Float bits: ECL has no way to read a float's bits in Lisp, so a foreign
-;;; word is the honest reinterpretation here.
+;;; Bytes, lanes, bits and strings ---------------------------------------------
+;;;
+;;; Each of these is a C expression when this file is compiled by cc -- which
+;;; it is wherever the library runs, macOS and iOS alike -- and the plain
+;;; CFFI form under the bytecode compiler, so LOAD of the source still works.
+;;; The C is not decoration.  CFFI's MEM-AREF on ECL is an inline expression
+;;; only for a literal type and offset; anything else recasts the pointer into
+;;; a fresh foreign-data object per access, 1.4 µs, and a byte loop over a
+;;; 16-byte struct result was 2.1 µs.  Likewise CFFI's string conversions go
+;;; through babel, 2 to 3 µs for eleven characters where ECL's own
+;;; EXT:OCTETS-TO-STRING is 0.3 (bench/RESULTS.md, 2026-09-16).
+
+(ffi:clines "#include <string.h>" "#include <stdint.h>")
+
+(defun %copy-foreign-bytes (to from size)
+  "SIZE bytes from foreign pointer FROM to foreign pointer TO."
+  (ext:with-backend
+    :bytecodes (loop for i below size
+                     do (setf (cffi:mem-aref to :uint8 i) (cffi:mem-aref from :uint8 i)))
+    :c/c++ (ffi:c-inline (to from size) (:pointer-void :pointer-void :cl-index) :void
+                         "memcpy(#0, #1, #2)" :one-liner t)))
+
+(defun %zero-foreign-bytes (pointer size)
+  (ext:with-backend
+    :bytecodes (loop for i below size do (setf (cffi:mem-aref pointer :uint8 i) 0))
+    :c/c++ (ffi:c-inline (pointer size) (:pointer-void :cl-index) :void
+                         "memset(#0, 0, #1)" :one-liner t)))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun %lane-c-type (element)
+    "ECL's FFI type and the C type of one lane of ELEMENT."
+    (ecase element
+      (:char '(:byte "int8_t")) (:uchar '(:unsigned-byte "uint8_t"))
+      (:short '(:short "int16_t")) (:ushort '(:unsigned-short "uint16_t"))
+      (:int '(:int "int32_t")) (:uint '(:unsigned-int "uint32_t"))
+      (:long-long '(:long-long "int64_t")) (:ulong-long '(:unsigned-long-long "uint64_t"))
+      (:float '(:float "float")) (:double '(:double "double")))))
+
+(defmacro %lane-ref (pointer element index)
+  (destructuring-bind (ffi-type c-type) (%lane-c-type element)
+    `(ext:with-backend
+       :bytecodes (cffi:mem-aref ,pointer ,(vector-element-cffi-type element) ,index)
+       :c/c++ (ffi:c-inline (,pointer ,index) (:pointer-void :cl-index) ,ffi-type
+                            ,(format nil "((~a*)(#0))[#1]" c-type) :one-liner t))))
+
+(defmacro %lane-set (pointer element index value)
+  (destructuring-bind (ffi-type c-type) (%lane-c-type element)
+    `(ext:with-backend
+       :bytecodes (setf (cffi:mem-aref ,pointer ,(vector-element-cffi-type element) ,index) ,value)
+       :c/c++ (ffi:c-inline (,pointer ,index ,value) (:pointer-void :cl-index ,ffi-type) :void
+                            ,(format nil "((~a*)(#0))[#1] = #2" c-type) :one-liner t))))
 
 (defun %single-float-bits (x)
-  (cffi:with-foreign-object (p :uint32)
-    (setf (cffi:mem-ref p :float) x)
-    (cffi:mem-ref p :uint32)))
+  (ext:with-backend
+    :bytecodes (cffi:with-foreign-object (p :uint32)
+                 (setf (cffi:mem-ref p :float) x)
+                 (cffi:mem-ref p :uint32))
+    :c/c++ (ffi:c-inline (x) (:float) :unsigned-int
+                         "({ float f = #0; uint32_t u; memcpy(&u, &f, 4); u; })" :one-liner t)))
 
 (defun %single-float-from-bits (bits)
-  (cffi:with-foreign-object (p :uint32)
-    (setf (cffi:mem-ref p :uint32) bits)
-    (cffi:mem-ref p :float)))
+  (ext:with-backend
+    :bytecodes (cffi:with-foreign-object (p :uint32)
+                 (setf (cffi:mem-ref p :uint32) bits)
+                 (cffi:mem-ref p :float))
+    :c/c++ (ffi:c-inline (bits) (:unsigned-int) :float
+                         "({ uint32_t u = #0; float f; memcpy(&f, &u, 4); f; })" :one-liner t)))
 
 (defun %double-float-words (x)
   "The high and low 32-bit words of X's bits, both unsigned."
-  (cffi:with-foreign-object (p :uint32 2)
-    (setf (cffi:mem-ref p :double) x)
-    (values (cffi:mem-aref p :uint32 1) (cffi:mem-aref p :uint32 0))))
+  (ext:with-backend
+    :bytecodes (cffi:with-foreign-object (p :uint32 2)
+                 (setf (cffi:mem-ref p :double) x)
+                 (values (cffi:mem-aref p :uint32 1) (cffi:mem-aref p :uint32 0)))
+    :c/c++ (values (ffi:c-inline (x) (:double) :unsigned-int
+                                 "({ double d = #0; uint64_t u; memcpy(&u, &d, 8); (uint32_t)(u >> 32); })"
+                                 :one-liner t)
+                   (ffi:c-inline (x) (:double) :unsigned-int
+                                 "({ double d = #0; uint64_t u; memcpy(&u, &d, 8); (uint32_t)u; })"
+                                 :one-liner t))))
 
 (defun %double-float-from-words (high low)
-  (cffi:with-foreign-object (p :uint32 2)
-    (setf (cffi:mem-aref p :uint32 0) low
-          (cffi:mem-aref p :uint32 1) high)
-    (cffi:mem-ref p :double)))
+  (ext:with-backend
+    :bytecodes (cffi:with-foreign-object (p :uint32 2)
+                 (setf (cffi:mem-aref p :uint32 0) low
+                       (cffi:mem-aref p :uint32 1) high)
+                 (cffi:mem-ref p :double))
+    :c/c++ (ffi:c-inline (high low) (:unsigned-int :unsigned-int) :double
+                         "({ uint64_t u = ((uint64_t)#0 << 32) | (uint64_t)#1; double d; memcpy(&d, &u, 8); d; })"
+                         :one-liner t)))
+
+(defun %utf8-to-string (pointer)
+  "The NUL-terminated UTF-8 at POINTER as a string."
+  (ext:with-backend
+    :bytecodes (cffi:foreign-string-to-lisp pointer :encoding :utf-8)
+    :c/c++ (let* ((n (ffi:c-inline (pointer) (:pointer-void) :cl-index
+                                   "strlen((const char *)#0)" :one-liner t))
+                  (octets (make-array n :element-type '(unsigned-byte 8))))
+             (ffi:c-inline (octets pointer n) (:object :pointer-void :cl-index) :void
+                           "memcpy(#0->vector.self.b8, #1, #2)" :one-liner t)
+             (ext:octets-to-string octets :external-format :utf-8))))
+
+(defun %string-to-utf8 (string)
+  "STRING as NUL-terminated UTF-8 in foreign memory; free it with FOREIGN-FREE."
+  (ext:with-backend
+    :bytecodes (cffi:foreign-string-alloc string :encoding :utf-8)
+    :c/c++ (let* ((octets (ext:string-to-octets string :external-format :utf-8
+                                                       :null-terminate t))
+                  (n (length octets))
+                  (buffer (cffi:foreign-alloc :uint8 :count n)))
+             (ffi:c-inline (buffer octets n) (:pointer-void :object :cl-index) :void
+                           "memcpy(#0, #1->vector.self.b8, #2)" :one-liner t)
+             buffer)))
+
+(defun %call-with-utf8 (string function)
+  "Call FUNCTION with a pointer to STRING's UTF-8 and its byte count, for the
+extent of the call.  The octet vector is handed over in place."
+  (let* ((octets (ext:string-to-octets string :external-format :utf-8))
+         (length (length octets)))
+    (cffi:with-pointer-to-vector-data (pointer octets)
+      (funcall function pointer length))))
 
 (defun %pack-wide-vector (node value)
   (unless (wide-vector-supported-p)
@@ -316,11 +413,6 @@ matters."
 (defun %struct-size (node)
   (values (node-size-and-alignment (%resolved-struct node))))
 
-(defun %copy-foreign-bytes (from to size)
-  "SIZE bytes from foreign pointer FROM to foreign pointer TO."
-  (loop for i below size
-        do (setf (cffi:mem-aref to :uint8 i) (cffi:mem-aref from :uint8 i))))
-
 (defun %zeroed-foreign-buffer (size)
   "SIZE bytes of collector-managed foreign memory, zero-filled.
 
@@ -328,7 +420,7 @@ Collector-managed rather than FOREIGN-ALLOC, because a structure returned from
 a callback is read by libffi after the Lisp function has returned and there is
 no moment at which to free it."
   (let ((buffer (si::allocate-foreign-data :void size)))
-    (loop for i below size do (setf (cffi:mem-aref buffer :uint8 i) 0))
+    (%zero-foreign-bytes buffer size)
     buffer))
 
 
@@ -430,7 +522,7 @@ redefinition and is the right trade against crashing mid-session.")
   "A function of (raw out) producing the contract's value for a raw CALL-CFUN result."
   (cond ((struct-node-p result-node)
          (let ((size (%struct-size result-node)))
-           (lambda (raw out) (%copy-foreign-bytes raw out size) nil)))
+           (lambda (raw out) (%copy-foreign-bytes out raw size) nil)))
         ((eq result-type :void)
          (lambda (raw out) (declare (ignore raw out)) nil))
         (t

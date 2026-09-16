@@ -66,10 +66,10 @@ two sends: the sends were 394 of the 461 ns a string argument cost
 bridged, it is what +stringWithUTF8String: makes anyway -- and taking a byte
 count rather than a C string means a NUL in the Lisp string survives."
   (check-type string string)
-  (let* ((octets (babel:string-to-octets string :encoding :utf-8))
-         (ns (cffi:with-pointer-to-vector-data (bytes octets)
-               (%cf-string-create-with-bytes (cffi:null-pointer) bytes (length octets)
-                                             +cf-string-encoding-utf8+ nil))))
+  (let ((ns (%call-with-utf8 string
+                             (lambda (bytes length)
+                               (%cf-string-create-with-bytes (cffi:null-pointer) bytes length
+                                                             +cf-string-encoding-utf8+ nil)))))
     (when (cffi:null-pointer-p ns)
       (error "CFStringCreateWithBytes refused ~S." string))
     (if autoreleasep
@@ -90,7 +90,7 @@ carriage return is preserved as #\\Return."
          (utf8 (pointer-of (send-raw pointer "UTF8String")))
          (raw (if (cffi:null-pointer-p utf8)
                   ""
-                  (cffi:foreign-string-to-lisp utf8 :encoding :utf-8))))
+                  (%utf8-to-string utf8))))
     (if preserve-line-terminators
         raw
         (normalize-line-terminators raw))))
@@ -356,33 +356,47 @@ WRITE-STRUCT-FROM-SEQUENCE, and what INVOKE returns for a declared structure."
 ;;; Memory is still the path for a vector inside a struct, and for the wide
 ;;; vectors, where there is memory anyway.
 
-(defun vector-element-cffi-type (element)
-  (ecase element
-    (:char :int8) (:uchar :uint8) (:short :int16) (:ushort :uint16)
-    (:int :int32) (:uint :uint32) (:long-long :int64) (:ulong-long :uint64)
-    (:float :float) (:double :double)))
+;;; Lane access dispatches on the element ONCE, into a branch whose type is a
+;;; literal.  That is what makes it cheap on ECL, where CFFI's MEM-AREF is an
+;;; inline C expression only for a literal type and offset and a 1.4 µs call
+;;; through a freshly recast pointer otherwise (bench/RESULTS.md, 2026-09-16:
+;;; three float lanes were 5 µs).  %LANE-REF and %LANE-SET are the seam's.
 
 (defun write-vector-elements (pointer node value)
   "Store VALUE, a sequence with one element per lane, at POINTER as NODE."
   (destructuring-bind (element count) (rest node)
     (unless (and (typep value 'sequence) (not (stringp value)) (= (length value) count))
       (error "Cannot pass ~S as a ~d-element SIMD vector of ~(~a~)." value count element))
-    (let ((type (vector-element-cffi-type element))
-          (i 0))
-      (map nil (lambda (x)
-                 (setf (cffi:mem-aref pointer type i)
-                       (case element
-                         (:float (coerce x 'single-float))
-                         (:double (coerce x 'double-float))
-                         (t x)))
-                 (incf i))
-           value))))
+    (macrolet ((store (element)
+                 `(let ((i 0))
+                    (map nil (lambda (x)
+                               (%lane-set pointer ,element i
+                                          ,(case element
+                                             (:float '(coerce x 'single-float))
+                                             (:double '(coerce x 'double-float))
+                                             (t 'x)))
+                               (incf i))
+                         value))))
+      (ecase element
+        (:char (store :char)) (:uchar (store :uchar))
+        (:short (store :short)) (:ushort (store :ushort))
+        (:int (store :int)) (:uint (store :uint))
+        (:long-long (store :long-long)) (:ulong-long (store :ulong-long))
+        (:float (store :float)) (:double (store :double))))))
 
 (defun read-vector-elements (pointer node)
   "The NODE vector at POINTER, as a Lisp vector with one element per lane."
   (destructuring-bind (element count) (rest node)
-    (let ((type (vector-element-cffi-type element)))
-      (coerce (loop for i below count collect (cffi:mem-aref pointer type i)) 'vector))))
+    (let ((lanes (make-array count)))
+      (macrolet ((fetch (element)
+                   `(dotimes (i count lanes)
+                      (setf (aref lanes i) (%lane-ref pointer ,element i)))))
+        (ecase element
+          (:char (fetch :char)) (:uchar (fetch :uchar))
+          (:short (fetch :short)) (:ushort (fetch :ushort))
+          (:int (fetch :int)) (:uint (fetch :uint))
+          (:long-long (fetch :long-long)) (:ulong-long (fetch :ulong-long))
+          (:float (fetch :float)) (:double (fetch :double)))))))
 
 (declaim (inline lane-bits lane-value))
 
@@ -532,8 +546,8 @@ Temporaries are registered for release when the call unwinds."
        (cond ((null value) (sap-of (cffi:null-pointer)))
              ((stringp value)
               ;; Freed when INVOKE returns, per the manual.
-              (let ((bytes (cffi:foreign-string-alloc value :encoding :utf-8)))
-                (register-temporary (lambda () (cffi:foreign-string-free bytes)))
+              (let ((bytes (%string-to-utf8 value)))
+                (register-temporary (lambda () (cffi:foreign-free bytes)))
                 (sap-of bytes)))
              (t (sap-of value))))
 

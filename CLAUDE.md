@@ -269,10 +269,21 @@ Each of these is a bug that actually happened here.
   because `for_each_thread` skips `me`, and the single worker in Lisp is the one
   that triggered the collection. Two, and the second must be signalled: `cannot
   suspend thread ...: 45, Operation not supported`, the process, no condition and
-  no Lisp backtrace.
+  no Lisp backtrace. **And so must the first, whenever another thread starts
+  the collection**: a full GC on the main thread while one worker sat parked in
+  a block killed stock 2.6.8 on arm64 and under Rosetta every time (2026-09-17).
+  `test-gcd` had consed its hundred blocks on the main thread in exactly that
+  window and passed for months on heap luck; it now queues them with the queue
+  suspended and collects before resuming. The rule for an example: while a
+  block may be running on a worker, every other Lisp thread is in a foreign
+  call or not consing.
 
   So a mutex serialising Lisp entry does **not** help: a worker parked on a Lisp
-  lock has already been adopted and still has to be signalled.
+  lock has already been adopted and still has to be signalled. And note that
+  the `sbcl` on this machine's PATH (`~/.local/bin`) *is* the safepoint build,
+  so `make test` here never shows this class of failure; the stock one is
+  `/opt/homebrew/bin/sbcl`, which is what CI runs, and it needs its own fasl
+  cache (`asdf:initialize-output-translations`) because both report 2.6.8.
 
   **`--with-sb-safepoint` fixes it, verified.** Safepoint stops the world by
   polling rather than signalling, so the unsignallable thread stops mattering —
@@ -455,10 +466,28 @@ Each of these is a bug that actually happened here.
   recorded. That is what lets the differential tests run in CI with no LispWorks
   installed. Regenerating is deliberate and rare; `make oracle` prints how.
 
-- **Architecture differences are measured, not conditionalised.** There are no
-  `#+arm64` read-time conditionals. `BOOL`'s encoding is read from
-  `-[NSObject isProxy]` at initialization, because it is a signed char on Intel
-  and C99 `_Bool` on Apple silicon.
+- **Objective-C ABI differences are measured, not conditionalised.** `BOOL`'s
+  encoding is read from `-[NSObject isProxy]` at initialization, because it is
+  a signed char on Intel and C99 `_Bool` on Apple silicon; `objc_msgSend_stret`
+  is looked up, not assumed. The one place a read-time conditional is honest is
+  SBCL's register-level annexes, `abi-neon.lisp` and `abi-sse.lisp`, which
+  name the machine's registers and cannot be anything but per-architecture;
+  `wide-vector-supported-p` and `matrix-as-record-p` in abi.lisp are the
+  single source of truth for what those annexes make possible.
+
+- **On x86-64 a matrix is a record, not a run of vectors.** SysV classifies a
+  `simd_float4x4` as MEMORY -- nothing homogeneous survives past sixteen bytes
+  -- so `matrix-as-record-p` turns `(:matrix ...)` into a struct node of its
+  padded columns (`matrix-struct-node`: a `float3x3` is three sixteen-byte
+  columns, forty-eight bytes, not nine floats, or a callback's result reads
+  back shuffled) and the struct paths carry it; arm64 keeps the spread form,
+  `matrix-spread-p`. Every place that once asked `matrix-node-p` to decide a
+  calling convention must ask `matrix-spread-p` or `record-like-node-p`
+  instead. A block whose result crosses through memory needs `BLOCK_USE_STRET`
+  (`struct-returned-in-memory-p`), matrices included: without it libobjc's
+  IMP trampoline shuffles the hidden pointer and the block literal, the
+  dispatcher reads the block id from the out buffer, and the report is
+  "block 0 was invoked after its last holder let go".
 
 - **The manual is stale about `ns-point`, `ns-size` and `ns-range`.** Its
   reference pages claim `:float` and `(:unsigned :int)` slots. LispWorks itself

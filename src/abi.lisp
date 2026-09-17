@@ -131,7 +131,9 @@ know an alien type at all."
        ;; separate arguments, returns them as VALUES from a call, and takes
        ;; the marked type of the right width for a callback's result.  See
        ;; NODE-ARGUMENT-TYPES and MATRIX-RESULT-TYPE.
-       (:matrix (error "A matrix has no single alien type; the builders expand it."))
+       (:matrix (if (matrix-as-record-p)
+                    (alien-struct-type (matrix-struct-node node))
+                    (error "A matrix has no single alien type; the builders expand it.")))
        (:pointer 'sb-alien:system-area-pointer)
        (:qualified (alien-type (third node)))
        (:array 'sb-alien:system-area-pointer)
@@ -166,8 +168,28 @@ know an alien type at all."
 ;;; the x86-64 half has not been written or measured.
 
 (defun wide-vector-supported-p ()
-  "Whether this build carries a sixteen-byte SIMD vector by value."
-  (and (member :arm64 *features*) (member :darwin *features*) t))
+  "Whether this build carries a sixteen-byte SIMD vector by value: on Apple
+silicon in a NEON register, on Intel in an XMM register.  Darwin either way."
+  (and (member :darwin *features*)
+       (or (member :arm64 *features*) (member :x86-64 *features*))
+       t))
+
+(defun matrix-as-record-p ()
+  "Whether a matrix crosses as one record of its elements -- a struct of
+sixteen floats -- rather than as its columns in registers.  On x86-64 the ABI
+classifies a 64-byte aggregate as memory, so a matrix argument is copied to
+the stack and a matrix result comes back through a hidden pointer, which is
+exactly what the record paths already do for CGRect."
+  (and (member :x86-64 *features*) t))
+
+(defun matrix-struct-node (node)
+  "The struct node a matrix is, as a record: COLUMNS columns of the padded
+column vector, column-major, which is the layout simd keeps -- a float3x3 is
+three sixteen-byte columns, forty-eight bytes, not nine floats."
+  (destructuring-bind (element columns rows) (rest node)
+    (let ((lanes (if (= rows 3) 4 rows)))
+      (list :struct (format nil "objc_matrix_~(~a~)_~dx~d" element columns rows)
+            (make-list (* columns lanes) :initial-element element)))))
 
 (defvar *wide-alien-type* nil
   "The double-float type instance marked 128 bits wide, once installed.")
@@ -243,10 +265,15 @@ wider siblings for matrix results.  Once per image."
       (let* ((class (sb-alien::alien-type-class wide))
              (vm-symbol (lambda (name) (or (find-symbol name :sb-vm)
                                            (error "SB-VM has no ~a on this build" name))))
-             (neon (sb-c:sc-number-or-lose (funcall vm-symbol "INT-NEON-REG")))
-             (neon-stack (sb-c:sc-number-or-lose (funcall vm-symbol "INT-NEON-STACK")))
+             (intel (matrix-as-record-p))
+             ;; The 128-bit register class and its stack alternative: NEON on
+             ;; arm64, SSE on x86-64.  Both hold a simd-pack of two words.
+             (wide-reg (sb-c:sc-number-or-lose (funcall vm-symbol (if intel "INT-SSE-REG" "INT-NEON-REG"))))
+             (wide-stack (sb-c:sc-number-or-lose (funcall vm-symbol (if intel "INT-SSE-STACK" "INT-NEON-STACK"))))
              (pack-type (funcall vm-symbol "SIMD-PACK-UB64"))
-             (fp-registers (funcall vm-symbol "ARG-STATE-FP-REGISTERS"))
+             ;; How many floating-point registers a call has used so far, by
+             ;; each backend's name for it; both allow eight.
+             (fp-registers (funcall vm-symbol (if intel "ARG-STATE-XMM-ARGS" "ARG-STATE-FP-REGISTERS")))
              (float-arg (funcall vm-symbol "FLOAT-ARG"))
              (make-wired-tn (funcall vm-symbol "MAKE-WIRED-TN*"))
              (result-count (funcall vm-symbol "RESULT-STATE-NUM-RESULTS"))
@@ -304,14 +331,19 @@ wider siblings for matrix results.  Once per image."
           (when (>= (funcall fp-registers state) 8)
             (error "A 16-byte SIMD vector must be among the first eight ~
                     floating-point arguments of a call."))
-          (funcall float-arg state pack-type neon neon-stack 16))
+          ;; arm64's FLOAT-ARG takes the argument's size as well; x86-64's
+          ;; does not, every XMM argument being one register.
+          (if intel
+              (funcall float-arg state pack-type wide-reg wide-stack)
+              (funcall float-arg state pack-type wide-reg wide-stack 16)))
         (%override-alien-method class result-tn (state)
-          ;; The next NEON register, so that VALUES of these are v0, v1, ...
+          ;; The next vector register: v0, v1, ... or xmm0, xmm1, so that
+          ;; VALUES of these take successive ones.
           (unless (= 1 (wide-alien-type-registers type))
             (error "A matrix result of a call is VALUES of its columns."))
           (let ((n (funcall result-count state)))
             (funcall set-result-count (1+ n) state)
-            (funcall make-wired-tn pack-type neon n)))
+            (funcall make-wired-tn pack-type wide-reg n)))
         ;; The VALUES class allows two results.  A matrix comes back in up
         ;; to four registers, so when every member is a column carrier the
         ;; limit is lifted and the members take successive registers: a
@@ -349,34 +381,62 @@ wider siblings for matrix results.  Once per image."
 
 (install-wide-alien-type)
 
+(defun matrix-spread-p (node)
+  "Whether NODE is a matrix that crosses as its columns, one register each."
+  (and (matrix-node-p node) (not (matrix-as-record-p))))
+
+(defun record-like-node-p (node)
+  "Whether NODE crosses the way a struct does: a struct, or a matrix where a
+matrix is a record."
+  (or (struct-node-p node) (and (matrix-node-p node) (matrix-as-record-p))))
+
 (defun node-argument-types (node)
-  "The alien types NODE occupies as an argument: one, or a matrix's columns."
-  (if (matrix-node-p node)
+  "The alien types NODE occupies as an argument: one, or a spread matrix's
+columns."
+  (if (matrix-spread-p node)
       (make-list (third node) :initial-element (alien-type (matrix-column-node node)))
       (list (alien-type node))))
 
 (defun matrix-call-result-type (node)
-  "A matrix result of a call: VALUES of its columns, in successive registers."
-  `(sb-alien:values ,@(node-argument-types node)))
+  "A matrix result of a call: VALUES of its columns, in successive registers;
+or the record, where a matrix is one."
+  (if (matrix-as-record-p)
+      (alien-type node)
+      `(sb-alien:values ,@(node-argument-types node))))
 
 (defun matrix-callback-result-type (node)
   "A matrix result of a callback: the marked type as wide as all its columns,
-which the widened wrapper loads into v0-v3.  Only sixteen-byte columns; a
-float2x2 result is two doubles in d0 and d1, which nothing here places."
-  (let ((column (matrix-column-node node)))
-    (unless (= 16 (vector-byte-size column))
-      (error "A matrix with eight-byte columns cannot be returned from a Lisp ~
-              method or block yet; ~a can be passed to one." (unparse-type node)))
-    (wide-alien-type-name (* 128 (third node)))))
+which the widened wrapper loads into v0-v3; or the record, where a matrix is
+one.  Spread only for sixteen-byte columns; a float2x2 result is two doubles
+in d0 and d1, which nothing here places."
+  (if (matrix-as-record-p)
+      (alien-type node)
+      (let ((column (matrix-column-node node)))
+        (unless (= 16 (vector-byte-size column))
+          (error "A matrix with eight-byte columns cannot be returned from a Lisp ~
+                  method or block yet; ~a can be passed to one." (unparse-type node)))
+        (wide-alien-type-name (* 128 (third node))))))
 
 (defun %pack-matrix (node value)
-  "A matrix's columns, each packed as a vector: what the builders spread."
-  (let ((column (matrix-column-node node)))
-    (map 'vector (lambda (c) (pack-vector column c)) value)))
+  "A matrix's columns, each packed as a vector, for the builders to spread; or,
+where a matrix is a record, a foreign buffer holding it, freed with the call's
+temporaries, that the trampoline loads by value."
+  (if (matrix-as-record-p)
+      (let* ((size (node-size-and-alignment node))
+             (buffer (cffi:foreign-alloc :uint8 :count (max 1 size) :initial-element 0)))
+        (write-struct-field buffer node value)
+        (register-temporary (lambda () (cffi:foreign-free buffer)))
+        (sap-of buffer))
+      (let ((column (matrix-column-node node)))
+        (map 'vector (lambda (c) (pack-vector column c)) value))))
 
 (defun %unpack-matrix (node carriers)
-  (let ((column (matrix-column-node node)))
-    (map 'vector (lambda (c) (unpack-vector column c)) carriers)))
+  "The matrix from what carried it: a vector of column carriers, or a pointer
+to the record."
+  (if (matrix-as-record-p)
+      (read-struct-field (pointer-of carriers) node)
+      (let ((column (matrix-column-node node)))
+        (map 'vector (lambda (c) (unpack-vector column c)) carriers))))
 
 (defun wide-vector-callbacks-supported-p ()
   "Whether a Lisp method or block may take or return a sixteen-byte vector or
@@ -385,8 +445,9 @@ a matrix: here, wherever the vectors themselves are carried."
 
 (defun result-through-buffer-p (node)
   "Whether a result of type NODE is written through the OUT buffer rather than
-returned as a value: structures only, here; a vector or matrix is a value."
-  (struct-node-p node))
+returned as a value: structures, and a matrix where a matrix is a record; a
+vector, and a spread matrix, is a value."
+  (record-like-node-p node))
 
 ;;; Lane access ----------------------------------------------------------------
 ;;;
@@ -590,8 +651,8 @@ Getting this wrong is not a graceful failure.  objc_msgSend cannot perform an
 sret call: the hidden result pointer displaces the receiver into the wrong
 register, so the receiver is read as garbage."
   (and *msgsend-stret-address*
-       (struct-node-p node)
-       (> (node-size-and-alignment (resolve-struct-layout node))
+       (record-like-node-p node)
+       (> (node-size-and-alignment (if (struct-node-p node) (resolve-struct-layout node) node))
           +max-register-returned-struct+)))
 
 ;;; Trampolines --------------------------------------------------------------
@@ -618,16 +679,16 @@ variadic call: with it, snprintf(\"%d\", 42) prints \"The integer 42\"; without
 it, \"The integer 1232\", because arm64 passes variadic arguments on the stack
 while a fixed signature passes them in registers."
   (ensure-dispatch-addresses)
-  (let* ((structp (struct-node-p result-node))
+  (let* ((structp (record-like-node-p result-node))
          (stretp (stret-required-p result-node))
          (entry (ecase kind
                   (:send (if stretp *msgsend-stret-address* *msgsend-address*))
                   (:super (if stretp
                               *msgsend-super-stret-address*
                               *msgsend-super-address*))))
-         (result-node (if structp (resolve-struct-layout result-node) result-node))
-         (matrixp (matrix-node-p result-node))
-         (rtype (if matrixp (matrix-call-result-type result-node) (alien-type result-node)))
+         (result-node (if (struct-node-p result-node) (resolve-struct-layout result-node) result-node))
+         (matrixp (matrix-spread-p result-node))
+         (rtype (if (matrix-node-p result-node) (matrix-call-result-type result-node) (alien-type result-node)))
          (out (gensym "OUT"))
          (syms (loop for i from 0 below (length arg-nodes)
                      collect (gensym (format nil "A~D-" i))))
@@ -638,10 +699,10 @@ while a fixed signature passes them in registers."
          ;; carriers, is spread.
          (args (loop for sym in syms
                      for node in arg-nodes
-                     append (cond ((struct-node-p node)
+                     append (cond ((record-like-node-p node)
                                    (list `(sb-alien:deref
                                            (sb-alien:sap-alien ,sym (sb-alien:* ,(alien-type node))))))
-                                  ((matrix-node-p node)
+                                  ((matrix-spread-p node)
                                    (loop for i below (third node) collect `(svref ,sym ,i)))
                                   (t (list sym)))))
          ;; N-FIXED counts nodes; a matrix among the fixed ones is several
@@ -664,7 +725,7 @@ while a fixed signature passes them in registers."
                  (type sb-sys:system-area-pointer ,out)
                  ,@(loop for sym in syms
                          for node in arg-nodes
-                         when (or (struct-node-p node)
+                         when (or (record-like-node-p node)
                                   (member node '(:id :class :sel :cstring :block))
                                   (and (consp node)
                                        (member (first node) '(:pointer :array))))
@@ -703,10 +764,10 @@ struct definition so the layout has exactly one source of truth.
 
 This works on any block, whoever made it: one built by MAKE-OBJC-BLOCK, or one
 Cocoa handed us."
-  (let* ((structp (struct-node-p result-node))
-         (result-node (if structp (resolve-struct-layout result-node) result-node))
-         (matrixp (matrix-node-p result-node))
-         (rtype (if matrixp (matrix-call-result-type result-node) (alien-type result-node)))
+  (let* ((structp (record-like-node-p result-node))
+         (result-node (if (struct-node-p result-node) (resolve-struct-layout result-node) result-node))
+         (matrixp (matrix-spread-p result-node))
+         (rtype (if (matrix-node-p result-node) (matrix-call-result-type result-node) (alien-type result-node)))
          (out (gensym "OUT"))
          (fn (gensym "INVOKE"))
          (syms (loop for i from 0 below (length arg-nodes)
@@ -714,10 +775,10 @@ Cocoa handed us."
          (atypes (mapcan #'node-argument-types arg-nodes))
          (args (loop for sym in syms
                      for node in arg-nodes
-                     append (cond ((struct-node-p node)
+                     append (cond ((record-like-node-p node)
                                    (list `(sb-alien:deref
                                            (sb-alien:sap-alien ,sym (sb-alien:* ,(alien-type node))))))
-                                  ((matrix-node-p node)
+                                  ((matrix-spread-p node)
                                    (loop for i below (third node) collect `(svref ,sym ,i)))
                                   (t (list sym)))))
          (ftype `(sb-alien:function ,rtype ,@atypes)))
@@ -729,7 +790,7 @@ Cocoa handed us."
                  (type sb-sys:system-area-pointer ,out ,(first syms))
                  ,@(loop for sym in (rest syms)
                          for node in (rest arg-nodes)
-                         when (or (struct-node-p node)
+                         when (or (record-like-node-p node)
                                   (member node '(:id :class :sel :cstring :block))
                                   (and (consp node)
                                        (member (first node) '(:pointer :array))))
@@ -826,10 +887,10 @@ unmasked one here takes the process out.  And no Lisp condition is allowed to
 escape: there is no handler on the Objective-C side, so an unwind past this
 frame aborts.  LispWorks does the same thing, calling it a catch-all frame --
 its message is \"Capturing attempt to throw out of Cocoa handler\"."
-  (let* ((structp (struct-node-p result-node))
-         (result-node (if structp (resolve-struct-layout result-node) result-node))
-         (matrixp (matrix-node-p result-node))
-         (result-type (if matrixp
+  (let* ((structp (record-like-node-p result-node))
+         (result-node (if (struct-node-p result-node) (resolve-struct-layout result-node) result-node))
+         (matrixp (matrix-spread-p result-node))
+         (result-type (if (matrix-node-p result-node)
                           (matrix-callback-result-type result-node)
                           (alien-type result-node)))
          (syms (loop for i from 0 below (length arg-nodes)
@@ -838,7 +899,7 @@ its message is \"Capturing attempt to throw out of Cocoa handler\"."
          ;; the body is handed them gathered into a vector.
          (column-syms (loop for sym in syms
                             for node in arg-nodes
-                            collect (and (matrix-node-p node)
+                            collect (and (matrix-spread-p node)
                                          (loop for i below (third node)
                                                collect (intern (format nil "~A-C~D" sym i) '#:objc)))))
          (params (loop for sym in syms
@@ -855,13 +916,13 @@ its message is \"Capturing attempt to throw out of Cocoa handler\"."
          ;; everything non-scalar reaches the body as a SAP.
          (struct-temps (loop for sym in syms
                              for node in arg-nodes
-                             when (struct-node-p node)
+                             when (record-like-node-p node)
                                collect (list (gensym (format nil "~A-COPY-" sym))
                                              sym (alien-type node))))
          (body-args (loop for sym in syms
                           for node in arg-nodes
                           for columns in column-syms
-                          collect (cond ((struct-node-p node)
+                          collect (cond ((record-like-node-p node)
                                          (let ((temp (first (find sym struct-temps
                                                                   :key #'second))))
                                            `(sb-alien:alien-sap (sb-alien:addr ,temp))))

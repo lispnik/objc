@@ -54,6 +54,7 @@ Lisp method can take and return C structs by value like any other."
                  ;; SBCL's arm64 callback wrapper with a 128-bit vector
                  ;; branch, in SB-VM; abi.lisp explains.
                  #+(and sbcl arm64 darwin) (:file "abi-neon")
+                 #+(and sbcl x86-64 darwin) (:file "abi-sse")
                  #+ecl (:file "abi-ecl")
                  (:file "selectors")
                  (:file "classes")

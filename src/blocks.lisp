@@ -203,7 +203,7 @@ signature is, and a block on an enumeration runs per element."
                                 ,@(loop for raw in raws
                                         for node in arg-nodes
                                         collect (argument-conversion-form raw node nil)))))
-          ,(if (struct-node-p result-node)
+          ,(if (result-through-buffer-p result-node)
                ;; A structure result is not returned; it is written into the
                ;; buffer BUILD-CALLABLE holds, which then returns it by value.
                `(write-method-struct-result ,value ',result-node ,result-sap)
@@ -497,10 +497,14 @@ block of a shape costs an allocation and a hash-table entry."
 
 (defun struct-returned-in-memory-p (result-node)
   "Whether a function returning RESULT-NODE does so through a hidden pointer:
-on x86-64, a struct of more than sixteen bytes.  Not on arm64, whatever the
-size; the caller passes the address in x8 and no argument moves."
-  #+x86-64 (and (struct-node-p result-node)
-                (> (node-size-and-alignment (resolve-struct-layout result-node)) 16))
+on x86-64, a struct of more than sixteen bytes, or a matrix, which crosses as a
+record there.  Not on arm64, whatever the size; the caller passes the address
+in x8 and no argument moves."
+  #+x86-64 (cond ((struct-node-p result-node)
+                  (> (node-size-and-alignment (resolve-struct-layout result-node)) 16))
+                 ((matrix-node-p result-node)
+                  (> (node-size-and-alignment result-node) 16))
+                 (t nil))
   #-x86-64 (progn result-node nil))
 
 (defun %make-block-from-machinery (machinery function signature &key result-node)

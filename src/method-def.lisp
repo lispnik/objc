@@ -88,6 +88,8 @@ with one element per field is taken here as well."
   (let ((kind (cocoa-struct-kind node)))
     (cond
       ((null value) nil)
+      ;; A matrix written as a record: its columns into the buffer.
+      ((matrix-node-p node) (write-struct-field (pointer-of result-sap) node value))
       ((and kind (or (vectorp value) (consp value)))
        (write-cocoa-struct result-sap kind value))
       ;; Any other structure, from a sequence with one element per field.
@@ -225,7 +227,7 @@ declared." selector expected-args (length argspecs)))
                       ;; A structure result with no result variable: the body
                       ;; returns #(x y width height) or a pointer, and it has to
                       ;; be written into the buffer the caller gave us.
-                      ((struct-node-p result-node)
+                      ((result-through-buffer-p result-node)
                        `(write-method-struct-result (progn ,@body)
                                                     ',result-node ,result-sap))
                       (t `(convert-method-result (progn ,@body) ',result-node))))))))

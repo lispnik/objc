@@ -131,12 +131,16 @@ where `SYS:` resolves to a readable directory on the Mac.
 - **Running Lisp on two libdispatch threads at once needs a safepoint SBCL.** A
   block runs on a thread SBCL did not create; a garbage collection stops the
   world by signalling every other thread in Lisp, and Darwin refuses to signal a
-  libdispatch worker at all. One block is fine — the collector skips the thread
-  that triggered it — and two takes the process down with `cannot suspend
-  thread: 45, Operation not supported`, no condition and no backtrace. On a
-  stock SBCL, keep asynchronous block work on a **serial** queue; `group-async`
-  in the GCD example defaults to one. Building SBCL `--with-sb-safepoint` lifts
-  the limit entirely, verified — see [Blocks](#blocks).
+  libdispatch worker at all. One block is fine only while that worker is the
+  thread that triggers the collection — the collector skips itself — and any
+  other case takes the process down with `cannot suspend thread: 45, Operation
+  not supported`, no condition and no Lisp backtrace: a second worker, or the
+  main thread filling the nursery while one block sits in Lisp. On a stock
+  SBCL, keep asynchronous block work on a **serial** queue, `group-async` in
+  the GCD example defaults to one, and keep your other threads out of
+  allocation — in a run loop, a wait, or non-consing work — while a block is
+  running. Building SBCL `--with-sb-safepoint` lifts the limit entirely,
+  verified — see [Blocks](#blocks).
 - **Variadic methods need `:variadic-num-of-fixed`.** On Apple silicon a variadic
   call passes its variable arguments on the stack and a fixed-arity call passes
   them in registers, so `+stringWithFormat:` without it reads garbage. LispWorks
@@ -152,15 +156,18 @@ where `SYS:` resolves to a readable directory on the Mac.
   no result. `invoke` notices the hole and signals, naming the selector and the
   fix, instead of miscounting arguments; declared once, by selector, the vector
   goes in and comes out as a Lisp vector. Eight-byte vectors everywhere;
-  sixteen-byte ones -- `float3`, `float4` -- on SBCL for Apple silicon, through
-  a 128-bit alien type of this library's own. See [SIMD vectors](#simd-vectors).
-- **arm64 is the only architecture this has run on.** The two differ in the
-  Objective-C ABI in two ways that matter, and both are handled by measuring the
+  sixteen-byte ones -- `float3`, `float4` -- on SBCL for Apple silicon and
+  Intel, through a 128-bit alien type of this library's own. See
+  [SIMD vectors](#simd-vectors).
+- **Intel Macs are exercised only in CI.** The two architectures differ in the
+  Objective-C ABI in ways that matter, and each is handled by measuring the
   runtime rather than by read-time conditionals: `BOOL` encodes as `c` on Intel
   and `B` on Apple silicon, and a structure result over 16 bytes goes through
   `objc_msgSend_stret` on Intel — a function that does not exist on arm64, where
-  the same result returns through `x8`. Both paths are implemented and the
-  selection logic is unit tested; CI runs an Intel leg to exercise them.
+  the same result returns through `x8`. Both paths are implemented, the
+  selection logic is unit tested, and the whole suite runs on GitHub's Intel
+  runner; but development happens on Apple silicon, and an Intel-only problem
+  is found there rather than here.
 - **There is no FLI, and there will not be one.** The type descriptor symbols
   work everywhere the Objective-C manual uses them — method argument and result
   types, `objc-class-method-signature`, `define-objc-struct` slots — but the
@@ -568,15 +575,16 @@ and no alien type can name a value of that shape. On SBCL the lanes are packed
 with the kernel's own register instructions, the ones sb-simd's `f32.4` is
 made of, so a vector never touches memory on its way to a register; and a
 `simd-pack` is accepted as the value itself, so an `sb-simd-neon:f32.4` built
-with sb-simd's arithmetic goes to SceneKit as it is. **On SBCL for Apple silicon
-it is carried anyway**, both directions, `invoke` and `call-objc-block` as
-well as a Lisp method or block taking or returning one. sb-alien's type
-classes are a fixed table and `alien-type` is sealed, so a class cannot be
-added; instead a second instance of the double-float type is marked 128 bits
-wide, and that class's methods dispatch on the width -- a NEON register and a
-`simd-pack` for the wide one, SBCL's own method for a double. Callbacks go
-through SBCL's arm64 callback wrapper with two branches added for the wide
-type, in `src/abi-neon.lisp`, installed as a dispatcher so a signature with no
+with sb-simd's arithmetic goes to SceneKit as it is. **On SBCL for macOS it is
+carried anyway**, on Apple silicon and on Intel, both directions, `invoke` and
+`call-objc-block` as well as a Lisp method or block taking or returning one.
+sb-alien's type classes are a fixed table and `alien-type` is sealed, so a
+class cannot be added; instead a second instance of the double-float type is
+marked 128 bits wide, and that class's methods dispatch on the width -- a NEON
+or SSE register and a `simd-pack` for the wide one, SBCL's own method for a
+double. Callbacks go through SBCL's own callback wrapper for the architecture
+with two branches added for the wide type, in `src/abi-neon.lisp` on arm64 and
+`src/abi-sse.lisp` on x86-64, installed as a dispatcher so a signature with no
 vector in it never leaves SBCL's own code. Measured against `GKAgent3D`, whose
 position is a `vector_float3`. One limit: a sixteen-byte vector must be among
 the first eight floating-point arguments of a call, which every Objective-C
@@ -590,10 +598,9 @@ kin from `<simd/simd.h>`, and a result comes back through the out buffer. That
 needs a C compiler, so a Mac has it and a phone does not; and it is calls and
 block calls only -- a Lisp method or block on ECL is a libffi closure, and
 libffi has no vector type, so a callback taking or returning one is refused
-where it is defined. SBCL on Intel, whose register names and wrapper have not
-been written, refuses the family where it is written, naming this. A structure
-with a vector field is refused everywhere: Clang cannot encode it either, so
-the runtime would lay it out without the field.
+where it is defined. A structure with a vector field is refused everywhere:
+Clang cannot encode it either, so the runtime would lay it out without the
+field.
 
 **Matrices** come with the sixteen-byte family, on the same build. `(:matrix
 :float 4 4)` is `simd_float4x4`, and its value is a vector of column vectors,
@@ -604,7 +611,11 @@ its columns, returned from a call as `values` of them, and returned from a
 Lisp method or block through a marked type as wide as all its columns, which
 the widened wrapper loads into `v0`-`v3`. The runtime writes `{?=[4]}` for one,
 an anonymous struct of an array of four of nothing, and `{?=}` for a
-quaternion; both parse as holes and take a declaration:
+quaternion; both parse as holes and take a declaration. On x86-64 nothing is
+homogeneous past sixteen bytes, and SysV sends a matrix through memory like
+any large struct; so there a matrix is a record of its padded columns, and
+crosses the way a declared structure does, on both sides, with `float3x3`
+forty-eight bytes as simd lays it out. The declaration is the same:
 
 ```lisp
 (objc:declare-objc-signature "simdTransform" '() :result-type '(:matrix :float 4 4))
@@ -623,18 +634,26 @@ block runs on a thread SBCL did not create; a garbage collection stops the world
 by sending every other thread a signal, and **Darwin refuses to signal a
 libdispatch worker thread at all** — `pthread_kill` on one returns `ENOTSUP`
 even for signal 0, where an ordinary SBCL thread returns 0. A single block gets
-away with it because the collector skips the thread that triggered it. Two, and
-the process dies outright:
+away with it because the collector skips the thread that triggered it — so
+while a worker is inside Lisp, the only thread that may start a collection is
+that worker. A second worker, or the main thread consing enough to fill the
+nursery while the first sits in its callback, and the process dies outright:
 
 ```
 fatal error encountered in SBCL: cannot suspend thread ...: 45, Operation not supported
 ```
 
 Safe on a stock build: `dispatch_sync`; any number of blocks on a **serial**
-queue; and your own Lisp threads running while a queue thread is in a callback.
-Unsafe: concurrent queues with more than one block in flight, and
-`dispatch_apply`. Serialising Lisp entry with a lock does not help — a worker
-parked on a Lisp lock still has to be signalled.
+queue; and your own Lisp threads running while a queue thread is in a callback,
+provided they are in a foreign call — a run loop, `dispatch_group_wait`, a
+semaphore — or doing work that does not allocate. Unsafe: concurrent queues
+with more than one block in flight, `dispatch_apply`, and building anything on
+the main thread while a block is running — the GCD example used to make its
+hundred blocks while the first sat inside Lisp, and passed only as long as no
+collection landed in that window; measured, a full collection on the main
+thread with one worker parked in a block kills stock 2.6.8 on arm64 and x86-64
+every time. Serialising Lisp entry with a lock does not help — a worker parked
+on a Lisp lock still has to be signalled.
 
 **Building SBCL `--with-sb-safepoint` lifts the limit**, and this is verified
 rather than hoped for: the same source on a safepoint build runs an eight-way
@@ -1385,8 +1404,8 @@ to four decimals with the product Lisp computes from the same two matrices.
 Two implementations of the multiplication agreeing says the columns went over
 in the right order and the right registers, both ways. On SBCL a `simd-pack`
 goes over as the position itself. This half runs wherever the build carries
-sixteen bytes by value -- SBCL on Apple silicon, and ECL with a C compiler --
-and declines by name elsewhere. See [SIMD vectors](#simd-vectors).
+sixteen bytes by value -- SBCL on macOS, and ECL with a C compiler -- and
+declines by name elsewhere. See [SIMD vectors](#simd-vectors).
 
 ### A 3D scene, in a window
 

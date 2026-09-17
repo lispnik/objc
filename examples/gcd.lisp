@@ -20,23 +20,33 @@
 ;;;; libdispatch worker thread at all -- pthread_kill returns ENOTSUP on one
 ;;;; even for signal 0, where an ordinary SBCL thread returns 0 -- and a single
 ;;;; block gets away with it only because the collector skips the thread that
-;;;; triggered the collection.  With two, the second has to be signalled and
-;;;; cannot be:
+;;;; triggered the collection.  So while a worker is inside Lisp, the only
+;;;; thread that may start a collection is that worker.  A second worker has
+;;;; to be signalled and cannot be; and so does the first, when the main
+;;;; thread is the one that fills the nursery:
 ;;;;
 ;;;;     fatal error encountered in SBCL: cannot suspend thread ...:
 ;;;;     45, Operation not supported
 ;;;;
 ;;;; -- the process, immediately, with no condition and no Lisp backtrace.
 ;;;; Measured, not inferred: eight concurrent allocating blocks kill it every
-;;;; time, and so does dispatch_apply.  Nor does serialising Lisp entry with a
+;;;; time, and so does dispatch_apply; and so does one block parked inside
+;;;; Lisp while the main thread runs a full collection, on stock SBCL 2.6.8
+;;;; for arm64 and for x86-64 alike.  Nor does serialising Lisp entry with a
 ;;;; lock help: a worker parked on a Lisp lock has already been adopted, and
 ;;;; still has to be signalled.
 ;;;;
 ;;;; What IS safe on a stock build: dispatch_sync; any number of blocks on a
-;;;; SERIAL queue, which by construction runs one at a time; and the main Lisp
-;;;; thread working away while a queue thread is inside a callback.  So
-;;;; GROUP-ASYNC defaults to a serial queue, and the concurrent global queues
-;;;; are here for DISPATCH-SYNC.
+;;;; SERIAL queue, which by construction runs one at a time; and, while a
+;;;; queue thread is inside a callback, every other Lisp thread either in a
+;;;; foreign call -- a run loop, dispatch_group_wait, a semaphore -- or doing
+;;;; work that does not allocate.  What is not safe is what TEST-GCD below used
+;;;; to do without noticing: build a hundred blocks on the main thread while
+;;;; the first one sat inside Lisp.  That passed for as long as the nursery
+;;;; happened not to fill in the window, and failed the day it did.  So
+;;;; GROUP-ASYNC defaults to a serial queue, the concurrent global queues are
+;;;; here for DISPATCH-SYNC, and TEST-GCD queues its work with the queue
+;;;; suspended and collects before letting it run.
 ;;;;
 ;;;; AND THE LIMIT LIFTS IF YOU BUILD SBCL --with-sb-safepoint, which stops the
 ;;;; world by polling rather than signalling.  Verified, not hoped for: the same
@@ -94,6 +104,12 @@
 (cffi:defcfun ("dispatch_group_wait" %dispatch-group-wait) :long
   (group :pointer)
   (timeout :unsigned-long-long))
+
+(cffi:defcfun ("dispatch_suspend" %dispatch-suspend) :void
+  (object :pointer))
+
+(cffi:defcfun ("dispatch_resume" %dispatch-resume) :void
+  (object :pointer))
 
 (defconstant +dispatch-time-forever+ (1- (ash 1 64)))
 
@@ -263,7 +279,8 @@ optimisation rather than a fallback, and it means DISPATCH-SYNC proves nothing
 about threads either way.
 
 :OVERLAPPED is true when the main thread got work done while the queue was still
-running blocks."
+running blocks -- work that allocates nothing, which is the only kind the main
+thread may do then on a stock SBCL; the note at the top of this file says why."
   (objc:ensure-objc-initialized)
   (let ((sync nil)
         (async-thread nil)
@@ -276,26 +293,40 @@ running blocks."
     (dispatch-sync (lambda () (setf sync 42)))
     (let ((finished
             (with-dispatch-group (group)
-              ;; Queued first, so on a serial queue it runs first and holds the
-              ;; queue: it tells the main thread it is inside Lisp, then waits.
-              ;; The overlap below is therefore arranged rather than hoped for --
-              ;; a plain "has anything finished yet?" loop is a race that usually
-              ;; loses, because the first block is done before it is reached.
-              (group-async group
-                           (lambda ()
-                             (setf async-thread
-                                   (if (eq (bt:current-thread) main) :main :other))
-                             (bt:signal-semaphore inside)
-                             (bt:wait-on-semaphore release :timeout 10)))
-              (dotimes (i 100)
-                (let ((i i))
-                  (group-async group
-                               (lambda ()
-                                 (objc:with-autorelease-pool ()
-                                   (bt:with-lock-held (lock) (incf total i)))))))
-              ;; One queue thread inside a callback plus SBCL's own thread is the
-              ;; safe side of the line drawn at the top of this file, and this is
-              ;; the point where the process is standing on it.
+              ;; Nothing runs until the queue is resumed: every block below is
+              ;; built, and the garbage that building them makes is collected,
+              ;; before any worker is inside Lisp.  Otherwise the first block
+              ;; would already be sitting in its callback while the main thread
+              ;; consed the other hundred, and a collection landing there would
+              ;; have to signal the worker -- the one thing Darwin refuses.
+              (let ((queue (ensure-group-queue group)))
+                (%dispatch-suspend queue)
+                ;; Queued first, so on a serial queue it runs first and holds the
+                ;; queue: it tells the main thread it is inside Lisp, then waits.
+                ;; The overlap below is therefore arranged rather than hoped for
+                ;; -- a plain "has anything finished yet?" loop is a race that
+                ;; usually loses, because the first block is done before it is
+                ;; reached.
+                (group-async group
+                             (lambda ()
+                               (setf async-thread
+                                     (if (eq (bt:current-thread) main) :main :other))
+                               (bt:signal-semaphore inside)
+                               (bt:wait-on-semaphore release :timeout 10)))
+                (dotimes (i 100)
+                  (let ((i i))
+                    (group-async group
+                                 (lambda ()
+                                   (objc:with-autorelease-pool ()
+                                     (bt:with-lock-held (lock) (incf total i)))))))
+                ;; A full collection now, so the next is as far off as it can be.
+                #+sbcl (sb-ext:gc :full t)
+                #+ecl (si:gc t)
+                (%dispatch-resume queue))
+              ;; One queue thread inside a callback plus SBCL's own thread doing
+              ;; work that does not allocate is the safe side of the line drawn
+              ;; at the top of this file, and this is the point where the
+              ;; process is standing on it.
               (when (bt:wait-on-semaphore inside :timeout 10)
                 (dotimes (i 10000) (incf spun)))
               (bt:signal-semaphore release))))

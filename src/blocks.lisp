@@ -457,30 +457,109 @@ Compiling the invoke function happens once per distinct signature, so the second
 block of a shape costs an allocation and a hash-table entry."
   (check-type function function)
   (multiple-value-bind (result-node arg-nodes) (parse-block-designator type)
-    (let* ((machinery (ensure-block-machinery result-node arg-nodes))
-           (literal (cffi:foreign-alloc :uint8 :count (block-literal-size)
-                                               :initial-element 0))
-           (record nil))
-      (setf (cffi:foreign-slot-value literal '(:struct block-literal) 'isa)
-            (stack-block-isa)
-            (cffi:foreign-slot-value literal '(:struct block-literal) 'flags)
-            (logior +block-has-signature+ +block-has-copy-dispose+)
-            (cffi:foreign-slot-value literal '(:struct block-literal) 'reserved)
-            0
-            (cffi:foreign-slot-value literal '(:struct block-literal) 'invoke-ptr)
-            (pointer-of (block-machinery-invoke-sap machinery))
-            (cffi:foreign-slot-value literal '(:struct block-literal) 'descriptor)
-            (block-machinery-descriptor machinery))
-      (bt:with-lock-held (*block-lock*)
-        (let ((id (incf *block-id-counter*)))
-          (setf (cffi:foreign-slot-value literal '(:struct block-literal) 'block-id) id)
-          (setf record (%make-objc-block
-                        :id id :pointer literal
-                        :signature (block-type-encoding result-node arg-nodes)))
-          ;; Refcount one: this OBJC-BLOCK.  Every copy libclosure makes adds
-          ;; another through the copy helper.
-          (setf (gethash id *block-records*) (%make-block-record record function))))
-      record)))
+    (%make-block-from-machinery (ensure-block-machinery result-node arg-nodes)
+                                function
+                                (block-type-encoding result-node arg-nodes))))
+
+(defun %make-block-from-machinery (machinery function signature)
+  "A block literal over MACHINERY whose invocation reaches FUNCTION, as an
+OBJC-BLOCK.  What MAKE-OBJC-BLOCK does once the signature is known, and what a
+Lisp method does with the method machinery below."
+  (let ((literal (cffi:foreign-alloc :uint8 :count (block-literal-size)
+                                            :initial-element 0))
+        (record nil))
+    (setf (cffi:foreign-slot-value literal '(:struct block-literal) 'isa)
+          (stack-block-isa)
+          (cffi:foreign-slot-value literal '(:struct block-literal) 'flags)
+          (logior +block-has-signature+ +block-has-copy-dispose+)
+          (cffi:foreign-slot-value literal '(:struct block-literal) 'reserved)
+          0
+          (cffi:foreign-slot-value literal '(:struct block-literal) 'invoke-ptr)
+          (pointer-of (block-machinery-invoke-sap machinery))
+          (cffi:foreign-slot-value literal '(:struct block-literal) 'descriptor)
+          (block-machinery-descriptor machinery))
+    (bt:with-lock-held (*block-lock*)
+      (let ((id (incf *block-id-counter*)))
+        (setf (cffi:foreign-slot-value literal '(:struct block-literal) 'block-id) id)
+        (setf record (%make-objc-block :id id :pointer literal :signature signature))
+        ;; Refcount one: this OBJC-BLOCK.  Every copy libclosure makes adds
+        ;; another through the copy helper.
+        (setf (gethash id *block-records*) (%make-block-record record function))))
+    record))
+
+;;; Methods as blocks -----------------------------------------------------------
+;;;
+;;; An IMP was an alien callable per method.  On Apple silicon SBCL keeps every
+;;; callable's trampoline in a fixed 1 MB static code space that is never
+;;; reclaimed, at about 7 KB a method: some 140 Lisp-defined methods per image,
+;;; and the suite was at 997 KB when the count that found it was made.
+;;;
+;;; So a method is a block.  One callable per method SIGNATURE -- the same
+;;; economy blocks always had -- built here with a dispatcher that hands the
+;;; raw arguments to the method's own body instead of converting them, and
+;;; per method a block literal over it whose closure is that body.  libobjc's
+;;; imp_implementationWithBlock then mints the entry point Cocoa calls, in
+;;; trampoline pages of its own, and calls the block with self in the block's
+;;; place.  A block IMP is not passed _cmd; the body gets the selector it was
+;;; installed for, which is the only one it could have been called with.
+
+(defvar *imp-machinery* (make-hash-table :test 'equal)
+  "Canonical signature -> BLOCK-MACHINERY for a method of that signature.
+Rooted forever, as *BLOCK-MACHINERY* is, and for the same reason.")
+
+(defun build-imp-dispatcher (arity)
+  "The block-side function for methods of ARITY declared arguments: raw
+arguments straight through to the closure the block carries.  Compiled with
+the arity spelled out, as BUILD-BLOCK-DISPATCHER is, because a method Cocoa
+calls per element must not cons a &REST list per call."
+  (let ((raws (loop for i below arity collect (gensym (format nil "RAW~D-" i)))))
+    (compile nil
+             `(lambda (block-sap result-sap self-sap ,@raws)
+                (funcall (block-function-for-sap block-sap) self-sap result-sap ,@raws)))))
+
+(defun build-imp-adapter (arity)
+  "A function of (BODY CMD) returning the closure a method's block carries:
+one that calls BODY as an IMP would, (self cmd result-sap . args), from the
+block's (self result-sap . args).  Compiled per arity for the same reason."
+  (let ((raws (loop for i below arity collect (gensym (format nil "RAW~D-" i)))))
+    (compile nil
+             `(lambda (body cmd)
+                (lambda (self-sap result-sap ,@raws)
+                  (funcall body self-sap cmd result-sap ,@raws))))))
+
+(defun ensure-imp-machinery (result-node arg-nodes)
+  "The machinery for methods of one signature, building it the first time.
+ARG-NODES is a method's, beginning with self and _cmd; the block's arguments
+are the block, self, and the declared ones.  The machinery's DISPATCHER slot
+holds the adapter maker from BUILD-IMP-ADAPTER."
+  (let* ((block-args (cons :id (cddr arg-nodes)))
+         (arity (length (cddr arg-nodes)))
+         (key (canonical-signature result-node (cons :block block-args))))
+    (bt:with-lock-held (*block-machinery-lock*)
+      (or (gethash key *imp-machinery*)
+          (setf (gethash key *imp-machinery*)
+                (let ((signature (block-type-encoding result-node block-args)))
+                  (multiple-value-bind (sap name)
+                      (build-block-invoke result-node (cons :block block-args)
+                                          (build-imp-dispatcher arity) "method")
+                    (%make-block-machinery
+                     :invoke-sap sap
+                     :callable-name name
+                     :dispatcher (build-imp-adapter arity)
+                     :signature-string (cffi:foreign-string-alloc signature :encoding :utf-8)
+                     :descriptor (make-block-descriptor signature)
+                     :caller nil))))))))
+
+(defun make-imp-block (result-node arg-nodes selector body)
+  "A block whose invocation calls BODY as an IMP would, as (self cmd result-sap
+. args), with CMD the SEL of SELECTOR.  Returns the OBJC-BLOCK; the caller
+hands it to imp_implementationWithBlock and keeps it for as long as the method
+is installed."
+  (let ((machinery (ensure-imp-machinery result-node arg-nodes))
+        (cmd (sap-of (coerce-to-selector selector))))
+    (%make-block-from-machinery machinery
+                                (funcall (block-machinery-dispatcher machinery) body cmd)
+                                (block-type-encoding result-node (cons :id (cddr arg-nodes))))))
 
 (defun free-objc-block (block)
   "Free BLOCK's storage and drop its reference to the closure.  Idempotent;
@@ -619,7 +698,8 @@ counting is worth nothing, and the alternative is a table that never empties.
 The id counter is deliberately not reset: ids must stay unique across a restore
 for the same reason they are not reused within a run."
   (bt:with-lock-held (*block-machinery-lock*)
-    (clrhash *block-machinery*))
+    (clrhash *block-machinery*)
+    (clrhash *imp-machinery*))
   (setf *block-copy-helper* nil
         *block-dispose-helper* nil)
   (bt:with-lock-held (*block-lock*)

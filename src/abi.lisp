@@ -907,20 +907,30 @@ arguments every Objective-C message send passes."
 
 (defvar *block-invoke-counter* 0)
 
-(defun build-block-invoke (result-node arg-nodes body)
+(defun methods-as-blocks-p ()
+  "Whether a Lisp-defined method is a block minted into an IMP by libobjc
+rather than an alien callable of its own.  Yes here: on Apple silicon every
+callable's trampoline costs about 7 KB of a fixed 1 MB static code space that
+is never reclaimed, some 140 methods per image, and a block over one callable
+per signature costs it nothing.  See \"Methods as blocks\" in blocks.lisp."
+  t)
+
+(defun build-block-invoke (result-node arg-nodes body &optional (noun "block"))
   "Build a block's invoke function that calls BODY, and return (VALUES SAP NAME).
 
 BODY is a function of (block-sap result-sap . args).  ARG-NODES includes the
 block pointer as its first element: a block's invoke function takes the block
 where a method takes self, and there is no _cmd -- one hidden argument rather
-than two, which is the whole of the difference from an IMP.
+than two, which is the whole of the difference from an IMP.  NOUN is what a
+condition escaping BODY is reported as; a Lisp method is a block now, and its
+report should still say method.
 
 The SAP goes in the block literal's invoke field.  Like an IMP's, the callable
 must be kept alive for as long as any block can reach it; see *BLOCK-MACHINERY*
 in blocks.lisp, which is that root."
   (build-callable (intern (format nil "OBJC-BLOCK-INVOKE-~D" (incf *block-invoke-counter*))
                           '#:objc)
-                  result-node arg-nodes 1 body "block"))
+                  result-node arg-nodes 1 body noun))
 
 (defvar *block-helper-counter* 0)
 

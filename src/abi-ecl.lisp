@@ -1115,14 +1115,23 @@ self and _cmd, as every Objective-C method signature does."
   (build-callable (intern (format nil "OBJC-IMP-~D" (incf *imp-counter*)) '#:objc)
                   result-node arg-nodes 2 body "method"))
 
-(defun build-block-invoke (result-node arg-nodes body)
+(defun methods-as-blocks-p ()
+  "Whether a Lisp-defined method is a block minted into an IMP by libobjc.
+No here: an ECL callable is a libffi closure on the heap with no fixed space
+to run out of, and the block route measured a Lisp method called from Cocoa
+at 1.6 µs against 0.4 µs through the closure directly.  BUILD-IMP stays on
+the path on ECL."
+  nil)
+
+(defun build-block-invoke (result-node arg-nodes body &optional (noun "block"))
   "Build a block's invoke function that calls BODY, and return (VALUES SAP NAME).
 
 BODY is a function of (block-sap result-sap . args). ARG-NODES includes the
 block pointer as its first element: a block's invoke function takes the block
-where a method takes self, and there is no _cmd."
+where a method takes self, and there is no _cmd.  NOUN names what a condition
+escaping BODY is reported as: a Lisp method is a block now."
   (build-callable (intern (format nil "OBJC-BLOCK-INVOKE-~D" (incf *imp-counter*)) '#:objc)
-                  result-node arg-nodes 1 body "block"))
+                  result-node arg-nodes 1 body noun))
 
 (defun build-block-helper (arg-count body)
   "Build a block copy or dispose helper, and return (VALUES SAP NAME).

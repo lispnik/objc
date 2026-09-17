@@ -459,6 +459,20 @@ Cocoa API that takes a completion handler expects. `make-objc-block` builds one
 from an arbitrary Lisp closure, so `NSURLSession`, GCD, and the
 `...UsingBlock:` half of Foundation are reachable.
 
+On SBCL a Lisp-defined method is a block too, underneath. On Apple silicon
+SBCL keeps every foreign callback's trampoline in a fixed 1 MB static code
+space that is never reclaimed, and an IMP that was a callable of its own cost
+about 7 KB of it, some 140 methods per image. So `define-objc-method` builds
+one callable per method *signature*, wraps each method's body in a block over
+it, and has `imp_implementationWithBlock` mint the entry point Cocoa calls in
+libobjc's own trampoline pages. Twenty methods of a known signature cost that
+space nothing; a redefinition costs nothing and gives the old trampoline back.
+A block IMP is not passed `_cmd`, so the body receives the selector it was
+installed for, which is the only one it could have been called with. The cost
+is one hop, about 60 ns on a method Cocoa calls per element. ECL keeps a
+libffi closure per method: it has no fixed space to run out of, and the hop
+measured four times slower there, so the seam decides (`methods-as-blocks-p`).
+
 ```lisp
 ;; -[NSArray sortedArrayUsingComparator:] -- Foundation sorts, Lisp compares.
 (objc:with-objc-block (compare '(:long-long (objc:objc-object-pointer

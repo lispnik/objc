@@ -383,6 +383,98 @@ itself is refused, before any test could skip."
           (is (equalp #(2.0 4.0 6.0 8.0) (objc:invoke object "scaled:by:" #(1 2 3 4) 2d0)))))))
 
 
+#+(and sbcl arm64 darwin)
+(test methods-do-not-consume-static-code-space
+  "An IMP was an alien callable per method, and on Apple silicon SBCL keeps
+every callable's trampoline in a fixed 1 MB static code space that is never
+reclaimed: about 7 KB a method, some 140 methods per image, and this suite
+had reached 997 KB of it.  A method is a block over one callable per
+signature now, minted into an IMP by libobjc, so twenty methods of one
+signature cost that space nothing after the first, and redefining one costs
+nothing at all.  Measured against the runtime's own free pointer."
+  (with-objc
+    (flet ((used ()
+             (sb-sys:sap-ref-word
+              (sb-sys:int-sap (sb-sys:find-foreign-symbol-address "static_code_space_free_pointer"))
+              0)))
+      (eval '(objc:define-objc-class static-space-probe ()
+              ()
+              (:objc-class-name "LispStaticSpaceProbe")))
+      ;; The first method of a signature may build that signature's callable.
+      (eval '(objc:define-objc-method ("probe0:" :int) ((self static-space-probe) (x :int)) x))
+      (let ((before (used)))
+        (dotimes (i 20)
+          (eval `(objc:define-objc-method (,(format nil "probe~d:" (1+ i)) :int)
+                     ((self static-space-probe) (x :int))
+                   (+ x ,i))))
+        (is (= before (used)) "twenty methods of a known signature took ~d bytes of static code space"
+            (- (used) before)))
+      (let ((before (used)))
+        (dotimes (i 5)
+          (eval '(objc:define-objc-method ("probe1:" :int) ((self static-space-probe) (x :int)) (* 2 x))))
+        (is (= before (used)) "five redefinitions took ~d bytes" (- (used) before)))
+      (let ((object (objc:alloc-init-object "LispStaticSpaceProbe")))
+        (is (= 5 (objc:invoke object "probe0:" 5)))
+        (is (= 14 (objc:invoke object "probe1:" 7)) "the last redefinition is the one installed")
+        (is (= 26 (objc:invoke object "probe20:" 7)))))))
+
+(test a-class-defined-after-initialization-behaves-as-one-defined-before
+  "Every class in this file is defined at compile time, before anything has
+initialized, and that is the order CI always saw -- until an example started
+initializing at compile time and the Intel leg found a BOOL parameter
+arriving as 0 and 1 in a class defined after ENSURE-OBJC-INITIALIZED, the
+REPL's order.  So here is the REPL's order, on every leg: a class with the
+signatures ObjcTestMethods has, defined after initialization, must answer
+the same and must register the same type encodings.  The encodings are the
+sharp assertion: they are what the definition wrote down about each type,
+and a difference of the measured-then-mapped kind shows up there first."
+  (with-objc
+    (eval '(objc:define-objc-class late-test-methods ()
+            ()
+            (:objc-class-name "ObjcLateTestMethods")))
+    (eval '(objc:define-objc-method ("addA:b:" :int)
+               ((self late-test-methods) (a :int) (b :int))
+             (+ a b)))
+    (eval '(objc:define-objc-method ("scaleDouble:" :double)
+               ((self late-test-methods) (x :double))
+             (* 2d0 x)))
+    (eval '(objc:define-objc-method ("isEven:" objc:objc-bool)
+               ((self late-test-methods) (n :int))
+             (evenp n)))
+    (eval '(objc:define-objc-method ("sawFlag:" objc:objc-object-pointer)
+               ((self late-test-methods) (flag objc:objc-bool))
+             (objc:invoke "NSString" "stringWithUTF8String:" (format nil "~S" flag))))
+    (eval '(objc:define-objc-method ("shout:" objc:objc-object-pointer)
+               ((self late-test-methods) (text objc:objc-object-pointer string))
+             (string-upcase text)))
+    (eval '(objc:define-objc-method ("areaOfRect:" :double)
+               ((self late-test-methods) (rect cocoa:ns-rect))
+             (* (aref rect 2) (aref rect 3))))
+    (eval '(objc:define-objc-method ("unitRect" cocoa:ns-rect)
+               ((self late-test-methods))
+             #(1d0 2d0 3d0 4d0)))
+    (eval '(objc:define-objc-method ("rangeOfIt" cocoa:ns-range)
+               ((self late-test-methods))
+             (cons 7 8)))
+    (let ((late (objc:alloc-init-object "ObjcLateTestMethods")))
+      (is (= 7 (objc:invoke late "addA:b:" 3 4)))
+      (is (= 5d0 (objc:invoke late "scaleDouble:" 2.5d0)))
+      (is (eql 1 (objc:invoke late "isEven:" 4)))
+      (is (eql 0 (objc:invoke late "isEven:" 5)))
+      (is (string= "T" (objc:invoke-into 'string late "sawFlag:" t)))
+      (is (string= "NIL" (objc:invoke-into 'string late "sawFlag:" nil)))
+      (is (string= "HELLO" (objc:invoke-into 'string late "shout:" "hello")))
+      (is (= 12d0 (objc:invoke late "areaOfRect:" #(0 0 3 4))))
+      (is (equalp #(1d0 2d0 3d0 4d0) (objc:invoke late "unitRect")))
+      (is (equal '(7 . 8) (objc:invoke late "rangeOfIt"))))
+    (dolist (selector '("addA:b:" "scaleDouble:" "isEven:" "shout:" "areaOfRect:" "unitRect" "rangeOfIt"))
+      ;; A signature is the FLI descriptor form, not a string.
+      (is (equal (objc:objc-class-method-signature "ObjcTestMethods" selector)
+                 (objc:objc-class-method-signature "ObjcLateTestMethods" selector))
+          "~A: defined before initialization ~S, after ~S" selector
+          (objc:objc-class-method-signature "ObjcTestMethods" selector)
+          (objc:objc-class-method-signature "ObjcLateTestMethods" selector)))))
+
 (test a-bool-parameter-is-a-bool-whatever-the-runtime-spells-it
   "On Intel the runtime encodes BOOL as 'c', a signed char, and the library
 measures that at initialization.  NODE-FOR-FLI-TYPE used to answer :CHAR for

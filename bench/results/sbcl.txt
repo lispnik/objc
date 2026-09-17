@@ -1,20 +1,20 @@
-# SBCL 2.6.8 ARM64 Darwin 25.6.0 2026-09-17 00:03 n=200000 rounds=5
+# SBCL 2.6.8 ARM64 Darwin 25.6.0 2026-09-17 13:55 n=200000 rounds=5
 lisp: (length "hello world")	5
 ffi: objc_msgSend -length, no bridge	8
-invoke: -length (method on the receiver's class)	116
-invoke: -self (inherited from NSObject)	111
-invoke: +class on "NSString" (class receiver)	119
-invoke: -objectAtIndex: (id in, id out)	130
+invoke: -length (method on the receiver's class)	117
+invoke: -self (inherited from NSObject)	112
+invoke: +class on "NSString" (class receiver)	114
+invoke: -objectAtIndex: (id in, id out)	131
 invoke: -rangeOfString: (NSRange out)	291
-invoke: -UTF8String -> Lisp string	202
-invoke: -isEqualToString: (Lisp string in)	337
-invoke: (invoke (invoke s uppercaseString) length)	404
-invoke: -setPosition: float2 as double (list form)	133
-invoke: -position -> double (list form)	124
-invoke: -setPosition: #(1.0 2.0) (declared float2)	177
-invoke: -position -> #(x y) (declared float2)	170
-invoke: -setPosition: #(1.0 2.0 3.0) (declared float3)	241
-invoke: -position -> #(x y z) (declared float3)	179
-block: called back per element by NSArray	105
-method: Lisp -twice: via invoke	208
-method: Lisp -tick per element, makeObjectsPerformSelector:	56
+invoke: -UTF8String -> Lisp string	201
+invoke: -isEqualToString: (Lisp string in)	333
+invoke: (invoke (invoke s uppercaseString) length)	441
+invoke: -setPosition: float2 as double (list form)	153
+invoke: -position -> double (list form)	164
+invoke: -setPosition: #(1.0 2.0) (declared float2)	253
+invoke: -position -> #(x y) (declared float2)	188
+invoke: -setPosition: #(1.0 2.0 3.0) (declared float3)	310
+invoke: -position -> #(x y z) (declared float3)	216
+block: called back per element by NSArray	112
+method: Lisp -twice: via invoke	286
+method: Lisp -tick per element, makeObjectsPerformSelector:	121

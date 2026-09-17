@@ -9,9 +9,12 @@
 ;;;; recovered from its heap.  Two absences are worth stating because they look
 ;;;; like oversights and are not: objc_setAssociatedObject is not here (the
 ;;;; pointer -> Lisp object map is a side table, as LispWorks' is), and
-;;;; imp_implementationWithBlock is not here (IMPs are plain function pointers,
-;;;; which needs no Block ABI -- blocks.lisp does build real blocks, and still
-;;;; does not route IMPs through them).
+;;;; imp_implementationWithBlock IS here, though it was not for a long time:
+;;;; an IMP was a plain alien callable per method until that turned out to
+;;;; cost 7 KB of SBCL's fixed 1 MB static code space each on Apple silicon --
+;;;; about 140 methods per image.  A method is a block now, one callable per
+;;;; signature, and libobjc mints the per-method entry point in trampoline
+;;;; pages of its own.  See "Methods as blocks" in blocks.lisp.
 ;;;;
 ;;;; Not bound at all: objc_msgSend_stret, objc_msgSendSuper_stret and
 ;;;; objc_msgSend_fpret.  All three are marked OBJC_ARM64_UNAVAILABLE in the
@@ -212,3 +215,16 @@ Signals UNSUPPORTED-TYPE-ENCODING if Foundation will not parse it."
 (define-runtime-function ("objc_setUncaughtExceptionHandler"
                           %objc-set-uncaught-exception-handler) :pointer
   (handler :pointer))
+
+;;; Blocks as IMPs -------------------------------------------------------------
+;;;
+;;; imp_implementationWithBlock copies the block and returns a function pointer
+;;; that calls it with self in the block's place; imp_removeBlock releases
+;;; both.  The trampolines live in pages libobjc manages, not in SBCL's static
+;;; code space, which is the whole reason a method is a block now.
+
+(define-runtime-function ("imp_implementationWithBlock" %imp-implementation-with-block) :pointer
+  (block :pointer))
+
+(define-runtime-function ("imp_removeBlock" %imp-remove-block) :boolean
+  (imp :pointer))

@@ -152,6 +152,20 @@ Each of these is a bug that actually happened here.
   The handler is a callable and is reinstalled after an image restore by
   `forget-exception-handler`'s thunk.
 
+- **On SBCL a Lisp method is a block, minted into an IMP by libobjc.** On Apple silicon
+  SBCL keeps every alien callable's trampoline in a fixed 1 MB static code
+  space that is never reclaimed, about 7 KB a method when each IMP was its own
+  callable: some 140 methods per image, and the suite had reached 997 KB.
+  `install-imp` now makes a block over one callable per method *signature*
+  (`ensure-imp-machinery`, `make-imp-block` in blocks.lisp) and
+  `imp_implementationWithBlock` mints the per-method entry point in libobjc's
+  own trampoline pages; a redefinition gives the old one back with
+  `imp_removeBlock`. A block IMP is not passed `_cmd`; the body gets the
+  selector it was installed for. `methods-do-not-consume-static-code-space`
+  measures it against the runtime's free pointer. ECL keeps `build-imp`'s
+  libffi closure per method (`methods-as-blocks-p` is NIL there): no fixed
+  space to run out of, and the block hop measured 1.6 µs against 0.4 there.
+
 - **A Lisp condition must never escape an IMP.** There is no handler on the
   Objective-C side, so an unwind past the callback frame aborts. Every IMP body
   is wrapped in `handler-case`. LispWorks does the same and calls it a catch-all

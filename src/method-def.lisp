@@ -370,22 +370,37 @@ one, in either definition order."
          ;; time.  NOT object_getClass(self) at call time, which for a
          ;; sub-subclass would find this very method and recurse forever.
          (super-class (%class-get-superclass target))
-         (body (funcall body-maker super-class)))
-    (multiple-value-bind (sap name) (build-imp result-node arg-nodes body)
-      (let ((key (list (%class-get-name objc-class) selector class-method-p)))
-        ;; Keep the callable alive forever: SBCL recycles a callback's
-        ;; trampoline once it becomes garbage, and Cocoa will still be holding
-        ;; the old address.
-        (setf (gethash key *imp-registry*) (list name sap encoding))
-        (let ((existing (if class-method-p
-                            (%class-get-class-method objc-class
-                                                     (coerce-to-selector selector))
-                            (%class-get-instance-method objc-class
-                                                        (coerce-to-selector selector)))))
-          (if (objc-pointer-p existing)
-              (%class-replace-method target (coerce-to-selector selector)
-                                     (pointer-of sap) encoding)
-              (unless (%class-add-method target (coerce-to-selector selector)
-                                         (pointer-of sap) encoding)
-                (error "Failed to add method ~S." selector))))))
+         (body (funcall body-maker super-class))
+         (key (list (%class-get-name objc-class) selector class-method-p))
+         (previous (gethash key *imp-registry*))
+         (imp nil))
+    (if (methods-as-blocks-p)
+        ;; The method is a block over one callable per signature, and libobjc
+        ;; mints the entry point; see "Methods as blocks" in blocks.lisp.  The
+        ;; registry keeps the block, whose closure is the method, for as long
+        ;; as the method is installed, and the IMP so a redefinition can give
+        ;; its trampoline back.
+        (let ((block (make-imp-block result-node arg-nodes selector body)))
+          (setf imp (%imp-implementation-with-block (objc-block-pointer block)))
+          (when (cffi:null-pointer-p imp)
+            (error "libobjc would not make an IMP for ~S." selector))
+          (setf (gethash key *imp-registry*) (list block imp encoding)))
+        ;; A callable of the method's own.  The registry keeps it alive
+        ;; forever: the seam recycles a callback's trampoline once it becomes
+        ;; garbage, and Cocoa would still be holding the old address.
+        (multiple-value-bind (sap name) (build-imp result-node arg-nodes body)
+          (setf imp (pointer-of sap))
+          (setf (gethash key *imp-registry*) (list name sap encoding))))
+    (let ((existing (if class-method-p
+                        (%class-get-class-method objc-class (coerce-to-selector selector))
+                        (%class-get-instance-method objc-class (coerce-to-selector selector)))))
+      (if (objc-pointer-p existing)
+          (%class-replace-method target (coerce-to-selector selector) imp encoding)
+          (unless (%class-add-method target (coerce-to-selector selector) imp encoding)
+            (error "Failed to add method ~S." selector))))
+    ;; The definition this replaced, if any: libobjc releases its copy of the
+    ;; block and frees the trampoline, and the literal goes with it.
+    (when (and previous (objc-block-p (first previous)))
+      (%imp-remove-block (second previous))
+      (free-objc-block (first previous)))
     selector))

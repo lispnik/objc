@@ -151,6 +151,7 @@ dump-tests'."
           (write-string program out))
         (multiple-value-setq (output error-output status)
           (uiop:run-program (list (test-runtime) "--noinform" "--non-interactive"
+                                  "--no-userinit" "--no-sysinit"
                                   "--load" (namestring source))
                             :output :string :error-output :string
                             :ignore-error-status t)))

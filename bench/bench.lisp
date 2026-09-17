@@ -1,6 +1,6 @@
 ;;;; bench/bench.lisp -- the same measurements on SBCL, ECL and LispWorks.
 ;;;;
-;;;; One file, compiled on each Lisp, so the three columns in RESULTS.md come
+;;;; One file, compiled on each Lisp, so the columns in RESULTS.md come
 ;;;; from identical code.  Everything is written against the LispWorks API
 ;;;; (INVOKE, ALLOC-INIT-OBJECT, DEFINE-OBJC-METHOD, the list-form method
 ;;;; designator); the few places this library goes beyond LispWorks -- SIMD
@@ -209,13 +209,16 @@ in the list-form designator, on all three Lisps."
 ;;; Files ----------------------------------------------------------------------
 
 (defun lisp-name ()
-  "sbcl, ecl or lispworks: the column name and the results file name.
-LispWorks Personal reports \"LispWorks Personal Edition\", which is the same
-column."
+  "sbcl, sbcl-safepoint, ecl or lispworks: the column name and the results
+file name.  LispWorks Personal reports \"LispWorks Personal Edition\", which is
+the same column.  An SBCL built --with-sb-safepoint is its own column: it
+polls at every foreign-call boundary, so its numbers are not the stock ones."
   (let ((name (string-downcase (lisp-implementation-type))))
-    (if (and (> (length name) 9) (string= "lispworks" name :end2 9))
-        "lispworks"
-        (substitute #\- #\Space name))))
+    (cond ((and (> (length name) 9) (string= "lispworks" name :end2 9))
+           "lispworks")
+          ((and (string= "sbcl" name) (member :sb-safepoint *features*))
+           "sbcl-safepoint")
+          (t (substitute #\- #\Space name)))))
 
 (defun results-file (&optional (lisp (lisp-name)))
   (merge-pathnames (format nil "results/~a.txt" lisp) *bench-directory*))
@@ -223,8 +226,9 @@ column."
 (defun header ()
   (multiple-value-bind (sec min hour day month year) (get-decoded-time)
     (declare (ignore sec))
-    (format nil "~a ~a ~a ~a ~a ~4,'0d-~2,'0d-~2,'0d ~2,'0d:~2,'0d n=~d rounds=~d"
+    (format nil "~a ~a~:[~; (safepoint)~] ~a ~a ~a ~4,'0d-~2,'0d-~2,'0d ~2,'0d:~2,'0d n=~d rounds=~d"
             (lisp-implementation-type) (lisp-implementation-version)
+            (member :sb-safepoint *features*)
             (machine-type) (software-type) (software-version)
             year month day hour min *iterations* *rounds*)))
 
@@ -246,7 +250,7 @@ Returns the rows as an alist of (name . nanoseconds)."
 
 ;;; Comparison -----------------------------------------------------------------
 
-(defparameter +lisps+ '("sbcl" "ecl" "lispworks")
+(defparameter +lisps+ '("sbcl" "sbcl-safepoint" "ecl" "lispworks")
   "Column order.  A Lisp with no results file is left out.")
 
 (defun read-results (lisp)

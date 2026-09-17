@@ -150,6 +150,12 @@ not.")
   "The NSError ** parameter supplied and checked.  LispWorks has no helper for
 it; one function beside INVOKE and the condition it signals.")
 
+(defparameter +callback-additions+
+  '("CALLBACKS-IN-PROGRESS-P" "WAIT-FOR-CALLBACKS")
+  "Whether a block or method is still running on a thread Lisp did not
+create, and a wait for that: what a thread woken by a block on a libdispatch
+worker asks before it allocates, on a stock SBCL.")
+
 (defparameter +ecl-additions+
   '()
   "Nothing, now.  There was DEFINE-OBJC-TRAMPOLINE, for a variadic send on a
@@ -175,6 +181,7 @@ accidental export through as soon as someone adjusted the number to match."
                                   (copy-list +chain-additions+)
                                   (copy-list +exception-additions+)
                                   (copy-list +error-additions+)
+                                  (copy-list +callback-additions+)
                                   #+ecl (copy-list +ecl-additions+))
                           #'string<))
           (actual (exported :objc)))

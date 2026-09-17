@@ -94,6 +94,11 @@
    #:objc-block
    #:objc-block-pointer
    #:objc-block-live-p
+   ;; Whether a callback is still running on a thread Lisp did not create --
+   ;; NOT a LispWorks interface.  A stock SBCL cannot stop a libdispatch
+   ;; worker for a collection, so the thread it woke waits it out.
+   #:callbacks-in-progress-p
+   #:wait-for-callbacks
    ;; Signatures the runtime cannot encode -- NOT a LispWorks interface ------
    ;; Clang writes nothing for a SIMD vector, so the only way to call a method
    ;; that takes one is to say what it takes.  One symbol, beside INVOKE.

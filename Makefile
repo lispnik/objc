@@ -61,12 +61,20 @@ oracle:
 # bench/results/<lisp>.txt and bench-compare merges whatever files exist.
 # LispWorks Personal cannot be scripted, so its column is produced by hand
 # with the same file -- bench-lispworks prints the two forms to type.
+#
+# Like test-clean, nothing is inherited from ~/.sbclrc, and the bench fasl
+# goes through ASDF's output translations rather than beside the source: so
+# LISP=/opt/homebrew/bin/sbcl measures the stock build on a machine whose
+# PATH sbcl is a safepoint one, and the two never load each other's fasls.
+# A safepoint SBCL writes results/sbcl-safepoint.txt, its own column.
 bench: bench-sbcl bench-ecl bench-compare
 
 bench-sbcl:
-	$(LISP) --non-interactive \
+	$(LISP) --non-interactive --no-userinit --no-sysinit \
+	  --eval '(require :asdf)' \
+	  --eval '(asdf:initialize-source-registry `(:source-registry (:tree ,(truename "./")) :ignore-inherited-configuration))' \
 	  --eval '(asdf:load-system :objc)' \
-	  --eval '(load (compile-file "bench/bench.lisp"))' \
+	  --eval '(load (uiop:compile-file* "bench/bench.lisp"))' \
 	  --eval '(objc-bench:run)'
 
 bench-ecl:
@@ -74,7 +82,7 @@ bench-ecl:
 	  --eval '(require :asdf)' \
 	  --eval '(asdf:initialize-source-registry `(:source-registry (:tree ,(truename "./")) :ignore-inherited-configuration))' \
 	  --eval '(asdf:load-system :objc)' \
-	  --eval '(load (compile-file "bench/bench.lisp"))' \
+	  --eval '(load (uiop:compile-file* "bench/bench.lisp"))' \
 	  --eval '(objc-bench:run)' \
 	  --eval '(ext:quit 0)'
 
@@ -85,9 +93,11 @@ bench-lispworks:
 	@echo "then run 'make bench-compare' here."
 
 bench-compare:
-	$(LISP) --non-interactive \
+	$(LISP) --non-interactive --no-userinit --no-sysinit \
+	  --eval '(require :asdf)' \
+	  --eval '(asdf:initialize-source-registry `(:source-registry (:tree ,(truename "./")) :ignore-inherited-configuration))' \
 	  --eval '(asdf:load-system :objc)' \
-	  --eval '(load (compile-file "bench/bench.lisp"))' \
+	  --eval '(load (uiop:compile-file* "bench/bench.lisp"))' \
 	  --eval '(objc-bench:compare)'
 
 clean:

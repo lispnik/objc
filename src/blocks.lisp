@@ -463,6 +463,41 @@ invocation, which the lock this once took had to be careful about."
               state means something kept the raw pointer rather than a copy." id))
     function))
 
+;;; Callbacks still in progress ------------------------------------------------
+;;;
+;;; The stock-SBCL limit in full (gcd.lisp in the examples has the long form):
+;;; a collection stops every other thread with a signal, Darwin will not
+;;; signal a libdispatch worker, so while a block runs on one the only thread
+;;; that may fill the nursery is that worker.  What is easy to miss is that
+;;; the block is still running after it has signalled whoever was waiting:
+;;; the semaphore wakes the main thread while the worker is still draining
+;;; its autorelease pool and unwinding, and the main thread's next few
+;;; allocations happen in that tail.  These two let the waiting side see the
+;;; tail out.
+
+(defun callbacks-in-progress-p ()
+  "Whether a block or Lisp method is running right now on a thread this Lisp
+did not create -- a libdispatch worker, typically -- including the tail after
+it has signalled a semaphore, when its autorelease pool and unwinding are
+still to run.  Always NIL on ECL, whose collector needs no such care.  Conses
+nothing."
+  (foreign-thread-in-lisp-p))
+
+(defun wait-for-callbacks (&key (timeout 1))
+  "Wait until no block or Lisp method is running on a thread this Lisp did not
+create, yielding meanwhile, for at most TIMEOUT seconds.  T when that is so,
+NIL on timeout.  Conses nothing, which is the point: on a stock SBCL a thread
+that fills the nursery while a libdispatch worker is inside Lisp kills the
+process, so a thread that has just been woken by such a worker calls this
+before it goes on.  A block that has returned, or a queue whose work is done,
+needs nothing; this is for the moments in between."
+  (let ((deadline (+ (get-internal-real-time)
+                     (round (* timeout internal-time-units-per-second)))))
+    (loop
+      (unless (foreign-thread-in-lisp-p) (return t))
+      (when (> (get-internal-real-time) deadline) (return nil))
+      (bt:thread-yield))))
+
 ;;; The public API -----------------------------------------------------------
 
 (defun make-objc-block (type function)

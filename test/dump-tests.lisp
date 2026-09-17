@@ -25,10 +25,19 @@
 The subprocess is a bare SBCL: it does not inherit the source registry, and on
 a developer machine ~/.sbclrc happens to set one up so this went unnoticed
 until CI ran, where it failed to find :OBJC and exited 1.  A :TREE over the
-project directory covers both the system and its ocicl-vendored dependencies."
+project directory covers both the system and its ocicl-vendored dependencies.
+
+The child is spawned with no init files at all, and told this image's output
+translations, for the same reason from the other side: with two SBCLs of the
+same version on one machine -- a stock one and a safepoint one, say -- the
+fasls ~/.sbclrc loads and the ones in the shared cache belong to whichever
+built them last, and the child dies with INVALID-FASL-FEATURES before it can
+ask anything."
   (format nil "(require :asdf)~%~
+               (asdf:initialize-output-translations '~S)~%~
                (asdf:initialize-source-registry~%~
                  '(:source-registry (:tree ~S) :inherit-configuration))~%"
+          asdf:*output-translations-parameter*
           (namestring (asdf:system-source-directory :objc))))
 
 (defparameter +dump-program+
@@ -108,6 +117,7 @@ a second SBCL is enough to trigger it, which is not an exotic thing to do -- a
            (unwind-protect
                 (progn
                   (uiop:run-program (list (test-runtime) "--non-interactive"
+                                          "--no-userinit" "--no-sysinit"
                                           "--load" (namestring source)
                                           (namestring executable))
                                     :output nil :error-output nil
@@ -115,6 +125,7 @@ a second SBCL is enough to trigger it, which is not an exotic thing to do -- a
                   (is (probe-file executable) "the image was written")
                   (let ((output (uiop:run-program
                                  (list (namestring executable) "--non-interactive"
+                                       "--no-userinit" "--no-sysinit"
                                        "--load" (namestring restart))
                                  :output :string :error-output nil
                                  :ignore-error-status t)))

@@ -55,20 +55,25 @@ Returns T, or the error's description."
                                                     t
                                                     (objc:ns-string-to-string (objc:invoke error "localizedDescription"))))
                                   (bt:signal-semaphore semaphore)))
+      ;; Each hand-off to Core Spotlight's queue is preceded by a collection:
+      ;; its block runs Lisp on a thread this process cannot stop for GC, so
+      ;; this thread must not need one while it does.  See gcd.lisp.
+      (collect-before-callbacks)
       (objc:invoke* "CSSearchableIndex"
                     "defaultSearchableIndex"
                     ("indexSearchableItems:completionHandler:" (coerce items 'vector) done))
-      (bt:wait-on-semaphore semaphore :timeout timeout))
+      (wait-for-callback-signal semaphore :timeout timeout))
     outcome))
 
 (defun delete-our-items (&key (timeout 10))
   (let ((semaphore (bt:make-semaphore)))
     (objc:with-objc-block (done 'index-completion
                                 (lambda (error) (declare (ignore error)) (bt:signal-semaphore semaphore)))
+      (collect-before-callbacks)
       (objc:invoke* "CSSearchableIndex"
                     "defaultSearchableIndex"
                     ("deleteSearchableItemsWithDomainIdentifiers:completionHandler:" (vector +domain+) done))
-      (bt:wait-on-semaphore semaphore :timeout timeout))))
+      (wait-for-callback-signal semaphore :timeout timeout))))
 
 (defun spotlight-search (query-string &key (timeout 10))
   "The unique identifiers of items matching QUERY-STRING, a Spotlight query
@@ -89,8 +94,9 @@ such as \"title == \\\"*Lisp*\\\"cd\", found through CSSearchQuery's two blocks.
                                    "autorelease")))
           (objc:invoke query "setFoundItemsHandler:" batch)
           (objc:invoke query "setCompletionHandler:" done)
+          (collect-before-callbacks)
           (objc:invoke query "start")
-          (bt:wait-on-semaphore semaphore :timeout timeout))))
+          (wait-for-callback-signal semaphore :timeout timeout))))
     (nreverse found)))
 
 (defun test-spotlight ()

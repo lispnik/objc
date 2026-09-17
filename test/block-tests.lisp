@@ -22,6 +22,52 @@
                         :pointer (objc:objc-block-pointer block)
                         :void))
 
+(defun dispatch-async-block-on-new-serial-queue (block)
+  "Queue BLOCK on a fresh serial queue and return the queue, which the caller
+releases; on every macOS this library supports a dispatch queue is an
+Objective-C object."
+  (let ((queue (cffi:foreign-funcall "dispatch_queue_create"
+                                     :string "objc.test.serial"
+                                     :pointer (cffi:null-pointer)
+                                     :pointer)))
+    (cffi:foreign-funcall "dispatch_async"
+                          :pointer queue
+                          :pointer (objc:objc-block-pointer block)
+                          :void)
+    queue))
+
+(test wait-for-callbacks-sees-a-blocks-tail-out
+  "A block on a libdispatch worker signals a semaphore and then stays inside
+Lisp a while longer, as every block does for at least the length of its own
+unwinding.  On SBCL the woken thread can see that -- CALLBACKS-IN-PROGRESS-P
+is true straight after the wait -- and WAIT-FOR-CALLBACKS returns once the
+worker has left Lisp.  On ECL there is nothing to see and both say so.
+
+Nothing between the semaphore wait and WAIT-FOR-CALLBACKS may cons: that is
+the window the two functions exist for, and this test runs on stock SBCL.
+
+The last check waits again rather than asking once: libdispatch releases its
+copy of the block on the worker after the block returns, and that release runs
+the dispose helper, a Lisp callback of its own; under Rosetta it arrived after
+an instant check had already answered."
+  (let ((done (bt:make-semaphore))
+        (seen :unset)
+        (waited :unset))
+    (objc:with-objc-block (block '(:void ())
+                                 (lambda ()
+                                   (bt:signal-semaphore done)
+                                   (sleep 0.2)))
+      (let ((queue (dispatch-async-block-on-new-serial-queue block)))
+        (bt:wait-on-semaphore done :timeout 5)
+        (setf seen (objc:callbacks-in-progress-p))
+        (setf waited (objc:wait-for-callbacks :timeout 5))
+        (objc:release queue)))
+    #+sbcl (is-true seen "the worker was still inside Lisp when the wait returned")
+    #-sbcl (is-false seen "ECL never reports a callback in progress")
+    (is-true waited "and WAIT-FOR-CALLBACKS saw it out")
+    (is-true (objc:wait-for-callbacks :timeout 5)
+             "and the dispose helper's own entry, when the copy was released")))
+
 ;;; Layout -------------------------------------------------------------------
 
 (test the-block-literal-matches-the-published-abi

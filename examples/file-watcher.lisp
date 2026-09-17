@@ -275,22 +275,30 @@ gone silent while still answering WATCHER-LIVE with true.  Measured with
                                          (unless after-save
                                            (setf after-save events)
                                            (bt:signal-semaphore rewrote))))))
+             ;; Each write below is followed by the handler running Lisp on
+             ;; the watcher's queue thread while this thread is still closing
+             ;; the stream, so each is preceded by a collection, and each
+             ;; wait outlasts the handler's tail: this thread must not need a
+             ;; collection in either window.  gcd.lisp says why.
+             (collect-before-callbacks)
              (with-open-file (out file :direction :output :if-exists :append)
                (write-string " two" out)
                (finish-output out))
-             (bt:wait-on-semaphore wrote :timeout timeout)
+             (wait-for-callback-signal wrote :timeout timeout)
              ;; Exactly what an editor does: write elsewhere, rename over.
+             (collect-before-callbacks)
              (with-open-file (out temporary :direction :output :if-exists :supersede)
                (write-string "replaced" out))
              (%rename-over temporary file)   ; see %RENAME-OVER: RENAME-FILE
                                             ; over an existing file is not portable
-             (bt:wait-on-semaphore saved :timeout timeout)
+             (wait-for-callback-signal saved :timeout timeout)
              (setf replaced t)
              ;; The write only a re-armed watch can see.
+             (collect-before-callbacks)
              (with-open-file (out file :direction :output :if-exists :append)
                (write-string " three" out)
                (finish-output out))
-             (bt:wait-on-semaphore rewrote :timeout timeout)
+             (wait-for-callback-signal rewrote :timeout timeout)
              (setf after-save (and after-save (watcher-live watcher) t)))
            ;; 3: watching the directory, which survives all of that by nature.
            (with-watch (directory-watcher directory
@@ -299,18 +307,20 @@ gone silent while still answering WATCHER-LIVE with true.  Measured with
                                               (setf directory-saw events)
                                               (bt:signal-semaphore dir-event)))
                                           :events '(:write))
+             (collect-before-callbacks)
              (with-open-file (out (merge-pathnames "appeared.txt" directory)
                                   :direction :output :if-exists :supersede)
                (write-string "new file" out))
-             (bt:wait-on-semaphore dir-event :timeout timeout)
+             (wait-for-callback-signal dir-event :timeout timeout)
              (setf directory-saw (and directory-saw
                                       (watcher-live directory-watcher))))
            ;; 4: a timer.
+           (collect-before-callbacks)
            (let ((repeater (every-seconds 0.05 (lambda ()
                                                  (when (<= (incf ticks) 3)
                                                    (when (= ticks 3)
                                                      (bt:signal-semaphore ticked)))))))
-             (unwind-protect (bt:wait-on-semaphore ticked :timeout timeout)
+             (unwind-protect (wait-for-callback-signal ticked :timeout timeout)
                (stop-repeating repeater)))
            (list :write first-events
                  :survived-atomic-save (and after-save t)

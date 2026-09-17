@@ -137,6 +137,13 @@ architecture this file targets."
 a trampoline can be compiled, since the dynamic FFI cannot carry one."
   (compiled-trampolines-available-p))
 
+(defun foreign-thread-in-lisp-p ()
+  "Never a concern on ECL: its collector stops threads through Mach rather
+than by signalling them, so a libdispatch worker inside a callback is as
+stoppable as any other thread, and there is nothing for a waiting thread to
+wait for."
+  nil)
+
 (defun wide-vector-callbacks-supported-p ()
   "Never, on ECL: a callback is a libffi closure, and libffi has no vector type."
   nil)

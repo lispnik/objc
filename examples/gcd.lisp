@@ -48,6 +48,31 @@
 ;;;; here for DISPATCH-SYNC, and TEST-GCD queues its work with the queue
 ;;;; suspended and collects before letting it run.
 ;;;;
+;;;; That last move is COLLECT-BEFORE-CALLBACKS below.  The other examples
+;;;; that hand a block to a queue and then wait for it -- the map snapshot,
+;;;; Spotlight, XPC, the file watcher -- have a subtler version of the same
+;;;; window, and it was found by shrinking the nursery to 256 KB and running
+;;;; each example test three times on a stock SBCL: all four died every run.
+;;;; The backtraces showed where: NOT while the block ran, but just after the
+;;;; semaphore it signalled had woken the main thread.  A block is still
+;;;; inside Lisp after it signals -- its autorelease pool drains, it unwinds,
+;;;; the dispatcher returns, SBCL's thread bookkeeping runs -- and the main
+;;;; thread's next few allocations land in that tail.  So the wait itself has
+;;;; to outlast the tail: WAIT-FOR-CALLBACK-SIGNAL below is a semaphore wait
+;;;; followed by OBJC:WAIT-FOR-CALLBACKS, which spins, consing nothing, until
+;;;; no thread SBCL adopted for a callback is inside Lisp; and
+;;;; COLLECT-BEFORE-CALLBACKS does that wait before it collects, since a
+;;;; collection with a worker still in its tail is exactly the fatal case.
+;;;; That closes the tail.  It does not close everything: traced, the four
+;;;; still die under the shrunken nursery, and the entry that kills them is
+;;;; the block's DISPOSE HELPER -- a Lisp callback, run on whichever thread
+;;;; Cocoa releases its copy of the block on, long after the block returned
+;;;; and the main thread went on to release the queue.  A helper that never
+;;;; entered Lisp -- a few instructions of machine code doing an atomic
+;;;; count, with Lisp reaping afterwards -- is the fix for that, and is not
+;;;; written yet.  And none of this helps a thread that goes on working
+;;;; while a block runs; for that there is the safepoint build.
+;;;;
 ;;;; AND THE LIMIT LIFTS IF YOU BUILD SBCL --with-sb-safepoint, which stops the
 ;;;; world by polling rather than signalling.  Verified, not hoped for: the same
 ;;;; source built that way runs the eight-way barrier, dispatch_apply and
@@ -112,6 +137,26 @@
   (object :pointer))
 
 (defconstant +dispatch-time-forever+ (1- (ash 1 64)))
+
+(defun collect-before-callbacks ()
+  "A nursery collection now, before handing a block to a queue and waiting --
+once no callback is still running on a thread Lisp did not create, because a
+collection while one is would be the fatal case itself.
+
+Only SBCL needs it, and only a stock one; see the note at the top of this
+file for what it buys and what it does not.  ECL's collector suspends threads
+through Mach and has no such limit."
+  (objc:wait-for-callbacks)
+  #+sbcl (sb-ext:gc)
+  nil)
+
+(defun wait-for-callback-signal (semaphore &key timeout)
+  "Wait on SEMAPHORE, which a block running on a queue thread will signal, and
+then for that block to leave Lisp altogether; see the note at the top of this
+file for why the second half matters on a stock SBCL.  Returns what the
+semaphore wait returned."
+  (prog1 (bt:wait-on-semaphore semaphore :timeout timeout)
+    (objc:wait-for-callbacks)))
 
 (defun global-queue (&optional (priority 0))
   "The process-wide CONCURRENT queue.  PRIORITY is -2 background through 2 high.
@@ -319,9 +364,7 @@ thread may do then on a stock SBCL; the note at the top of this file says why."
                                  (lambda ()
                                    (objc:with-autorelease-pool ()
                                      (bt:with-lock-held (lock) (incf total i)))))))
-                ;; A full collection now, so the next is as far off as it can be.
-                #+sbcl (sb-ext:gc :full t)
-                #+ecl (si:gc t)
+                (collect-before-callbacks)
                 (%dispatch-resume queue))
               ;; One queue thread inside a callback plus SBCL's own thread doing
               ;; work that does not allocate is the safe side of the line drawn

@@ -117,9 +117,12 @@ network is what happens.  MAP-AVAILABLE-P is the polite way to ask first."
                               (bt:signal-semaphore done))))
                  ;; -startWithQueue:, never -startWithCompletionHandler:.  See the
                  ;; header: the latter answers on the main queue, which is this
-                 ;; thread, which is about to block.
+                 ;; thread, which is about to block.  And a collection first, so
+                 ;; that this thread cannot need one while the block runs on
+                 ;; the queue's thread; gcd.lisp says why that would be fatal.
+                 (collect-before-callbacks)
                  (objc:invoke snapshotter "startWithQueue:completionHandler:" queue block)
-                 (unless (bt:wait-on-semaphore done :timeout timeout)
+                 (unless (wait-for-callback-signal done :timeout timeout)
                    (objc:invoke snapshotter "cancel")
                    (error "The map did not arrive within ~D second~:P.  ~
                            MKMapSnapshotter needs the network." timeout))))

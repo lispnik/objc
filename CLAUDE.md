@@ -276,7 +276,24 @@ Each of these is a bug that actually happened here.
   window and passed for months on heap luck; it now queues them with the queue
   suspended and collects before resuming. The rule for an example: while a
   block may be running on a worker, every other Lisp thread is in a foreign
-  call or not consing.
+  call or not consing; a semaphore wait is followed by
+  `objc:wait-for-callbacks` (the block is still unwinding on the worker after
+  it signals -- that tail is where every one of the four found windows was);
+  and a hand-off is preceded by `collect-before-callbacks` (gcd.lisp), which
+  waits the same way and then collects. `callbacks-in-progress-p` is the
+  non-consing check underneath, a walk of `sb-thread::*all-threads*` for a
+  `foreign-thread` (abi.lisp), NIL always on ECL. To find a window, run the
+  test on the *stock* SBCL with
+  `(setf (sb-ext:bytes-consed-between-gcs) (* 256 1024))` three times and
+  read the `lose()` backtrace, which is the collecting thread's; the map,
+  Spotlight, XPC and file-watcher examples died that way. With the waits they
+  still die there, and `sb-int:encapsulate` on `release-block-id` showed why:
+  the block's **dispose helper** runs on a worker when Cocoa releases its copy,
+  after everything else is over (`DISPOSE ... on callback foreign=T` after the
+  snapshot returned). The copy and dispose helpers are Lisp callables
+  (`ensure-block-helpers`); making them machine code that only bumps an atomic
+  count, with Lisp reaping records whose count reached zero, is the open fix.
+  The rest of the examples survived the probe as they were.
 
   So a mutex serialising Lisp entry does **not** help: a worker parked on a Lisp
   lock has already been adopted and still has to be signalled. And note that

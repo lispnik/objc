@@ -163,9 +163,33 @@ know an alien type at all."
 ;;; Measured before it was written, against GameplayKit's GKAgent3D, whose
 ;;; position is a vector_float3: setPosition: then position gives the lanes
 ;;; back, and a Lisp callback taking and returning a float4 does too, through
-;;; the widened callback wrapper in abi-neon.lisp.  arm64 only for now: the
-;;; register file names and the callback wrapper are per architecture, and
-;;; the x86-64 half has not been written or measured.
+;;; the widened callback wrapper in abi-neon.lisp, and abi-sse.lisp on Intel:
+;;; the register file names and the callback wrapper are per architecture,
+;;; and each is its own annex.
+
+;;; Whether a thread SBCL adopted for a callback is still inside Lisp.  On a
+;;; stock SBCL that is the one thing another thread must know before it fills
+;;; the nursery: a collection then has to signal the adopted thread, and if
+;;; it is a libdispatch worker Darwin refuses, and the process dies.  A block
+;;; that signals a semaphore and returns is still inside Lisp for a while
+;;; after the signal -- its autorelease pool, its unwinding, the dispatcher's
+;;; epilogue, SBCL's own thread-exit bookkeeping -- and that tail is where the
+;;; waiting thread's next allocation used to land.  blocks.lisp wraps this as
+;;; CALLBACKS-IN-PROGRESS-P and WAIT-FOR-CALLBACKS.
+
+(defun foreign-thread-in-lisp-p ()
+  "Whether any FOREIGN-THREAD is in SBCL's *ALL-THREADS*: ENTER-FOREIGN-CALLBACK
+puts the adopted thread there on the way in and HANDLE-THREAD-EXIT takes it
+out on the way out, so this is true from the first Lisp instruction of a
+callback on a foreign thread to nearly the last.  Walks the tree without
+consing, because the caller is a thread that must not need a collection while
+the answer is T."
+  (labels ((walk (node)
+             (and node
+                  (or (typep (sb-thread::avlnode-data node) 'sb-thread::foreign-thread)
+                      (walk (sb-thread::avlnode-left node))
+                      (walk (sb-thread::avlnode-right node))))))
+    (walk sb-thread::*all-threads*)))
 
 (defun wide-vector-supported-p ()
   "Whether this build carries a sixteen-byte SIMD vector by value: on Apple

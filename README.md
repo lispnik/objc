@@ -139,8 +139,13 @@ where `SYS:` resolves to a readable directory on the Mac.
   SBCL, keep asynchronous block work on a **serial** queue, `group-async` in
   the GCD example defaults to one, and keep your other threads out of
   allocation — in a run loop, a wait, or non-consing work — while a block is
-  running. Building SBCL `--with-sb-safepoint` lifts the limit entirely,
-  verified — see [Blocks](#blocks).
+  running. And a block is still running for a moment after it signals the
+  semaphore you are waiting on — its autorelease pool, its unwinding — so
+  the thread it woke asks `objc:wait-for-callbacks` before it allocates; the
+  examples that hand a block to a queue do that and collect before the
+  hand-off (`wait-for-callback-signal` and `collect-before-callbacks` in
+  `examples/gcd.lisp`). Building SBCL `--with-sb-safepoint` lifts the limit
+  entirely, verified — see [Blocks](#blocks).
 - **Variadic methods need `:variadic-num-of-fixed`.** On Apple silicon a variadic
   call passes its variable arguments on the stack and a fixed-arity call passes
   them in registers, so `+stringWithFormat:` without it reads garbage. LispWorks
@@ -652,8 +657,25 @@ the main thread while a block is running — the GCD example used to make its
 hundred blocks while the first sat inside Lisp, and passed only as long as no
 collection landed in that window; measured, a full collection on the main
 thread with one worker parked in a block kills stock 2.6.8 on arm64 and x86-64
-every time. Serialising Lisp entry with a lock does not help — a worker parked
-on a Lisp lock still has to be signalled.
+every time. With the nursery shrunk to 256 KB to make the window easy to hit,
+four more examples died the same way — the map snapshot, Spotlight, XPC and the
+file watcher — and their backtraces showed the window nobody draws: the block
+had already signalled the semaphore, the main thread was awake and allocating,
+and the worker was *still inside Lisp*, draining its autorelease pool and
+unwinding. So the library has `objc:callbacks-in-progress-p`, true while any
+thread Lisp did not create is inside a callback, and `objc:wait-for-callbacks`,
+which spins without consing until none is; a woken thread calls the latter
+before it goes on. The four examples do, and collect before each hand-off
+(`wait-for-callback-signal`, `collect-before-callbacks` in `examples/gcd.lisp`);
+the other thirty-odd example tests survived that nursery as they were. That
+closes the tail and not the whole window: traced, what still kills the four
+under the shrunken nursery is the block's *dispose helper* — a Lisp callback
+that runs on whichever thread Cocoa releases its copy of the block on, after
+the block has returned and the main thread has moved on. Helpers that never
+enter Lisp, a few instructions of machine code keeping an atomic count for
+Lisp to reap later, are the fix for that and are not written yet. Serialising
+Lisp entry with a lock does not help — a worker parked on a Lisp lock still has
+to be signalled.
 
 **Building SBCL `--with-sb-safepoint` lifts the limit**, and this is verified
 rather than hoped for: the same source on a safepoint build runs an eight-way
@@ -1902,7 +1924,16 @@ median of five rounds of 200 000 calls; `make bench-lispworks` prints the two
 forms to type into a LispWorks Listener for the third column, since LispWorks
 Personal cannot be scripted.  The rows are the floors (a Lisp `length`, a bare
 `objc_msgSend` through the FFI), a send for each kind of argument and result,
-a block and a Lisp method called back per element, and the SIMD paths.
+a block and a Lisp method called back per element, and the SIMD paths.  An
+SBCL built `--with-sb-safepoint` gets its own column, `sbcl-safepoint`, since
+it is a different runtime; `sbcl` is the stock Homebrew build.  Measured back
+to back on 2026-09-17, the stock build is the slower of the two on most rows,
+by a few nanoseconds on a send and by more on the declared-vector rows, which
+was not the expected direction and is recorded rather than explained.
+`make bench-sbcl LISP=/opt/homebrew/bin/sbcl` measures a particular build;
+it inherits nothing from `~/.sbclrc` and compiles the benchmark through ASDF's
+output translations, so two SBCLs of the same version never load each other's
+fasls.
 
 What the numbers say, measured 2026-09-16 on an M-series Mac, after the two
 changes the first run of this benchmark called for (a send cache keyed by

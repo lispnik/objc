@@ -243,18 +243,31 @@ plist of what happened.  Needs no window server and no launchd.
 thread the service's queue supplied, while this thread waited on the Mach
 port for the reply."
   (with-serial-queue (queue "lisp.xpc")
+    ;; The listener's and the client's event handlers run Lisp on the queue's
+    ;; thread -- accepting the connection, the calls, the cancellations --
+    ;; while this thread carries on.  A collection before each hand-off keeps
+    ;; this thread from needing one meanwhile; gcd.lisp explains the limit.
+    (collect-before-callbacks)
     (let* ((listener (make-anonymous-listener queue))
            (endpoint (%xpc-endpoint-create listener))
            (client (connect-client (%xpc-connection-create-from-endpoint endpoint))))
-      (unwind-protect
-           (multiple-value-bind (value thread) (call-service client "(+ 1 2)")
-             (list :value value
-                   :thread-differs (not (equal thread (bt:thread-name (bt:current-thread))))
-                   :error (handler-case (call-service client "(error \"boom\")")
-                            (error (condition) (princ-to-string condition)))))
-        (%xpc-connection-cancel client)
-        (%xpc-connection-cancel listener)
-        (%xpc-release endpoint)))))
+      (flet ((call (form)
+               ;; A collection before, and after the synchronous reply a wait
+               ;; for the service's handler to leave Lisp: the reply arrives
+               ;; while that handler is still unwinding on the queue thread.
+               (collect-before-callbacks)
+               (multiple-value-prog1 (call-service client form)
+                 (objc:wait-for-callbacks))))
+        (unwind-protect
+             (multiple-value-bind (value thread) (call "(+ 1 2)")
+               (list :value value
+                     :thread-differs (not (equal thread (bt:thread-name (bt:current-thread))))
+                     :error (handler-case (call "(error \"boom\")")
+                              (error (condition) (princ-to-string condition)))))
+          (collect-before-callbacks)
+          (%xpc-connection-cancel client)
+          (%xpc-connection-cancel listener)
+          (%xpc-release endpoint))))))
 
 ;;; A separate process, through launchd -----------------------------------------
 

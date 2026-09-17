@@ -69,6 +69,15 @@
 
 (defconstant +block-has-copy-dispose+ (ash 1 25))
 (defconstant +block-is-global+        (ash 1 28))
+(defconstant +block-use-stret+ (ash 1 29)
+  "BLOCK_USE_STRET: the block's invoke function returns its result through a
+hidden pointer, as a C function returning a large struct does on x86-64.
+Informational -- the caller of an invoke function knows the convention from
+the signature -- except to imp_implementationWithBlock, whose trampoline must
+shift the arguments one place to make room for that pointer, and reads this
+flag to decide.  Never set by the compiler on arm64, where there is no such
+convention, and ignored there.")
+
 (defconstant +block-use-stret+        (ash 1 29))
 (defconstant +block-has-signature+    (ash 1 30))
 
@@ -459,19 +468,30 @@ block of a shape costs an allocation and a hash-table entry."
   (multiple-value-bind (result-node arg-nodes) (parse-block-designator type)
     (%make-block-from-machinery (ensure-block-machinery result-node arg-nodes)
                                 function
-                                (block-type-encoding result-node arg-nodes))))
+                                (block-type-encoding result-node arg-nodes)
+                                :result-node result-node)))
 
-(defun %make-block-from-machinery (machinery function signature)
+(defun struct-returned-in-memory-p (result-node)
+  "Whether a function returning RESULT-NODE does so through a hidden pointer:
+on x86-64, a struct of more than sixteen bytes.  Not on arm64, whatever the
+size; the caller passes the address in x8 and no argument moves."
+  #+x86-64 (and (struct-node-p result-node)
+                (> (node-size-and-alignment (resolve-struct-layout result-node)) 16))
+  #-x86-64 (progn result-node nil))
+
+(defun %make-block-from-machinery (machinery function signature &key result-node)
   "A block literal over MACHINERY whose invocation reaches FUNCTION, as an
 OBJC-BLOCK.  What MAKE-OBJC-BLOCK does once the signature is known, and what a
-Lisp method does with the method machinery below."
+Lisp method does with the method machinery below.  RESULT-NODE, when given,
+decides the BLOCK_USE_STRET flag."
   (let ((literal (cffi:foreign-alloc :uint8 :count (block-literal-size)
                                             :initial-element 0))
         (record nil))
     (setf (cffi:foreign-slot-value literal '(:struct block-literal) 'isa)
           (stack-block-isa)
           (cffi:foreign-slot-value literal '(:struct block-literal) 'flags)
-          (logior +block-has-signature+ +block-has-copy-dispose+)
+          (logior +block-has-signature+ +block-has-copy-dispose+
+                  (if (struct-returned-in-memory-p result-node) +block-use-stret+ 0))
           (cffi:foreign-slot-value literal '(:struct block-literal) 'reserved)
           0
           (cffi:foreign-slot-value literal '(:struct block-literal) 'invoke-ptr)
@@ -559,7 +579,8 @@ is installed."
         (cmd (sap-of (coerce-to-selector selector))))
     (%make-block-from-machinery machinery
                                 (funcall (block-machinery-dispatcher machinery) body cmd)
-                                (block-type-encoding result-node (cons :id (cddr arg-nodes))))))
+                                (block-type-encoding result-node (cons :id (cddr arg-nodes)))
+                                :result-node result-node)))
 
 (defun free-objc-block (block)
   "Free BLOCK's storage and drop its reference to the closure.  Idempotent;

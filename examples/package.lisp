@@ -133,6 +133,9 @@
            #:orbit-scene #:make-scene-window #:animate-scene-view #:run-scene-view
            #:snapshot-scene-view #:test-scene-view #:report-scene-view
            #:*scene-window* #:*scene-view* #:*scene-orbit*
+           ;; An exception earned on purpose (examples/exceptions.lisp).
+           #:out-of-range #:unrecognized-selector #:missing-file
+           #:test-exceptions #:report-exceptions
            ;; Audio synthesis (examples/audio.lisp).
            #:synthesize #:play #:sine #:fm #:chord #:write-wav
            #:make-audio-engine #:render-block-usable-p

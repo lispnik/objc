@@ -723,8 +723,11 @@ unchanged:
   run a Lisp closure when it changes, plus a periodic timer. The one here you
   might actually keep. See [Watching the filesystem](#watching-the-filesystem).
 - `examples/kvo.lisp` — key-value observing, the third of Cocoa's callback
-  mechanisms and the one most able to end the process. See
+  mechanisms and the one most able to earn an `NSException`. See
   [Key-value observing](#key-value-observing).
+- `examples/exceptions.lisp` — three failures earned on purpose and caught: an
+  `NSRangeException`, an `NSInvalidArgumentException`, and an `NSError`. See
+  [Exceptions, earned on purpose](#exceptions-earned-on-purpose).
 - `examples/data-detector.lisp` — the dates, links, addresses and phone numbers
   in ordinary prose, via `NSDataDetector`.
 - `examples/predicates.lisp` — querying and sorting Cocoa collections with
@@ -1183,18 +1186,45 @@ The third of Cocoa's callback mechanisms — notifications are in `COCOA`, targe
 and action are in the menu-bar example — and the one that puts a Lisp class on
 the receiving end of a four-argument framework callback.
 
-It is also **the easiest way to end the image**, which is why the example is
-shaped the way it is. KVO reports misuse by raising an `NSException`, and an
-`NSException` here is not a condition you can handle. Removing an observer that
-isn't registered raises; letting an observed object deallocate with observers
-attached raises; observing a key path that doesn't exist raises. So
-`stop-observing` is idempotent, `with-observation` unregisters on unwind, and
-none of those three is asserted in the suite — asserting them would end the run,
-and the example says so rather than leaving the coverage looking thorough.
+It is also **the easiest way to earn an `NSException`**, which is why the
+example is shaped the way it is. KVO reports misuse by raising one, and though
+that is a condition now, `objc-exception`, the frames it abandons are
+Foundation's observation machinery, in no state to trust afterwards. Removing an
+observer that isn't registered raises `NSRangeException`; letting an observed
+object deallocate with observers attached raises from inside `dealloc`. So
+`stop-observing` is idempotent and `with-observation` unregisters on unwind. The
+first misuse is now earned once, on purpose, and asserted; the second is not,
+since catching it abandons a half-deallocated object. Observing a key path the
+class does not have, which this section once said raises, raises nothing on
+the way in: KVO cannot know the key is missing until something is set through
+it.
 
 The `context` pointer is load-bearing, not decoration: a superclass may observe
 the same key path on the same object, and only that pointer distinguishes your
 registration from its.
+
+### Exceptions, earned on purpose
+
+```lisp
+(report-exceptions)
+;; objectAtIndex: past the end raised NSRangeException:
+;;   *** -[__NSArray0 objectAtIndex:]: index 3 beyond bounds for empty array
+;; an unrecognized selector raised NSInvalidArgumentException
+;; a missing file is NSCocoaErrorDomain 260: The file “objc-exceptions-example” couldn’t be opened ...
+;; the next send worked: T; caught inside a block 2 times
+```
+
+Every other example avoids raising an exception, because the frames it abandons
+leave the subsystem that raised in a state not worth trusting. This one earns
+three failures whose subsystems are disposable and shows what each is as a
+condition: `objectAtIndex:` past the end, an `NSRangeException`; a selector
+nothing implements, sent unresolved through `performSelector:` the way a
+framework would, an `NSInvalidArgumentException` (sent through `invoke` it
+would be a Lisp error before anything was sent); and a file that is not
+there, an `NSError` that `invoke-with-error` turns into `ns-error` with its
+domain, code and description. The send after them works, and the exception
+earned inside a block inside a send is caught by the block's own send, so the
+enumeration completes. See [Exceptions and NSError](#exceptions-and-nserror).
 
 ### Variadic sends
 

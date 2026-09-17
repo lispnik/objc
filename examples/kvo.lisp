@@ -13,24 +13,25 @@
 ;;;; example is shaped the way it is.  KVO reports misuse by raising one.  That
 ;;;; is caught now -- OBJC:OBJC-EXCEPTION -- but the frames it abandons are
 ;;;; Foundation's observation machinery, which is then in no state to trust, so
-;;;; the example still prevents rather than catches.  Three ways to earn one:
+;;;; the example still prevents rather than catches.  Two ways to earn one:
 ;;;;
 ;;;;   -removeObserver:forKeyPath: for a registration that is not there.  "Cannot
 ;;;;   remove an observer ... because it is not registered as an observer."  So
 ;;;;   STOP-OBSERVING below is idempotent and keyed on a record, rather than
-;;;;   trusting the caller to remove each registration exactly once.
+;;;;   trusting the caller to remove each registration exactly once.  This one
+;;;;   IS asserted now (TEST-KVO's :REMOVING-UNREGISTERED-RAISES): it raises
+;;;;   before touching any registration, so nothing is left half done.
 ;;;;
 ;;;;   Letting an observed object deallocate while observers remain.  Cocoa's
 ;;;;   own message is "An instance ... was deallocated while key value observers
 ;;;;   were still registered with it."  WITH-OBSERVATION exists so the common
-;;;;   case unregisters on unwind.
+;;;;   case unregisters on unwind.  Not asserted: the exception is raised from
+;;;;   inside -dealloc, and catching it abandons a half-deallocated object.
 ;;;;
-;;;;   Observing a key path the class does not have.  That one raises on the way
-;;;;   IN, which is at least the better end to fail at.
-;;;;
-;;;; None of the three is assertable in the test suite, because asserting them
-;;;; would end the run.  That is worth saying plainly rather than leaving the
-;;;; coverage looking thorough.
+;;;; And one that does not, though this file said it did: observing a key path
+;;;; the class does not have raises nothing on the way in -- measured on
+;;;; NSProgress, -addObserver:forKeyPath:options:context: simply accepts it.
+;;;; KVO cannot know the key is missing until something is set through it.
 ;;;;
 ;;;; The CONTEXT pointer is not decoration either.  A superclass may be observing
 ;;;; the same key path on the same object, and the only thing distinguishing your
@@ -158,9 +159,8 @@ change, which for a framework object may not be the main one.
                              (print change)))
         (objc:invoke progress \"setCompletedUnitCount:\" 3)))
 
-Observing a key path the class does not have raises an NSException; it is
-caught, but it leaves KVO's bookkeeping half done, and there is no way to check
-first that is not itself a send."
+Observing a key path the class does not have raises nothing on the way in;
+KVO has no way to know the key is missing until something is set through it."
   (objc:ensure-objc-initialized)
   (let* ((observer (objc:alloc-init-object "LispKeyValueObserver"))
          (id (bt:with-lock-held (*observation-lock*) (incf *observation-counter*)))
@@ -211,11 +211,17 @@ happen is worth keeping as short as the code allows."
     (objc/examples:test-kvo)
     => (:CHANGES ((:KIND :SETTING :NEW 3.0d0 :OLD 0.0d0)
                   (:KIND :SETTING :NEW 7.0d0 :OLD 3.0d0))
-        :CONTEXT-RESPECTED T :IDEMPOTENT T :UNREGISTERED T)
+        :CONTEXT-RESPECTED T :IDEMPOTENT T :UNREGISTERED T
+        :REMOVING-UNREGISTERED-RAISES \"NSRangeException\")
 
 :CONTEXT-RESPECTED is the one that is easy to get wrong invisibly: a second
 observation of the same key path on the same object must reach its own closure
-and not the first one's, and only the context pointer distinguishes them."
+and not the first one's, and only the context pointer distinguishes them.
+
+:REMOVING-UNREGISTERED-RAISES is the misuse the discipline above exists for,
+earned once on purpose: the exception's name, caught as OBJC:OBJC-EXCEPTION.
+It is raised before KVO touches any registration, so the object is still
+whole afterwards, which the plist's other entries have already relied on."
   (objc:ensure-objc-initialized)
   (objc:with-autorelease-pool ()
     (let ((progress (objc:alloc-init-object "NSProgress"))
@@ -241,7 +247,14 @@ and not the first one's, and only the context pointer distinguishes them."
               :idempotent (progn (stop-observing first)
                                  (stop-observing first)
                                  t)
-              :unregistered (not (observation-live first)))))))
+              :unregistered (not (observation-live first))
+              :removing-unregistered-raises
+              (handler-case
+                  (progn (objc:invoke progress "removeObserver:forKeyPath:context:"
+                                      (objc:alloc-init-object "LispKeyValueObserver")
+                                      "completedUnitCount" (cffi:make-pointer 999))
+                         nil)
+                (objc:objc-exception (e) (objc:objc-exception-name e))))))))
 
 (defun report-kvo ()
   "Print what TEST-KVO found."
@@ -252,4 +265,6 @@ and not the first one's, and only the context pointer distinguishes them."
     (format t "a second observation got its own callback: ~A~%"
             (getf result :context-respected))
     (format t "stopping twice is safe: ~A~%" (getf result :idempotent))
+    (format t "removing an observer that is not registered raises ~A~%"
+            (getf result :removing-unregistered-raises))
     result))

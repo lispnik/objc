@@ -175,13 +175,12 @@ build."
 
 (test the-kvo-example-runs-every-shape
   "examples/kvo.lisp is the third of Cocoa's callback mechanisms, and the one
-most able to end the process: KVO reports misuse by raising an NSException, and
-there is no @try here.  So the example is about the discipline, and what can be
-asserted is that the discipline holds.
-
-What cannot be asserted, and is worth saying rather than leaving as apparent
-coverage: that removing an unregistered observer raises.  It does, and it would
-take the test run with it."
+most able to earn an NSException: KVO reports misuse by raising one.  The
+example is about the discipline, and what is asserted is that the discipline
+holds -- and, now that an exception is a condition, that the misuse it guards
+against does raise: removing an unregistered observer is NSRangeException.
+Deallocating with observers attached is still not asserted; that one is raised
+inside -dealloc."
   (with-runtime
     (let ((result (objc/examples:test-kvo)))
       (is (equal '((:kind :setting :new 3.0d0 :old 0.0d0)
@@ -191,7 +190,30 @@ take the test run with it."
       (is-true (getf result :context-respected)
                "a second observation of the same key path reached its own closure")
       (is-true (getf result :idempotent) "stopping twice did not raise")
-      (is-true (getf result :unregistered)))))
+      (is-true (getf result :unregistered))
+      (if (objc::objc-exceptions-catchable-p)
+          (is (equal "NSRangeException" (getf result :removing-unregistered-raises))
+              "removing an unregistered observer raised, and was caught")
+          (skip "exceptions are not catchable on this build")))))
+
+(test the-exceptions-example-catches-what-it-earns
+  "examples/exceptions.lisp earns three failures whose subsystems are
+disposable and shows each as a condition: an NSRangeException, an
+NSInvalidArgumentException from a selector sent unresolved through
+-performSelector:, and an NSError from a file that is not there.  :SURVIVED
+is the send after them; :NESTED is the exception caught inside a block."
+  (with-runtime
+    (if (not (objc::objc-exceptions-catchable-p))
+        (skip "exceptions are not catchable on this build")
+        (let ((result (objc/examples:test-exceptions)))
+          (is (equal "NSRangeException" (getf result :range-name)))
+          (is (search "beyond bounds" (getf result :range-reason)))
+          (is (equal "NSInvalidArgumentException" (getf result :selector-name)))
+          (is (equal "NSCocoaErrorDomain" (getf result :error-domain)))
+          (is (= 260 (getf result :error-code)))
+          (is (stringp (getf result :error-description)))
+          (is-true (getf result :survived) "the send after the exceptions worked")
+          (is (= 2 (getf result :nested)) "caught once per element inside the block")))))
 
 (test the-data-detector-example-runs-every-shape
   "examples/data-detector.lisp: another framework handing a block an NSRange by

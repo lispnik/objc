@@ -142,16 +142,18 @@ dump-tests'."
   (sleep 5)
   (format t \"STILL ALIVE~%\"))" (bootstrap-form)))
            (output nil) (error-output nil) (status nil))
-      (multiple-value-setq (output error-output status)
-        ;; The same runtime and core this test runs on, not whatever sbcl
-        ;; is on PATH: a safepoint host must not spawn the stock one, and an
-        ;; SBCL_HOME set for one core makes the other refuse to start.
-        (uiop:run-program (list (namestring sb-ext:*runtime-pathname*)
-                                "--core" (namestring sb-ext:*core-pathname*)
-                                "--noinform" "--non-interactive"
-                                "--eval" program)
-                          :output :string :error-output :string
-                          :ignore-error-status t))
+      ;; Written to a file and loaded, as dump-tests does: --eval reads every
+      ;; form of its string before evaluating the first, so asdf: is
+      ;; unreadable there until (require :asdf) has run.  And the same
+      ;; runtime as this test's (TEST-RUNTIME), not whatever sbcl is on PATH.
+      (uiop:with-temporary-file (:pathname source :type "lisp" :keep nil)
+        (with-open-file (out source :direction :output :if-exists :supersede)
+          (write-string program out))
+        (multiple-value-setq (output error-output status)
+          (uiop:run-program (list (test-runtime) "--noinform" "--non-interactive"
+                                  "--load" (namestring source))
+                            :output :string :error-output :string
+                            :ignore-error-status t)))
       (is (/= 0 status) "the subprocess died")
       (is (not (search "STILL ALIVE" output)) "and never printed after the raise")
       (is (search "OutsideException" error-output)

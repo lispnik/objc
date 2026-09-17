@@ -196,6 +196,19 @@ inside -dealloc."
               "removing an unregistered observer raised, and was caught")
           (skip "exceptions are not catchable on this build")))))
 
+(test the-stress-example-holds-up
+  "examples/stress.lisp at a tenth of its size: every phase's answers right
+the whole way through, and the process no larger afterwards than the caught
+exceptions account for.  Fifty caught exceptions keep about 3 KB each, and
+the block and method churn must keep nothing."
+  (with-runtime
+    (let ((result (objc/examples:test-stress)))
+      (dolist (phase '(:sends :blocks :methods :churn :exceptions :pools :threads))
+        (is-true (third (getf result phase)) "~a gave a wrong answer" phase))
+      (is-true (getf result :ok))
+      (is (< (getf result :rss-growth-kb) 32768)
+          "the process grew ~:d KB" (getf result :rss-growth-kb)))))
+
 (test the-exceptions-example-catches-what-it-earns
   "examples/exceptions.lisp earns three failures whose subsystems are
 disposable and shows each as a condition: an NSRangeException, an

@@ -136,6 +136,8 @@
            ;; An exception earned on purpose (examples/exceptions.lisp).
            #:out-of-range #:unrecognized-selector #:missing-file
            #:test-exceptions #:report-exceptions
+           ;; Every hot path, hammered (examples/stress.lisp).
+           #:run-stress #:test-stress #:report-stress
            ;; Audio synthesis (examples/audio.lisp).
            #:synthesize #:play #:sine #:fm #:chord #:write-wav
            #:make-audio-engine #:render-block-usable-p

@@ -742,6 +742,10 @@ unchanged:
 - `examples/exceptions.lisp` — three failures earned on purpose and caught: an
   `NSRangeException`, an `NSInvalidArgumentException`, and an `NSError`. See
   [Exceptions, earned on purpose](#exceptions-earned-on-purpose).
+- `examples/stress.lisp` — every hot path hammered in one image: sends,
+  blocks made and freed, methods called and redefined, exceptions by the
+  thousand, pools, threads, with memory watched per phase. See
+  [Stress](#stress).
 - `examples/data-detector.lisp` — the dates, links, addresses and phone numbers
   in ordinary prose, via `NSDataDetector`.
 - `examples/predicates.lisp` — querying and sorting Cocoa collections with
@@ -1239,6 +1243,34 @@ there, an `NSError` that `invoke-with-error` turns into `ns-error` with its
 domain, code and description. The send after them works, and the exception
 earned inside a block inside a send is caught by the block's own send, so the
 enumeration completes. See [Exceptions and NSError](#exceptions-and-nserror).
+
+### Stress
+
+```lisp
+(report-stress)
+;; SENDS          300,000 ops        339 ns/op  resident +35,648 KB  ok
+;; BLOCKS         200,200 ops        167 ns/op  resident +480 KB  ok
+;; METHODS         40,000 ops        248 ns/op  resident -1,376 KB  ok
+;; CHURN              200 ops    415,890 ns/op  resident -6,128 KB  ok
+;; EXCEPTIONS       2,000 ops     23,142 ns/op  resident +7,408 KB  ok
+;; POOLS           80,000 ops        827 ns/op  resident +1,072 KB  ok
+;; THREADS        160,000 ops         46 ns/op  resident +7,664 KB  ok
+;; resident +12,880 KB, Lisp heap -16243232 bytes after a full collection
+```
+
+The benchmark measures one call of each shape in isolation; this asks what
+happens when each shape runs a hundred thousand times in one image. Seven
+phases, each checking its own answers throughout: plain sends of every
+result kind; blocks made and freed by the thousand and one called back per
+element over a thousand-element array; Lisp methods called from Lisp and per
+element by Foundation; a method defined and redefined two hundred times,
+which on SBCL must cost the static code space nothing (see [Blocks](#blocks));
+a thousand exceptions caught and a thousand `NSError`s signalled; twenty
+thousand autorelease pools; and four threads sending at once, each catching
+an exception in fifty. The resident size is watched per phase and across the
+run after a full collection, and that is the assertion: the growth must be
+what the caught exceptions account for and nothing else. `test-stress` runs
+it at a tenth of the size for the suite, on both Lisps.
 
 ### Variadic sends
 

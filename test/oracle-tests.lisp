@@ -101,16 +101,20 @@ it comes from object_getClass, not from the class the caller named."
                      string))))
         (is (string= (strip-address reference) (strip-address message)))))))
 
-(test an-objc-exception-is-not-caught-here-either
+(test lispworks-does-not-catch-an-objc-exception-and-this-library-does
   "LispWorks appears to catch one, but what it catches is the SIGABRT that
 follows: the NSException reached objc_terminate and called abort(), and its
 generic fatal-signal handler turned that into SYSTEM::EXCEPTION-ERROR.  There is
-no @try/@catch in the LispWorks image and there is none here.
+no @try/@catch in the LispWorks image.  The recorded answer stays as recorded.
 
-What we do instead is make the common case impossible: resolving the Method is
-how the call signature is discovered, so an unimplemented selector is a Lisp
-error and never reaches the runtime at all.  That is what this asserts, because
-it is the part that is actually testable without aborting the test run."
+Here the runtime's uncaught-exception handler is ours and the exception is a
+condition (see exception-tests.lisp).  And the common case is still prevented
+rather than caught: resolving the Method is how the call signature is
+discovered, so an unimplemented selector is a Lisp error and never reaches the
+runtime at all, with the message LispWorks gives."
   (with-runtime
     (is (eq :process-aborts (oracle :objc-exception-outcome)))
-    (signals error (objc:invoke (ns* "hello world") "noSuchMethodAtAll"))))
+    (signals error (objc:invoke (ns* "hello world") "noSuchMethodAtAll"))
+    (when (objc::objc-exceptions-catchable-p)
+      (signals objc:objc-exception
+        (objc:invoke (objc:invoke "NSArray" "array") "objectAtIndex:" 0)))))

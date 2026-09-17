@@ -101,32 +101,19 @@ string a Lisp function assembled -- which is what GPU-MAP does."
 (defun build-pipeline (source function-name)
   (let ((device (or (default-device) (error "No Metal device on this machine."))))
     (with-metal
-      (cffi:with-foreign-object (error-out :pointer)
-        (setf (cffi:mem-ref error-out :pointer) (cffi:null-pointer))
-        (let ((library (objc:invoke device "newLibraryWithSource:options:error:"
-                                    source (cffi:null-pointer) error-out)))
-          (when (cffi:null-pointer-p (objc:objc-object-pointer library))
-            (error "Metal could not compile the kernel:~%~A"
-                   (compiler-message (cffi:mem-ref error-out :pointer))))
-          (let ((function (objc:invoke library "newFunctionWithName:" function-name)))
-            (when (cffi:null-pointer-p (objc:objc-object-pointer function))
-              (objc:release library)
-              (error "The kernel compiled but has no function named ~S." function-name))
-            (let ((pipeline (objc:invoke device
-                                         "newComputePipelineStateWithFunction:error:"
-                                         function error-out)))
-              ;; -new... returns something owned; the pipeline holds what it needs.
-              (objc:release function)
-              (objc:release library)
-              (when (cffi:null-pointer-p (objc:objc-object-pointer pipeline))
-                (error "Metal could not build a pipeline: ~A"
-                       (compiler-message (cffi:mem-ref error-out :pointer))))
-              pipeline)))))))
-
-(defun compiler-message (error-object)
-  (if (cffi:null-pointer-p error-object)
-      "no reason given"
-      (objc:invoke-into 'string error-object "localizedDescription")))
+      ;; Both -new...error: methods answer nil and an NSError on failure; the
+      ;; condition INVOKE-WITH-ERROR signals carries the compiler's message.
+      (let* ((library (objc:invoke-with-error device "newLibraryWithSource:options:error:"
+                                              source nil))
+             (function (objc:invoke library "newFunctionWithName:" function-name)))
+        (when (cffi:null-pointer-p (objc:objc-object-pointer function))
+          (objc:release library)
+          (error "The kernel compiled but has no function named ~S." function-name))
+        ;; -new... returns something owned; the pipeline holds what it needs.
+        (unwind-protect
+             (objc:invoke-with-error device "newComputePipelineStateWithFunction:error:" function)
+          (objc:release function)
+          (objc:release library))))))
 
 ;;; Running one ------------------------------------------------------------------------
 

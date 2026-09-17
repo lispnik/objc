@@ -144,14 +144,12 @@ what this returns."
     (multiple-value-bind (engine format block) (make-audio-engine instrument :rate rate)
       (unwind-protect
            (objc:with-autorelease-pool ()
-             (cffi:with-foreign-object (error-out :pointer)
-               (setf (cffi:mem-ref error-out :pointer) (cffi:null-pointer))
-               (unless (objc:invoke-bool engine
-                                         "enableManualRenderingMode:format:maximumFrameCount:error:"
-                                         0 format (min frames 4096) error-out)
-                 (error "Could not put the engine into manual rendering mode."))
-               (unless (objc:invoke-bool engine "startAndReturnError:" error-out)
-                 (error "The audio engine would not start.")))
+             ;; Each answers NO and an NSError on failure, which
+             ;; INVOKE-WITH-ERROR turns into a condition carrying the reason.
+             (objc:invoke-with-error engine
+                                     "enableManualRenderingMode:format:maximumFrameCount:error:"
+                                     0 format (min frames 4096))
+             (objc:invoke-with-error engine "startAndReturnError:")
              (let* ((render-format (objc:invoke engine "manualRenderingFormat"))
                     (chunk (min frames 4096))
                     (buffer (objc:invoke (objc:invoke "AVAudioPCMBuffer" "alloc")
@@ -159,12 +157,13 @@ what this returns."
                                          render-format chunk))
                     (samples (make-array frames :element-type 'single-float))
                     (written 0))
-               (cffi:with-foreign-object (error-out :pointer)
+               ;; -renderOffline: reports through its status, not nil or NO,
+               ;; so the error slot is supplied but the check is ours.
+               (progn
                  (loop while (< written frames)
                        for want = (min chunk (- frames written))
-                       do (setf (cffi:mem-ref error-out :pointer) (cffi:null-pointer))
-                          (let ((status (objc:invoke engine "renderOffline:toBuffer:error:"
-                                                     want buffer error-out)))
+                       do (let ((status (objc:invoke-with-error engine "renderOffline:toBuffer:error:"
+                                                                want buffer)))
                             (unless (zerop status)
                               (error "Offline rendering stopped with status ~D." status))
                             (let* ((channels (objc:invoke buffer "floatChannelData"))
@@ -199,10 +198,7 @@ closure."
       (error "The render block is not live; it cannot be given to an engine."))
     (unwind-protect
          (progn
-           (cffi:with-foreign-object (error-out :pointer)
-             (setf (cffi:mem-ref error-out :pointer) (cffi:null-pointer))
-             (unless (objc:invoke-bool engine "startAndReturnError:" error-out)
-               (error "The audio engine would not start.")))
+           (objc:invoke-with-error engine "startAndReturnError:")
            (sleep seconds)
            (objc:invoke engine "stop"))
       ;; After -stop, so the engine cannot be mid-callback into a freed block.

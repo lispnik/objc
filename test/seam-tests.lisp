@@ -135,6 +135,20 @@ symbol beside INVOKE, listed separately for the same reason the blocks are.")
   "A chain of sends, each to the result of the last.  The manual's idiom is
 the nesting and this expands to exactly that; one macro beside INVOKE.")
 
+(defparameter +exception-additions+
+  '("OBJC-EXCEPTION" "OBJC-EXCEPTION-NAME" "OBJC-EXCEPTION-REASON" "OBJC-EXCEPTION-OBJECT")
+  "An Objective-C exception raised inside a send, as a condition.  LispWorks
+lets it abort the process -- test/oracle/answers.lisp records the SIGABRT --
+so there is nothing to be compatible with, and a caller who catches one wants
+its name, which is why the condition is exported where the internal ones are
+not.")
+
+(defparameter +error-additions+
+  '("NS-ERROR" "NS-ERROR-DOMAIN" "NS-ERROR-CODE" "NS-ERROR-DESCRIPTION" "NS-ERROR-OBJECT"
+    "INVOKE-WITH-ERROR")
+  "The NSError ** parameter supplied and checked.  LispWorks has no helper for
+it; one function beside INVOKE and the condition it signals.")
+
 (defparameter +ecl-additions+
   '()
   "Nothing, now.  There was DEFINE-OBJC-TRAMPOLINE, for a variadic send on a
@@ -142,8 +156,10 @@ phone, until ECL's dynamic FFI learned to make one; the ECL backend exports
 nothing the SBCL one does not.")
 
 (test the-exported-surface-is-the-lispworks-one-plus-the-block-api
-  "OBJC exports the 42 documented LispWorks symbols and the 8 block symbols, and
-COCOA exports 11.  Deliberately the exact sets rather than the counts: widening
+  "OBJC exports the 42 documented LispWorks symbols and the named additions --
+the 8 block symbols, the signature declaration, the chain macro, the exception
+and NSError conditions with their readers and INVOKE-WITH-ERROR -- and COCOA
+exports 11.  Deliberately the exact sets rather than the counts: widening
 the surface is a decision to write down, and a count would let the next
 accidental export through as soon as someone adjusted the number to match."
   (flet ((exported (package)
@@ -156,6 +172,8 @@ accidental export through as soon as someone adjusted the number to match."
                                   (copy-list +objc-additions+)
                                   (copy-list +signature-additions+)
                                   (copy-list +chain-additions+)
+                                  (copy-list +exception-additions+)
+                                  (copy-list +error-additions+)
                                   #+ecl (copy-list +ecl-additions+))
                           #'string<))
           (actual (exported :objc)))

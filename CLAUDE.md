@@ -61,6 +61,9 @@ Systems are defined in `objc.asd`; files load `:serial t`.
 - `src/convert.lisp` — Lisp ⇄ Cocoa conversion and per-call temporaries.
 - `src/invoke.lisp` — `invoke`, `invoke-bool`, `invoke-into`.
 - `src/memory.lisp` — retain/release/autorelease and pools.
+- `src/exceptions.lisp` — the uncaught-exception handler that turns an
+  NSException inside a send into `objc-exception`; why that hook and not the
+  preprocessor is in its header.
 - `src/struct.lisp`, `src/protocol.lisp` — `define-objc-struct`, typedefs,
   protocol declarations.
 - `src/object.lisp` — `standard-objc-object` and the identity map.
@@ -127,11 +130,27 @@ Each of these is a bug that actually happened here.
 
 - **Resolve the Method before sending.** This is not an optimisation: reading the
   encoding is how the call signature is discovered, and it means an unimplemented
-  selector fails in Lisp instead of raising an NSException. There is no
-  `@try/@catch` here and none in LispWorks either — verified by reverse
-  engineering its image, which imports no `__cxa_begin_catch`, no
-  `objc_exception_*` and no `NSSetUncaughtExceptionHandler`. An NSException that
-  does escape aborts the process.
+  selector fails in Lisp instead of raising an NSException, with the message
+  LispWorks gives. An NSException raised anyway, inside a send, is caught at the
+  runtime's uncaught-exception handler (`src/exceptions.lisp`) and signalled as
+  `objc-exception`; LispWorks has no bridging — its image imports no
+  `__cxa_begin_catch`, no `objc_exception_*` and no
+  `NSSetUncaughtExceptionHandler` — and aborts.
+
+- **Exceptions: the uncaught handler, not the preprocessor.** The preprocessor
+  sees every throw, including the ones AppKit's event loop catches and recovers
+  from; a throw to Lisp there would end the loop. The uncaught handler runs
+  only when the process was about to abort. Its body throws to the innermost
+  send's `catch` when `*call-temporaries*` says a send is in progress on this
+  thread, and a `throw` with no catch signals `control-error` before unwinding,
+  which is the fallback to CoreFoundation's handler. The throw across foreign
+  frames is sound because the callback entry already marked the thread as in
+  Lisp (`call_into_lisp` zeroes the foreign-call slots), on the safepoint build
+  too; measured with a thousand caught exceptions and the suite in the same
+  image on stock SBCL, safepoint SBCL and ECL. Per caught exception the
+  runtime's retain of the NSException and a C++ exception header are leaked.
+  The handler is a callable and is reinstalled after an image restore by
+  `forget-exception-handler`'s thunk.
 
 - **A Lisp condition must never escape an IMP.** There is no handler on the
   Objective-C side, so an unwind past the callback frame aborts. Every IMP body
@@ -403,10 +422,12 @@ Each of these is a bug that actually happened here.
   `OBJC` because a block is Objective-C's own notion and belongs beside `invoke`,
   and that widening was a decision, written down in both places.
 
-- **No exported condition types.** LispWorks documents none and has none; its
-  failures are plain `cl:error` calls. The internal hierarchy exists for
-  debugging and subclasses `error`, so `handler-case` on `error` behaves the same
-  either way. `no-such-method`'s report is worded exactly as LispWorks words it,
+- **Two exported condition types, `objc-exception` and `ns-error`, and no
+  others.** LispWorks documents none and has none; its failures are plain
+  `cl:error` calls, so a condition for one of those would be API the manual does
+  not promise. The two named ones are for what LispWorks does not do at all. The
+  internal hierarchy exists for debugging and subclasses `error`, so
+  `handler-case` on `error` behaves the same either way. `no-such-method`'s report is worded exactly as LispWorks words it,
   down to printing pointers as `#<Pointer: OBJC:OBJC-OBJECT-POINTER = #x...>`.
 
 - **`test/oracle/answers.lisp` is ground truth, gathered by hand.** LispWorks

@@ -7,8 +7,8 @@
 ;;;; order problem.
 ;;;;
 ;;;; The export lists are the symbols documented in the LispWorks 8.1
-;;;; Objective-C and Cocoa manual -- 42 in OBJC and 11 in COCOA -- plus one
-;;;; named group of additions, and nothing else.  Anything not on these lists is
+;;;; Objective-C and Cocoa manual -- 42 in OBJC and 11 in COCOA -- plus named
+;;;; groups of additions, and nothing else.  Anything not on these lists is
 ;;;; an implementation detail even when it is useful, because a symbol exported
 ;;;; here is a promise to LispWorks source compatibility that the manual does
 ;;;; not make.
@@ -97,7 +97,14 @@
    ;; Signatures the runtime cannot encode -- NOT a LispWorks interface ------
    ;; Clang writes nothing for a SIMD vector, so the only way to call a method
    ;; that takes one is to say what it takes.  One symbol, beside INVOKE.
-   #:declare-objc-signature))
+   #:declare-objc-signature
+   ;; Exceptions and NSError -- NOT a LispWorks interface --------------------
+   ;; LispWorks lets an Objective-C exception abort the process and has no
+   ;; NSError helper; this catches the one and supplies the other.  Two
+   ;; conditions with their readers, and one function beside INVOKE.
+   #:objc-exception #:objc-exception-name #:objc-exception-reason #:objc-exception-object
+   #:ns-error #:ns-error-domain #:ns-error-code #:ns-error-description #:ns-error-object
+   #:invoke-with-error))
 
 (defpackage #:cocoa
   (:use #:cl #:alexandria)

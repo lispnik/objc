@@ -14,8 +14,9 @@
 ;;;;   NSInternalInconsistencyException: _registerUndoObject:: NSUndoManager is
 ;;;;   in invalid state, must begin a group before registering undo
 ;;;;
-;;;; -- and an NSException here ends the process.  Turn it off and manage the
-;;;; groups yourself, which is what WITH-UNDO-GROUP does.
+;;;; -- caught now, as OBJC:OBJC-EXCEPTION, but with the undo manager left in
+;;;; that invalid state.  Turn it off and manage the groups yourself, which is
+;;;; what WITH-UNDO-GROUP does.
 ;;;;
 ;;;; AN UNDO OPERATION MUST REGISTER ITS OWN INVERSE, or there is no redo.  This
 ;;;; reads like a curiosity and is the whole design: while -undo is running the

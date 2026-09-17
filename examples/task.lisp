@@ -59,21 +59,16 @@ middle of the test report."
     (objc:autorelease task)))
 
 (defun launch-task (task)
-  "Launch TASK, reporting a failure as a Lisp error rather than an NSException.
+  "Launch TASK, reporting a failure as an NS-ERROR rather than an NSException.
 
--launch raises for a path that does not exist, and an NSException here ends the
-process -- there is nothing to catch it.  -launchAndReturnError: has existed
-since 10.13 and answers NO with an NSError instead, so use it when the runtime
-has it and fall back to checking the path ourselves when it does not."
+-launch raises NSRangeException for a path that does not exist.  That is caught
+now (OBJC:OBJC-EXCEPTION), but an exception is the wrong kind of failure to
+design around; -launchAndReturnError: has existed since 10.13 and answers NO
+with an NSError instead, which INVOKE-WITH-ERROR turns into a condition with
+the reason in it.  Use it when the runtime has it and fall back to checking
+the path ourselves when it does not."
   (if (objc:can-invoke-p task "launchAndReturnError:")
-      (cffi:with-foreign-object (error-out :pointer)
-        (setf (cffi:mem-ref error-out :pointer) (cffi:null-pointer))
-        (unless (objc:invoke-bool task "launchAndReturnError:" error-out)
-          (let ((error (cffi:mem-ref error-out :pointer)))
-            (error "Could not launch the task: ~A"
-                   (if (cffi:null-pointer-p error)
-                       "no reason given"
-                       (objc:invoke-into 'string error "localizedDescription"))))))
+      (objc:invoke-with-error task "launchAndReturnError:")
       (let ((path (objc:invoke-into 'string task "launchPath")))
         (unless (probe-file path)
           (error "No such launch path: ~S." path))

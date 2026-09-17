@@ -61,6 +61,7 @@ Lisp method can take and return C structs by value like any other."
                  (:file "convert")
                  (:file "invoke")
                  (:file "memory")
+                 (:file "exceptions")
                  (:file "struct")
                  (:file "protocol")
                  (:file "object")
@@ -191,7 +192,9 @@ Lisp method can take and return C structs by value like any other."
                  ;; forbids re-executing a dumped image in the first place.
                  ;; Excluded rather than skipped, because the file cannot be
                  ;; read there -- SB-EXT does not exist.
-                 #+sbcl (:file "dump-tests"))))
+                 #+sbcl (:file "dump-tests")
+                 ;; Last: its subprocess test borrows dump-tests' bootstrap.
+                 (:file "exception-tests"))))
   ;; FIVEAM:RUN! prints its report and returns NIL when anything failed, and
   ;; ASDF discards what a TEST-OP returns.  Reporting by return value is how a
   ;; CI run goes green on a suite that failed, so signal instead.

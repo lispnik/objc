@@ -96,11 +96,11 @@ carries its -results when it returns."
     (objc:invoke request "setRecognitionLevel:" (ecase level (:accurate 0) (:fast 1)))
     (when languages
       (objc:invoke request "setRecognitionLanguages:" (coerce languages 'vector)))
-    ;; A vector of requests becomes the NSArray the parameter wants; the error
-    ;; out-parameter is left NULL, and a NIL return is turned into a condition.
-    (unless (objc:invoke handler "performRequests:error:"
-                         (vector request) (cffi:null-pointer))
-      (error "Vision could not process ~A." path))
+    ;; A vector of requests becomes the NSArray the parameter wants; the
+    ;; NSError ** is supplied and checked by INVOKE-WITH-ERROR.  (This used to
+    ;; pass NULL and test the BOOL with UNLESS, which never fired: INVOKE
+    ;; returns 0 or 1 for a BOOL, never NIL.)
+    (objc:invoke-with-error handler "performRequests:error:" (vector request))
     (let* ((results (objc:invoke request "results"))
            (count (objc:invoke results "count")))
       (loop for i below count
@@ -143,9 +143,7 @@ Synchronous, like the text recogniser, and for the same reason."
                                             bytes (length source))
                                (objc:invoke "NSDictionary" "dictionary"))))))
            (request (objc:alloc-init-object "VNDetectBarcodesRequest")))
-      (unless (objc:invoke handler "performRequests:error:"
-                           (vector request) (cffi:null-pointer))
-        (error "Vision could not read barcodes from ~S." source))
+      (objc:invoke-with-error handler "performRequests:error:" (vector request))
       (let ((results (objc:invoke request "results")))
         (loop for i below (objc:invoke results "count")
               for observation = (objc:invoke results "objectAtIndex:" i)

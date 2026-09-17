@@ -59,6 +59,10 @@ project directory covers both the system and its ocicl-vendored dependencies."
      (format t \"SLOT ~a~%\" (dumped-tag object))
      (format t \"INVOKE ~a~%\"
              (invoke (invoke \"NSString\" \"stringWithUTF8String:\" \"hello\") \"length\"))
+     ;; The uncaught-exception handler was a callable too, and is reinstalled.
+     (format t \"EXCEPTION ~a~%\"
+             (handler-case (progn (invoke (invoke \"NSArray\" \"array\") \"objectAtIndex:\" 0) nil)
+               (objc:objc-exception (e) (objc:objc-exception-name e))))
      ;; The invoke functions were alien callables and the descriptors were
      ;; malloc'd, so none of it crossed the dump.  A block made before it must
      ;; report itself dead, and a new one must build fresh machinery and run.
@@ -118,6 +122,8 @@ a second SBCL is enough to trigger it, which is not an exotic thing to do -- a
                         "the Objective-C class was recreated after the restart")
                     (is (search "METHOD 15" output)
                         "the Lisp-implemented method was reinstalled and runs")
+                    (is (search "EXCEPTION NSRangeException" output)
+                        "the uncaught-exception handler was reinstalled")
                     (is (search "IDENTITY T" output)
                         "the pointer to Lisp object map works in the new image")
                     (is (search "SLOT RESTORED" output))

@@ -28,6 +28,9 @@ what lets a file define classes at the top and initialize at the bottom."
     ;; read-time conditional: it is a signed char on Intel and C99 _Bool on
     ;; Apple silicon.
     (%measure-bool-encoding)
+    ;; An uncaught Objective-C exception inside a send becomes a condition
+    ;; from here on; see exceptions.lisp.
+    (ensure-exception-handler)
     (unless (objc-pointer-p (%objc-get-class "NSObject"))
       (error "Cannot initialize the Objective-C runtime because the class ~
 NSObject is not defined."))

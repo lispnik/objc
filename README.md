@@ -55,13 +55,17 @@ passed and returned by value in both directions, `define-objc-struct`,
 integration with `objc-object-copied` and `objc-object-destroyed`, and
 `invoke-into`'s full set of result dispositions.
 
-Past it, three deliberate additions, each named in the seam test so an
+Past it, five deliberate additions, each named in the seam test so an
 accidental export still fails: **creating Objective-C blocks** from Lisp
 closures, which LispWorks does in its FLI and has no `OBJC` interface for, see
 [Blocks](#blocks); **`declare-objc-signature`**, for the methods whose type
-encoding the runtime cannot write, see [SIMD vectors](#simd-vectors); and
-**`invoke*`**, a chain of sends each to the result of the one before, which
-expands to exactly the nested `invoke`s the manual would have you write:
+encoding the runtime cannot write, see [SIMD vectors](#simd-vectors); **an
+Objective-C exception raised inside a send is a condition**, `objc-exception`,
+where LispWorks lets it abort the process; **`invoke-with-error`**, which
+supplies and checks a method's `NSError **` and signals `ns-error`, see
+[Exceptions and NSError](#exceptions-and-nserror); and **`invoke*`**, a chain
+of sends each to the result of the one before, which expands to exactly the
+nested `invoke`s the manual would have you write:
 
 ```lisp
 (objc:invoke* "CSSearchableItem"
@@ -113,12 +117,17 @@ where `SYS:` resolves to a readable directory on the Mac.
 
 ### What will bite you
 
-- **An Objective-C exception terminates the process.** There is no `@try`/`@catch`
-  here — and none in LispWorks either, which its own image confirms. The common
-  case is prevented rather than caught: dispatch resolves the `Method` first, so
-  a selector the class does not implement is a Lisp error raised before anything
-  is sent. A genuine `NSException` from inside a method that *does* exist will
-  take the image down.
+- **An Objective-C exception inside a send is a condition; outside one it still
+  terminates the process.** An `NSException` that no Objective-C frame catches
+  reaches the runtime's uncaught-exception handler, which is this library's,
+  and becomes `objc:objc-exception` in the innermost `invoke` on that thread.
+  The frames between are abandoned without their cleanups, so treat the
+  subsystem that raised as suspect afterwards. One raised outside any send, or
+  on a thread the runtime made, aborts as before, and one Cocoa catches itself
+  is not touched. See [Exceptions and NSError](#exceptions-and-nserror). The
+  common case is still prevented rather than caught: dispatch resolves the
+  `Method` first, so a selector the class does not implement is a Lisp error
+  raised before anything is sent.
 - **Running Lisp on two libdispatch threads at once needs a safepoint SBCL.** A
   block runs on a thread SBCL did not create; a garbage collection stops the
   world by signalling every other thread in Lisp, and Darwin refuses to signal a
@@ -265,8 +274,9 @@ address the trampoline was built for.
 
 Dispatch resolves the `Method` before sending, which is how the call signature is
 discovered and also what makes an unimplemented selector a Lisp error rather than
-an Objective-C exception. That matters because there is no `@try/@catch` here —
-and none in LispWorks either.
+an Objective-C exception. An exception that is raised anyway, from inside the
+method, is caught at the runtime's uncaught-exception handler and signalled as
+`objc-exception`; see [Exceptions and NSError](#exceptions-and-nserror).
 
 Everything implementation-specific lives in one file, and a test enforces that:
 `src/abi.lisp` for SBCL, `src/abi-ecl.lisp` for ECL. Nothing above the seam
@@ -350,10 +360,14 @@ each one deliberate:
   without this the first `NSWindow` creation kills the process with SIGFPE.
   LispWorks masks them by default and so never needed an equivalent.
 
-- **An Objective-C exception terminates the process.** LispWorks has no exception
-  bridging either — its image imports no `__cxa_begin_catch`, no
-  `objc_exception_*` and no `NSSetUncaughtExceptionHandler`. The common case is
-  prevented rather than caught: a selector the class does not implement is a Lisp
+- **An Objective-C exception inside a send is a condition here and a crash
+  there.** LispWorks has no exception bridging — its image imports no
+  `__cxa_begin_catch`, no `objc_exception_*` and no
+  `NSSetUncaughtExceptionHandler` — and what it reports is the SIGABRT that
+  follows. This library installs the runtime's uncaught-exception handler and
+  throws to the innermost send; see
+  [Exceptions and NSError](#exceptions-and-nserror). Both prevent the common
+  case rather than catch it: a selector the class does not implement is a Lisp
   error raised before anything is sent.
 
 - **Variadic methods need `:variadic-num-of-fixed`.** On Apple silicon a variadic
@@ -372,15 +386,71 @@ each one deliberate:
   a deliberate choice to fail loudly rather than a difference measured against
   it. The manual's own struct-returning example uses `invoke-into`.
 
-- **`OBJC` exports ten symbols LispWorks does not.** Eight are the block API
+- **`OBJC` exports twenty symbols LispWorks does not.** Eight are the block API
   below — LispWorks has no block interface in `OBJC` at all; there it is
   `fli:allocate-foreign-block`, and there is no FLI here. One is
   `declare-objc-signature`, for a method whose encoding the runtime cannot
   write, which LispWorks, reading the same runtime, cannot call either. One is
   `invoke*`, a chain of sends that expands to the manual's nesting; a reading
-  of the idiom, not a change to it. Each is a deliberate widening of the
-  package, and the seam test names all ten explicitly so an accidental
-  export still fails.
+  of the idiom, not a change to it. Ten are the two conditions `objc-exception`
+  and `ns-error` with their readers and `invoke-with-error`, for what LispWorks
+  does not do at all. Each is a deliberate widening of the package, and the
+  seam test names all twenty explicitly so an accidental export still fails.
+
+## Exceptions and NSError
+
+```lisp
+(handler-case (objc:invoke array "objectAtIndex:" 99)
+  (objc:objc-exception (e)
+    (objc:objc-exception-name e)     ; => "NSRangeException"
+    (objc:objc-exception-reason e))) ; => "*** -[__NSArray0 objectAtIndex:]: index 99 beyond bounds ..."
+
+(handler-case (objc:invoke-with-error "NSString" "stringWithContentsOfFile:encoding:error:" path 4)
+  (objc:ns-error (e)
+    (list (objc:ns-error-domain e) (objc:ns-error-code e) (objc:ns-error-description e))))
+;; => ("NSCocoaErrorDomain" 260 "The file “x” couldn’t be opened because there is no such file.")
+```
+
+**An `NSException` raised inside a send becomes `objc-exception`.** The
+mechanism is the runtime's uncaught-exception handler, `objc_setUncaughtExceptionHandler`,
+which runs on the throwing thread after the C++ unwinder has found no handler
+and before anything is unwound: the last moment at which the exception can
+still be claimed. The handler is a Lisp callback; it throws to the innermost
+`invoke` on that thread, which signals the condition with the exception's name,
+reason, the thrown object, and the selector for the report. Not the exception
+preprocessor, which sees every throw: Cocoa uses exceptions as control flow in
+places you cannot enumerate, AppKit's event loop among them, and a handler that
+fired on every throw would end that loop on an error it was about to recover
+from. The uncaught handler runs only when the process was about to die, so an
+exception Cocoa catches itself is not touched.
+
+What that costs: the C frames between the send and the raise are abandoned
+without their cleanups, so a lock or `@synchronized` held in one of them stays
+held and a pool pushed there is drained by the enclosing one; per caught
+exception the process keeps the runtime's own reference to the `NSException`
+with the backtrace CoreFoundation attached to it, about 3 KB. `NSException` is
+for programmer errors, and this is the price of surviving one: the subsystem
+that raised is suspect afterwards, the process is not. An exception raised
+outside any send, or on a thread the runtime made and Lisp only attached for a
+callback, goes to the handler that was installed before ours and terminates the
+process as it always did. A send inside a callback inside a send catches its
+own. The thrown object is never released; do not release it either.
+
+**`invoke-with-error` supplies and checks a method's `NSError **`**, the last
+parameter of every `...error:` method, so the foreign pointer, the null, the
+read-back and the `localizedDescription` are one call. The result is returned
+as `invoke` would return it, an object pointer or 1 for a BOOL, unless it says
+the method failed (nil, NO, or nothing for a void method) *and* an error was
+written, in which case `ns-error` is signalled with the domain, code, localized
+description and the `NSError` itself, retained once by the condition. A success
+value comes back whatever the error slot holds, since Cocoa promises the error
+only on failure; a method that reports through a status code rather than nil
+or NO keeps its own check. `-[NSAppleScript executeAndReturnError:]` takes an
+`NSDictionary **`, not an `NSError **`, and is not for this.
+
+Neither is a LispWorks interface: LispWorks lets the exception abort the
+process and has no NSError helper. Both are named in the seam test with the
+other additions.
 
 ## Blocks
 

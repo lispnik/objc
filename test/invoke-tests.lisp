@@ -215,9 +215,10 @@ set.  A longer vector keeps its tail."
 
 (test missing-method-signals-before-sending
   "This is what keeps the bridge survivable.  Resolving the Method is how the
-call signature is discovered, so an unimplemented selector fails in Lisp; if the
-send happened the runtime would raise an NSException, and that aborts the
-process -- verified in LispWorks, where it surfaced as SIGABRT."
+call signature is discovered, so an unimplemented selector fails in Lisp with
+the message LispWorks gives; if the send happened the runtime would raise an
+NSException -- which is caught now, see exception-tests.lisp, but in LispWorks
+aborts the process, and is the wrong kind of failure either way."
   (with-runtime
     (signals error (objc:invoke (ns "hi") "noSuchMethodAtAll"))
     ;; A heap string, not a short one: short ASCII strings are tagged pointers

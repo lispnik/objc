@@ -207,6 +207,30 @@ Anything the manual does not name a conversion for is returned unchanged --
 ;;; The one call path --------------------------------------------------------
 
 (defun %invoke (receiver method args disposition)
+  "One send, with an Objective-C exception raised inside it caught: the
+uncaught-exception handler (exceptions.lisp) throws here, and what it threw
+becomes an OBJC-EXCEPTION.  The RETURN-FROM keeps a void result's (VALUES)."
+  (let ((exception (catch 'objc-exception
+                     (return-from %invoke
+                       (%invoke-unguarded receiver method args disposition)))))
+    (signal-objc-exception exception receiver method)))
+
+(defun signal-objc-exception (exception receiver method)
+  "Signal OBJC-EXCEPTION for EXCEPTION, the object thrown during a send of
+METHOD to RECEIVER.  Its name and reason are read here, after the catch, by
+sends of their own."
+  (let* ((null (cffi:null-pointer-p exception))
+         (name (cond (null "nil")
+                     ((can-invoke-p exception "name") (invoke-into 'string exception "name"))
+                     (t (%class-get-name (%object-get-class exception)))))
+         (reason (cond (null nil)
+                       ((can-invoke-p exception "reason") (invoke-into 'string exception "reason"))
+                       (t (invoke-into 'string exception "description")))))
+    (error 'objc-exception :name name :reason reason :object exception
+                           :selector (parse-method-designator method)
+                           :receiver receiver)))
+
+(defun %invoke-unguarded (receiver method args disposition)
   (with-fp-traps-masked
     (with-call-temporaries
       (multiple-value-bind (selector-name explicit-arg-types explicit-result n-fixed explicit-p)
@@ -220,7 +244,7 @@ Anything the manual does not name a conversion for is returned unchanged --
                     selector-name receiver))
         (multiple-value-bind (kind pointer class) (resolve-receiver receiver)
           (when (and (cffi:pointerp pointer) (cffi:null-pointer-p pointer))
-            (return-from %invoke nil))
+            (return-from %invoke-unguarded nil))
           (multiple-value-bind (trampoline result-node arg-nodes)
               (if explicit-p
                   (explicit-signature kind method explicit-arg-types
@@ -294,6 +318,58 @@ reading of it, added beside INVOKE the way the block API was."
                 `(invoke ,form ,method ,@args))))
           sends
           :initial-value receiver))
+
+(defun failure-value-p (value)
+  "Whether VALUE is what a Cocoa method returns to say it failed: nil for an
+object, NO for a BOOL, nothing for void."
+  (or (null value) (eql value 0)
+      (and (cffi:pointerp value) (cffi:null-pointer-p value))))
+
+(defun signal-ns-error (error receiver method)
+  "Signal NS-ERROR for the NSError ERROR written by a send of METHOD to RECEIVER.
+Retained first: an error written through an out-parameter is autoreleased by
+convention, and the condition may outlive the pool."
+  (invoke error "retain")
+  (error 'ns-error :domain (invoke-into 'string error "domain")
+                   :code (invoke error "code")
+                   :description (invoke-into 'string error "localizedDescription")
+                   :object error
+                   :selector (parse-method-designator method)
+                   :receiver receiver))
+
+(defun invoke-with-error (class-or-object-pointer method &rest args)
+  "INVOKE for a method whose last parameter is an NSError **, which this
+supplies and checks; ARGS are the others.
+
+    (invoke-with-error task \"launchAndReturnError:\")
+    (invoke-with-error \"NSString\" \"stringWithContentsOfFile:encoding:error:\" path 4)
+
+The method's result is returned as INVOKE would return it -- an object
+pointer, 1 for a BOOL, NIL for void -- unless it says the method failed (nil,
+NO, or nothing) AND an error was written, in which case NS-ERROR is signalled
+carrying the error's domain, code and localized description and the NSError
+itself, retained once.  A success value is returned whatever the error slot
+holds, since Cocoa promises the error only on failure; a failure value with no
+error written is returned unchanged.  A method that reports through a status
+code rather than nil or NO keeps its own check.  METHOD must end in \"error:\";
+-[NSAppleScript executeAndReturnError:] takes an NSDictionary **, not an
+NSError **, and is not for this.
+
+Not a LispWorks interface: LispWorks has no NSError helper, and this is one
+function beside INVOKE."
+  (let ((selector (parse-method-designator method)))
+    (unless (and (>= (length selector) 6)
+                 (string= "rror:" selector :start2 (- (length selector) 5)))
+      (error "~S does not end in \"error:\"; INVOKE-WITH-ERROR supplies the ~
+NSError ** parameter, which is the last one, itself." selector)))
+  (cffi:with-foreign-object (error-out :pointer)
+    (setf (cffi:mem-ref error-out :pointer) (cffi:null-pointer))
+    (let* ((result (%invoke class-or-object-pointer method
+                            (append args (list error-out)) :default))
+           (error (cffi:mem-ref error-out :pointer)))
+      (if (and (not (cffi:null-pointer-p error)) (failure-value-p result))
+          (signal-ns-error error class-or-object-pointer method)
+          result))))
 
 (defun invoke-bool (class-or-object-pointer method &rest args)
   "Like INVOKE, but a BOOL result of NO returns NIL and anything else T."

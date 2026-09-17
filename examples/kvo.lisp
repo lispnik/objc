@@ -9,10 +9,11 @@
 ;;;; four-argument framework callback -- key path, object, a change dictionary
 ;;;; and a context pointer -- which nothing else here does.
 ;;;;
-;;;; IT IS ALSO THE EASIEST WAY TO KILL THE IMAGE, and that is why the example is
-;;;; shaped the way it is.  KVO reports misuse by raising an NSException, and
-;;;; this library has no @try: an NSException is not a condition you can handle,
-;;;; it terminates the process.  Three ways to earn one:
+;;;; IT IS ALSO THE EASIEST WAY TO EARN AN NSEXCEPTION, and that is why the
+;;;; example is shaped the way it is.  KVO reports misuse by raising one.  That
+;;;; is caught now -- OBJC:OBJC-EXCEPTION -- but the frames it abandons are
+;;;; Foundation's observation machinery, which is then in no state to trust, so
+;;;; the example still prevents rather than catches.  Three ways to earn one:
 ;;;;
 ;;;;   -removeObserver:forKeyPath: for a registration that is not there.  "Cannot
 ;;;;   remove an observer ... because it is not registered as an observer."  So
@@ -157,8 +158,9 @@ change, which for a framework object may not be the main one.
                              (print change)))
         (objc:invoke progress \"setCompletedUnitCount:\" 3)))
 
-Observing a key path the class does not have raises an NSException, which ends
-the process; there is no way to check first that is not itself a send."
+Observing a key path the class does not have raises an NSException; it is
+caught, but it leaves KVO's bookkeeping half done, and there is no way to check
+first that is not itself a send."
   (objc:ensure-objc-initialized)
   (let* ((observer (objc:alloc-init-object "LispKeyValueObserver"))
          (id (bt:with-lock-held (*observation-lock*) (incf *observation-counter*)))
@@ -176,9 +178,8 @@ the process; there is no way to check first that is not itself a send."
   "Unregister OBSERVATION.  Idempotent, and that is the point.
 
 -removeObserver:forKeyPath:context: raises an NSException when there is no such
-registration, and an NSException here ends the process rather than signalling
-something a handler could catch.  So this refuses to remove twice rather than
-relying on the caller to count."
+registration.  It is caught, as OBJC:OBJC-EXCEPTION, but not worth earning: this
+refuses to remove twice rather than relying on the caller to count."
   (check-type observation observation)
   (when (observation-live observation)
     (setf (observation-live observation) nil)

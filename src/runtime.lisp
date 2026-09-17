@@ -200,3 +200,15 @@ Signals UNSUPPORTED-TYPE-ENCODING if Foundation will not parse it."
                :detail "Foundation could not parse this encoding"))
       (values (cffi:mem-ref size :unsigned-long)
               (cffi:mem-ref align :unsigned-long)))))
+
+;;; Exceptions ---------------------------------------------------------------
+;;;
+;;; The uncaught-exception handler runs on the throwing thread from the
+;;; runtime's terminate handler, after the C++ unwinder has found no handler
+;;; and before anything is unwound: the last moment at which a Lisp catch can
+;;; still claim the exception.  See exceptions.lisp for why this hook and not
+;;; the exception preprocessor.
+
+(define-runtime-function ("objc_setUncaughtExceptionHandler"
+                          %objc-set-uncaught-exception-handler) :pointer
+  (handler :pointer))

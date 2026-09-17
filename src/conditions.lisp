@@ -1,21 +1,29 @@
-;;;; src/conditions.lisp -- the internal condition hierarchy.
+;;;; src/conditions.lisp -- the condition hierarchy.
 ;;;;
-;;;; None of these are exported.  The LispWorks manual documents no condition
-;;;; types at all, and reverse engineering the 8.1 image confirms it has none:
-;;;; every failure is signalled with a plain CL:ERROR and a format string, so
-;;;; the conditions that reach LispWorks code are SIMPLE-ERRORs.  Exporting a
-;;;; condition class here would be inventing API the manual does not promise.
+;;;; Two of these are exported, OBJC-EXCEPTION and NS-ERROR, and the rest are
+;;;; not.  The LispWorks manual documents no condition types at all, and reverse
+;;;; engineering the 8.1 image confirms it has none: every failure is signalled
+;;;; with a plain CL:ERROR and a format string, so the conditions that reach
+;;;; LispWorks code are SIMPLE-ERRORs.  Exporting a condition for one of those
+;;;; failures would be inventing API the manual does not promise.
+;;;;
+;;;; The two exported ones are for what LispWorks does not do at all: an
+;;;; Objective-C exception aborts its process and it has no NSError helper.
+;;;; There is nothing to be compatible with, and a caller who catches an
+;;;; exception wants its name, not a string to parse, so those two are named.
 ;;;;
 ;;;; We still want structured conditions internally -- a REPL session debugging
 ;;;; a bad type encoding wants the encoding and the offset, not a string -- so
 ;;;; they exist, they subclass ERROR, and their reports are worded to match the
-;;;; LispWorks messages where LispWorks has one.  Callers should handle ERROR.
+;;;; LispWorks messages where LispWorks has one.  Callers should handle ERROR,
+;;;; or the two named ones where they mean them.
 
 (in-package #:objc)
 
 (define-condition objc-error (error) ()
   (:documentation
-   "Root of the errors this library signals.  Not exported: see the file header."))
+   "Root of the errors this library signals.  Not exported itself: see the file
+header."))
 
 (define-condition library-not-found (objc-error)
   ((name :initarg :name :reader library-not-found-name)
@@ -161,3 +169,81 @@ own struct-returning example uses INVOKE-INTO, which is why nothing caught it.")
    "Signalled by the AppKit entry points when called off thread 1.  AppKit
 requires the main thread and does not check; the observed failure is a deadlock
 or a corrupted window rather than an error, so we check instead."))
+
+;;; The two exported conditions ------------------------------------------------
+
+(defun selector-designation (receiver selector)
+  "The selector as Objective-C writes it in a report: +sel for a class method,
+-sel for an instance method."
+  (format nil "~:[-~;+~]~a" (stringp receiver) selector))
+
+(defgeneric objc-exception-name (condition)
+  (:documentation "The exception's name, a string: \"NSRangeException\".  The
+class name of the thrown object when it is not an NSException, \"nil\" when
+nil was thrown."))
+
+(defgeneric objc-exception-reason (condition)
+  (:documentation "The exception's -reason as a string, or NIL when it has none."))
+
+(defgeneric objc-exception-object (condition)
+  (:documentation "The thrown object, a pointer.  The runtime retained it when
+it was thrown and that reference is never released, because the throw was
+abandoned rather than completed: do not release it either."))
+
+(define-condition objc-exception (objc-error)
+  ((name :initarg :name :reader objc-exception-name)
+   (reason :initarg :reason :initform nil :reader objc-exception-reason)
+   (object :initarg :object :reader objc-exception-object)
+   (selector :initarg :selector :initform nil :reader objc-exception-selector)
+   (receiver :initarg :receiver :initform nil :reader objc-exception-receiver))
+  (:report
+   (lambda (condition stream)
+     (format stream "~@[~A ~]raised ~A~@[: ~A~]"
+             (and (objc-exception-selector condition)
+                  (selector-designation (objc-exception-receiver condition)
+                                        (objc-exception-selector condition)))
+             (objc-exception-name condition)
+             (objc-exception-reason condition))))
+  (:documentation
+   "An Objective-C exception raised inside a send and not caught by any
+Objective-C handler.  Without this it would have terminated the process, which
+is what LispWorks lets happen.
+
+The frames between the send and the raise are discarded without their
+cleanups: a lock or @synchronized held there stays held, and a pool pushed
+there is drained by the enclosing one.  NSException is for programmer errors,
+so the subsystem that raised is suspect afterwards; the process is not."))
+
+(defgeneric ns-error-domain (condition)
+  (:documentation "The NSError's domain, a string: \"NSCocoaErrorDomain\"."))
+
+(defgeneric ns-error-code (condition)
+  (:documentation "The NSError's code, an integer."))
+
+(defgeneric ns-error-description (condition)
+  (:documentation "The NSError's -localizedDescription, a string."))
+
+(defgeneric ns-error-object (condition)
+  (:documentation "The NSError, a pointer, retained once by the condition.
+Release it if you keep neither the condition nor the object."))
+
+(define-condition ns-error (objc-error)
+  ((domain :initarg :domain :reader ns-error-domain)
+   (code :initarg :code :reader ns-error-code)
+   (description :initarg :description :reader ns-error-description)
+   (object :initarg :object :reader ns-error-object)
+   (selector :initarg :selector :initform nil :reader ns-error-selector)
+   (receiver :initarg :receiver :initform nil :reader ns-error-receiver))
+  (:report
+   (lambda (condition stream)
+     (format stream "~@[~A ~]failed: ~A (~A ~D)"
+             (and (ns-error-selector condition)
+                  (selector-designation (ns-error-receiver condition)
+                                        (ns-error-selector condition)))
+             (ns-error-description condition)
+             (ns-error-domain condition)
+             (ns-error-code condition))))
+  (:documentation
+   "A method with an NSError ** parameter reported failure through it: the
+result was nil, NO or nothing and the error was written.  Signalled by
+INVOKE-WITH-ERROR, which supplies the parameter."))

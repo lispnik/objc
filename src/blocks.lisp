@@ -400,6 +400,26 @@ into a call to whatever closure was allocated that id next.")
 
 (defvar *block-lock* (bt:make-lock "objc block registry"))
 
+(defvar *block-functions* (make-array 256 :initial-element nil)
+  "Block id -> the Lisp closure, for the invocation path: a simple vector read
+without the lock, because a block Cocoa calls per element cannot afford a
+lock and a hash probe per call (that pair was 60 of the 121 ns a Lisp method
+took per element).  Written only under *BLOCK-LOCK*: a slot is set when the
+id is issued and cleared when the last holder lets go, and the vector is
+grown by replacing it with a longer copy, so a reader holds either the old
+vector or the new and finds every id issued before it looked.  The records
+in *BLOCK-RECORDS* stay the source of truth for refcounts.")
+
+(defun note-block-function (id function)
+  "Record FUNCTION for ID in *BLOCK-FUNCTIONS*.  Under *BLOCK-LOCK*."
+  (let ((vector *block-functions*))
+    (when (>= id (length vector))
+      (let ((grown (make-array (max (* 2 (length vector)) (1+ id)) :initial-element nil)))
+        (replace grown vector)
+        (setf vector grown
+              *block-functions* grown)))
+    (setf (svref vector id) function)))
+
 (defun block-id-at (pointer)
   "The id embedded in the block literal at POINTER."
   (cffi:mem-ref (pointer-of pointer) :uint64
@@ -421,23 +441,27 @@ block outlive the FREE-OBJC-BLOCK that would once have stranded it."
     (let ((record (gethash id *block-records*)))
       (when (and record (<= (decf (block-record-refcount record)) 0))
         (remhash id *block-records*)
+        (when (< id (length *block-functions*))
+          (setf (svref *block-functions* id) nil))
         t))))
 
 (defun block-function-for-sap (block-sap)
   "The Lisp closure a block invocation belongs to.
 
-The lock covers the lookup and nothing else: the closure is funcalled after it
-is released, because a completion handler that frees a block -- its own or
-another's -- would otherwise deadlock against its own invocation."
+No lock: the id indexes *BLOCK-FUNCTIONS*, a simple vector only ever grown by
+replacement, so the read is one word.  That also means a completion handler
+that frees a block -- its own or another's -- cannot deadlock against its own
+invocation, which the lock this once took had to be careful about."
   (let* ((id (cffi:mem-ref (pointer-of block-sap) :uint64
                            (cffi:foreign-slot-offset '(:struct block-literal) 'block-id)))
-         (record (bt:with-lock-held (*block-lock*) (gethash id *block-records*))))
-    (unless record
+         (vector *block-functions*)
+         (function (and (< id (length vector)) (svref vector id))))
+    (unless function
       (error "Objective-C block ~D was invoked after its last holder let go.~%~
               Every copy libclosure made has been disposed of and the original ~
               was freed, so the closure is gone.  Reaching a block in that ~
               state means something kept the raw pointer rather than a copy." id))
-    (block-record-function record)))
+    function))
 
 ;;; The public API -----------------------------------------------------------
 
@@ -504,7 +528,8 @@ decides the BLOCK_USE_STRET flag."
         (setf record (%make-objc-block :id id :pointer literal :signature signature))
         ;; Refcount one: this OBJC-BLOCK.  Every copy libclosure makes adds
         ;; another through the copy helper.
-        (setf (gethash id *block-records*) (%make-block-record record function))))
+        (setf (gethash id *block-records*) (%make-block-record record function))
+        (note-block-function id function)))
     record))
 
 ;;; Methods as blocks -----------------------------------------------------------
@@ -720,7 +745,8 @@ The id counter is deliberately not reset: ids must stay unique across a restore
 for the same reason they are not reused within a run."
   (bt:with-lock-held (*block-machinery-lock*)
     (clrhash *block-machinery*)
-    (clrhash *imp-machinery*))
+    (clrhash *imp-machinery*)
+    (setf *block-functions* (make-array 256 :initial-element nil)))
   (setf *block-copy-helper* nil
         *block-dispose-helper* nil)
   (bt:with-lock-held (*block-lock*)

@@ -162,7 +162,11 @@ Each of these is a bug that actually happened here.
   own trampoline pages; a redefinition gives the old one back with
   `imp_removeBlock`. A block IMP is not passed `_cmd`; the body gets the
   selector it was installed for. `methods-do-not-consume-static-code-space`
-  measures it against the runtime's free pointer. ECL keeps `build-imp`'s
+  measures it against the runtime's free pointer. The closure a block or
+  method IMP calls is found by block id in `*block-functions*`, a simple
+  vector read without the lock and grown only by replacement; the locked
+  hash lookup it replaced was 60 of the 121 ns a method took per element.
+  ECL keeps `build-imp`'s
   libffi closure per method (`methods-as-blocks-p` is NIL there): no fixed
   space to run out of, and the block hop measured 1.6 µs against 0.4 there.
 

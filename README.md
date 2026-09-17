@@ -469,7 +469,8 @@ libobjc's own trampoline pages. Twenty methods of a known signature cost that
 space nothing; a redefinition costs nothing and gives the old trampoline back.
 A block IMP is not passed `_cmd`, so the body receives the selector it was
 installed for, which is the only one it could have been called with. The cost
-is one hop, about 60 ns on a method Cocoa calls per element. ECL keeps a
+is one hop, about 40 ns on a method Cocoa calls per element: the block's
+closure is found by its id in a vector read without a lock. ECL keeps a
 libffi closure per method: it has no fixed space to run out of, and the hop
 measured four times slower there, so the seam decides (`methods-as-blocks-p`).
 

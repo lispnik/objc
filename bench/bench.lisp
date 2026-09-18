@@ -108,6 +108,27 @@ in the list-form designator, on all three Lisps."
     (setf (cffi:mem-aref p :float 0) x (cffi:mem-aref p :float 1) y)
     (cffi:mem-ref p :double)))
 
+#-lispworks
+(defun make-c-noop-block ()
+  "A block literal that is all C: a global block whose invoke is getpid, which
+ignores the argument it is handed.  No copy helper, no dispose helper, no
+Lisp anywhere.  What a queue hop costs with nothing of ours in it."
+  (let ((literal (cffi:foreign-alloc :uint8 :count 32 :initial-element 0))
+        (descriptor (cffi:foreign-alloc :uint64 :count 2 :initial-element 0)))
+    (setf (cffi:mem-aref descriptor :uint64 1) 32)
+    (setf (cffi:mem-ref literal :pointer 0) (cffi:foreign-symbol-pointer "_NSConcreteGlobalBlock")
+          (cffi:mem-ref literal :int32 8) (ash 1 28) ; BLOCK_IS_GLOBAL
+          (cffi:mem-ref literal :pointer 16) (cffi:foreign-symbol-pointer "getpid")
+          (cffi:mem-ref literal :pointer 24) descriptor)
+    literal))
+
+#-lispworks
+(defun group-hop (group queue block)
+  "dispatch_group_async BLOCK on QUEUE and wait for it: one trip through a
+libdispatch worker thread and back."
+  (cffi:foreign-funcall "dispatch_group_async" :pointer group :pointer queue :pointer block :void)
+  (cffi:foreign-funcall "dispatch_group_wait" :pointer group :unsigned-long-long (1- (ash 1 64)) :long))
+
 (defun msg-send-address ()
   #+lispworks (fli:make-pointer :symbol-name "objc_msgSend")
   #-lispworks (cffi:foreign-symbol-pointer "objc_msgSend"))
@@ -204,7 +225,35 @@ in the list-form designator, on all three Lisps."
             (ns-per-call (lambda ()
                            (objc:invoke objects "makeObjectsPerformSelector:"
                                         (objc:coerce-to-selector "tick")))
-                         :n (floor n 1000) :per 1000))))
+                         :n (floor n 1000) :per 1000))
+    ;; A block on a libdispatch worker: what adopting the thread costs.  The
+    ;; first row is the hop itself, with nothing of ours in it.  The second
+    ;; adds one Lisp entry on the worker, the invoke: the block is held as a
+    ;; heap copy here, so libdispatch's copy is a count and its release is a
+    ;; count, and no helper runs.  The third hands over the original literal,
+    ;; so libdispatch's copy runs the copy helper on this thread and its
+    ;; release runs the dispose helper on the worker: a second adoption.
+    #-lispworks
+    (let* ((hops (floor n 20))
+           (queue (cffi:foreign-funcall "dispatch_queue_create"
+                                        :string "objc.bench" :pointer (cffi:null-pointer) :pointer))
+           (group (cffi:foreign-funcall "dispatch_group_create" :pointer))
+           (c-block (make-c-noop-block))
+           (lisp-block (objc:make-objc-block '(:void ()) (lambda () nil)))
+           (held (objc::%block-copy (objc:objc-block-pointer lisp-block))))
+      (unwind-protect
+           (progn
+             (report "worker: a C no-op block through a queue and back (the hop)"
+                     (ns-per-call (lambda () (group-hop group queue c-block)) :n hops))
+             (report "worker: a Lisp block held here (one adoption, the invoke)"
+                     (ns-per-call (lambda () (group-hop group queue held)) :n hops))
+             (report "worker: a Lisp block copied fresh (two: invoke and dispose helper)"
+                     (ns-per-call (lambda () (group-hop group queue (objc:objc-block-pointer lisp-block)))
+                                  :n hops)))
+        (objc::%block-release held)
+        (objc:free-objc-block lisp-block)
+        (objc:release group)
+        (objc:release queue)))))
 
 ;;; Files ----------------------------------------------------------------------
 

@@ -53,7 +53,8 @@ the rest is OBJC:INVOKE.  Needs swiftc the first time, to build the dylib;
 skipped where Xcode is absent.  The hash and HMAC are checked against
 their published vectors, the sealed box against itself and a tampered
 copy; the chart is only written; the model is asked only if it says it
-can, and its answer is only required to be a string."
+can, and its answer is only required to be a string -- or, when Apple's
+model service declines after saying it was available, the reason is."
   (if (not (ignore-errors (zerop (nth-value 2 (uiop:run-program '("xcrun" "-f" "swiftc")
                                                                  :ignore-error-status t :output nil :error-output nil)))))
       (skip "no swiftc on this machine")
@@ -68,7 +69,11 @@ can, and its answer is only required to be a string."
           (is-true (probe-file (getf result :chart-png)) "SwiftUI rendered the chart to a file")
           (is (stringp (getf result :language-model)))
           (when (getf result :answer)
-            (is (plusp (length (getf result :answer)))))))))
+            (is (plusp (length (getf result :answer)))))
+          (when (getf result :model-error)
+            (is (stringp (getf result :model-error))
+                "the model said it was available and then declined: ~a"
+                (getf result :model-error)))))))
 
 (test the-gcd-example-runs-every-shape
   "examples/gcd.lisp is what block creation was for: GCD is plain C functions

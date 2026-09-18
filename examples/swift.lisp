@@ -140,17 +140,23 @@ for its answer.  Signals with the model's reason if it cannot answer."
 
     (objc/examples:test-swift-bridge)
     => (:SHA256-OF-ABC \"ba7816bf...\" :HMAC-RFC-4231 \"5bdcc146...\" :SEALED-ROUND-TRIP T
-        :TAMPERED-REFUSED T :CHART-PNG #P\"...\" :LANGUAGE-MODEL \"available\" :ANSWER \"...\")
+        :TAMPERED-REFUSED T :CHART-PNG #P\"...\" :LANGUAGE-MODEL \"available\" :ANSWER \"...\"
+        :MODEL-ERROR NIL)
 
 The hash and HMAC are checked against their published test vectors; the
 sealed round trip and its refusal of a tampered box are checked here; the
-chart is written for eyes; the model is asked only when it says it can."
+chart is written for eyes; the model is asked only when it says it can.  A
+model that says it can and then does not -- its service refusing under load,
+which has happened here with a SensitiveContentAnalysis error -- is Apple's
+state of the day, not this bridge's, so the reason is returned as
+:MODEL-ERROR rather than signalled."
   (let* ((key (random-key))
          (sealed (seal "attack at dawn" key))
          (tampered (concatenate 'string (subseq sealed 0 (- (length sealed) 8))
                                 (if (char= (char sealed (- (length sealed) 8)) #\A) "B" "A")
                                 (subseq sealed (- (length sealed) 7))))
-         (availability (language-model-availability)))
+         (availability (language-model-availability))
+         (model-error nil))
     (list :sha256-of-abc (sha256 "abc")
           :hmac-rfc-4231 (hmac-sha256 "what do ya want for nothing?" "Jefe")
           :sealed-round-trip (equal "attack at dawn" (open-sealed sealed key))
@@ -161,5 +167,10 @@ chart is written for eyes; the model is asked only when it says it can."
                           png)
           :language-model availability
           :answer (when (string= availability "available")
-                    (ask-language-model "Reply with one short sentence: what is a Lisp macro?"
-                                        :instructions "You are terse.")))))
+                    (handler-case
+                        (ask-language-model "Reply with one short sentence: what is a Lisp macro?"
+                                            :instructions "You are terse.")
+                      (error (condition)
+                        (setf model-error (princ-to-string condition))
+                        nil)))
+          :model-error model-error)))

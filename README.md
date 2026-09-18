@@ -3,7 +3,7 @@
 [![macOS/SBCL](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml)
 [![macOS/iOS/ECL](https://github.com/lispnik/objc/actions/workflows/ci-ecl.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-ecl.yml)
 
-<img width=200 src="https://github.com/lispnik/upc-logger/blob/main/screenshot.png?raw=true" alt="A device screenshot of a Common Lisp iOS app"> <img width=600 src="https://github.com/lispnik/cathode-ray-tube/blob/main/screenshot.png?raw=true" alt="A screenshot of a macOS app port of cool-retro-term to Common Lisp">
+<img width=200 src="https://github.com/lispnik/upc-logger/raw/main/screenshot.png" alt="A device screenshot of a Common Lisp iOS app"> <img width=600 src="https://github.com/lispnik/cathode-ray-tube/raw/main/screenshot.png" alt="A screenshot of a macOS app port of cool-retro-term to Common Lisp"> <img width="275" src="https://github.com/lispnik/utc-status-app/raw/master/screenshot.png" alt="A screenshot of the UTC status bar app">
 
 ## AI;DR
 

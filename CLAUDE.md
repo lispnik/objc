@@ -278,9 +278,12 @@ Each of these is a bug that actually happened here.
   block may be running on a worker, every other Lisp thread is in a foreign
   call or not consing; a semaphore wait is followed by
   `objc:wait-for-callbacks` (the block is still unwinding on the worker after
-  it signals -- that tail is where every one of the four found windows was);
-  and a hand-off is preceded by `collect-before-callbacks` (gcd.lisp), which
-  waits the same way and then collects. `callbacks-in-progress-p` is the
+  it signals -- that tail is where every one of the four found windows was).
+  Never force a collection "while it is safe" outside a moment you can prove
+  no worker can enter Lisp (test-gcd's suspended queue is one): a forced GC is
+  a certain stop-the-world chosen blind, and a `collect-before-callbacks`
+  helper that did that before each hand-off killed the Intel CI leg in the
+  file-watcher test the first time it ran. `callbacks-in-progress-p` is the
   non-consing check underneath, a walk of `sb-thread::*all-threads*` for a
   `foreign-thread` (abi.lisp), NIL always on ECL. To find a window, run the
   test on the *stock* SBCL with

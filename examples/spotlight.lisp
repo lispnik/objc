@@ -55,10 +55,6 @@ Returns T, or the error's description."
                                                     t
                                                     (objc:ns-string-to-string (objc:invoke error "localizedDescription"))))
                                   (bt:signal-semaphore semaphore)))
-      ;; Each hand-off to Core Spotlight's queue is preceded by a collection:
-      ;; its block runs Lisp on a thread this process cannot stop for GC, so
-      ;; this thread must not need one while it does.  See gcd.lisp.
-      (collect-before-callbacks)
       (objc:invoke* "CSSearchableIndex"
                     "defaultSearchableIndex"
                     ("indexSearchableItems:completionHandler:" (coerce items 'vector) done))
@@ -69,7 +65,6 @@ Returns T, or the error's description."
   (let ((semaphore (bt:make-semaphore)))
     (objc:with-objc-block (done 'index-completion
                                 (lambda (error) (declare (ignore error)) (bt:signal-semaphore semaphore)))
-      (collect-before-callbacks)
       (objc:invoke* "CSSearchableIndex"
                     "defaultSearchableIndex"
                     ("deleteSearchableItemsWithDomainIdentifiers:completionHandler:" (vector +domain+) done))
@@ -94,7 +89,6 @@ such as \"title == \\\"*Lisp*\\\"cd\", found through CSSearchQuery's two blocks.
                                    "autorelease")))
           (objc:invoke query "setFoundItemsHandler:" batch)
           (objc:invoke query "setCompletionHandler:" done)
-          (collect-before-callbacks)
           (objc:invoke query "start")
           (wait-for-callback-signal semaphore :timeout timeout))))
     (nreverse found)))

@@ -245,17 +245,15 @@ port for the reply."
   (with-serial-queue (queue "lisp.xpc")
     ;; The listener's and the client's event handlers run Lisp on the queue's
     ;; thread -- accepting the connection, the calls, the cancellations --
-    ;; while this thread carries on.  A collection before each hand-off keeps
-    ;; this thread from needing one meanwhile; gcd.lisp explains the limit.
-    (collect-before-callbacks)
+    ;; while this thread carries on; gcd.lisp explains the limit that puts on
+    ;; a stock SBCL, and why each reply below is followed by a wait.
     (let* ((listener (make-anonymous-listener queue))
            (endpoint (%xpc-endpoint-create listener))
            (client (connect-client (%xpc-connection-create-from-endpoint endpoint))))
       (flet ((call (form)
-               ;; A collection before, and after the synchronous reply a wait
-               ;; for the service's handler to leave Lisp: the reply arrives
-               ;; while that handler is still unwinding on the queue thread.
-               (collect-before-callbacks)
+               ;; After the synchronous reply, a wait for the service's
+               ;; handler to leave Lisp: the reply arrives while that handler
+               ;; is still unwinding on the queue thread.
                (multiple-value-prog1 (call-service client form)
                  (objc:wait-for-callbacks))))
         (unwind-protect
@@ -264,7 +262,7 @@ port for the reply."
                      :thread-differs (not (equal thread (bt:thread-name (bt:current-thread))))
                      :error (handler-case (call "(error \"boom\")")
                               (error (condition) (princ-to-string condition)))))
-          (collect-before-callbacks)
+          (objc:wait-for-callbacks)
           (%xpc-connection-cancel client)
           (%xpc-connection-cancel listener)
           (%xpc-release endpoint))))))

@@ -1,14 +1,34 @@
 # objc
 
-[![macOS](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml)
-[![ECL](https://github.com/lispnik/objc/actions/workflows/ci-ecl.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-ecl.yml)
+[![macOS/SBCL](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml)
+[![macOS/iOS/ECL](https://github.com/lispnik/objc/actions/workflows/ci-ecl.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-ecl.yml)
 
-The first badge is SBCL on macOS, the second ECL on macOS, built from a fork
-that carries fixes not yet upstream. iOS is run by hand, on a device — see
-[Status](#status).
+<img width=200 src="https://github.com/lispnik/upc-logger/blob/main/screenshot.png?raw=true" alt="A device screenshot of a Common Lisp iOS app"> <img width=600 src="https://github.com/lispnik/cathode-ray-tube/blob/main/screenshot.png?raw=true" alt="A screenshot of a macOS app port of cool-retro-term to Common Lisp">
 
-The LispWorks Objective-C interface, reimplemented for SBCL and ECL on macOS,
-and for ECL on iOS, and extended.
+## AI;DR
+
+You can use this to build legit apps for macOS (using SBCL or ECL) as well as apps for your 
+iOS device (using ECL). This library is super-set of the LispWorks Objective-C interface, 
+reimplemented for SBCL and ECL on macOS, and for ECL on iOS. 
+
+Works with stock SBCL, or a safepoint build of SBCL (if you want to use anything in macOS 
+GCD, you need the safepoint build). For ECL, you need a fork of it from here 
+https://github.com/lispnik/ecl -- which we'll try and sort out for upstream later.
+
+Yes, you can connect to your iOS app (simulator or actual device) via SLIME/SLY and [redfine 
+anything at runtime](https://github.com/lispnik/asdf-ios-app/blob/master/doc/videos/live-tour.gif) like a civilized person.
+
+### See also:
+
+- https://github.com/lispnik/asdf-macos-app 
+- https://github.com/lispnik/asdf-ios-app 
+
+### Examples:
+
+- https://github.com/lispnik/objc/tree/master/examples
+- https://github.com/lispnik/asdf-ios-app/tree/master/examples
+- https://github.com/lispnik/cathode-ray-tube (port of my favorite macOS app)
+- https://github.com/lispnik/upc-logger (no bullshit UPC scanner for inventoring)
 
 The packages are literally named `OBJC` and `COCOA`, the exported symbols have
 the LispWorks names and lambda lists, and code written against the *LispWorks

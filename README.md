@@ -28,6 +28,7 @@ anything at runtime](https://github.com/lispnik/asdf-ios-app/blob/master/doc/vid
 - https://github.com/lispnik/objc/tree/master/examples (many macOS examples)
 - https://github.com/lispnik/asdf-ios-app/tree/master/examples (many iOS example apps and screenshots)
 - https://github.com/lispnik/cathode-ray-tube (port of my favorite macOS app)
+- https://github.com/lispnik/utc-status-app (also see the time in UTC for macOS)
 - https://github.com/lispnik/upc-logger (no bullshit UPC scanner for inventoring)
 
 The packages are literally named `OBJC` and `COCOA`, the exported symbols have

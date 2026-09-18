@@ -25,8 +25,8 @@ anything at runtime](https://github.com/lispnik/asdf-ios-app/blob/master/doc/vid
 
 ### Examples:
 
-- https://github.com/lispnik/objc/tree/master/examples
-- https://github.com/lispnik/asdf-ios-app/tree/master/examples
+- https://github.com/lispnik/objc/tree/master/examples (many macOS examples)
+- https://github.com/lispnik/asdf-ios-app/tree/master/examples (many iOS example apps and screenshots)
 - https://github.com/lispnik/cathode-ray-tube (port of my favorite macOS app)
 - https://github.com/lispnik/upc-logger (no bullshit UPC scanner for inventoring)
 

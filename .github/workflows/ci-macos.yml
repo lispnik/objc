@@ -79,10 +79,39 @@ jobs:
 
       - name: Install and configure ocicl
         run: |
-          # Clone the ocicl *tool* outside the repo so it does not collide with
-          # this project's gitignored ocicl/ dependency directory.
-          git clone --depth 1 https://github.com/ocicl/ocicl.git "$HOME/ocicl-src"
-          ( cd "$HOME/ocicl-src" && sbcl --non-interactive --load setup.lisp )
+          # The clone and the setup each get a watchdog and three attempts.
+          # Measured: one Intel run sat in this step for the whole job budget
+          # and was cancelled at thirty minutes having reached none of the
+          # tests, so a hang here has to fail fast and try again rather than
+          # eat the run.  macOS ships no timeout(1), hence the watchdog.
+          attempt_with_timeout() {
+            local secs=$1; shift
+            ( "$@" ) & local pid=$!
+            ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) & local watchdog=$!
+            local rc=0; wait "$pid" || rc=$?
+            kill -9 "$watchdog" 2>/dev/null || true
+            return $rc
+          }
+          clone_ocicl() {
+            rm -rf "$HOME/ocicl-src"
+            # Clone the ocicl *tool* outside the repo so it does not collide
+            # with this project's gitignored ocicl/ dependency directory.
+            git clone --depth 1 https://github.com/ocicl/ocicl.git "$HOME/ocicl-src"
+          }
+          setup_ocicl() {
+            ( cd "$HOME/ocicl-src" && sbcl --non-interactive --load setup.lisp )
+          }
+          for attempt in 1 2 3; do
+            if attempt_with_timeout 300 clone_ocicl && attempt_with_timeout 300 setup_ocicl; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::ocicl could not be installed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "::warning::ocicl install attempt $attempt failed or hung; retrying"
+            sleep 15
+          done
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Restore dependencies

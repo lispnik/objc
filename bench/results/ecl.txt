@@ -1,23 +1,23 @@
-# ECL 26.5.5 arm64 Darwin 25.6.0 2026-09-18 13:22 n=200000 rounds=5
-lisp: (length "hello world")	10
-ffi: objc_msgSend -length, no bridge	124
-invoke: -length (method on the receiver's class)	475
-invoke: -self (inherited from NSObject)	474
-invoke: +class on "NSString" (class receiver)	498
-invoke: -objectAtIndex: (id in, id out)	585
-invoke: -rangeOfString: (NSRange out)	1048
-invoke: -UTF8String -> Lisp string	961
-invoke: -isEqualToString: (Lisp string in)	1813
-invoke: (invoke (invoke s uppercaseString) length)	1104
-invoke: -setPosition: float2 as double (list form)	548
-invoke: -position -> double (list form)	475
-invoke: -setPosition: #(1.0 2.0) (declared float2)	832
-invoke: -position -> #(x y) (declared float2)	826
-invoke: -setPosition: #(1.0 2.0 3.0) (declared float3)	1086
-invoke: -position -> #(x y z) (declared float3)	798
-block: called back per element by NSArray	1366
-method: Lisp -twice: via invoke	1045
-method: Lisp -tick per element, makeObjectsPerformSelector:	430
-worker: a C no-op block through a queue and back (the hop)	9811
-worker: a Lisp block held here (one adoption, the invoke)	60406
-worker: a Lisp block copied fresh (two: invoke and dispose helper)	111009
+# ECL 26.5.5 arm64 Darwin 25.6.0 2026-09-20 21:35 n=200000 rounds=5
+lisp: (length "hello world")	12
+ffi: objc_msgSend -length, no bridge	127
+invoke: -length (method on the receiver's class)	509
+invoke: -self (inherited from NSObject)	478
+invoke: +class on "NSString" (class receiver)	493
+invoke: -objectAtIndex: (id in, id out)	677
+invoke: -rangeOfString: (NSRange out)	1065
+invoke: -UTF8String -> Lisp string	997
+invoke: -isEqualToString: (Lisp string in)	1919
+invoke: (invoke (invoke s uppercaseString) length)	1120
+invoke: -setPosition: float2 as double (list form)	554
+invoke: -position -> double (list form)	485
+invoke: -setPosition: #(1.0 2.0) (declared float2)	801
+invoke: -position -> #(x y) (declared float2)	936
+invoke: -setPosition: #(1.0 2.0 3.0) (declared float3)	1090
+invoke: -position -> #(x y z) (declared float3)	817
+block: called back per element by NSArray	1409
+method: Lisp -twice: via invoke	1042
+method: Lisp -tick per element, makeObjectsPerformSelector:	443
+worker: a C no-op block through a queue and back (the hop)	9952
+worker: a Lisp block held here (the hop plus one Lisp entry)	78531
+worker: a Lisp block copied fresh (the same, plus copy and dispose)	69085

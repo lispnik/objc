@@ -44,7 +44,19 @@
   (reserved   :uint32)
   (invoke-ptr :pointer)
   (descriptor :pointer)
-  (block-id   :uint64))
+  (block-id   :uint64)
+  ;; How many holders the closure has, as a pointer to the count rather than
+  ;; the count itself, and the reason is _Block_copy: it copies the literal,
+  ;; so a count stored here would give every copy a count of its own, and
+  ;; what has to be shared is one count per closure.  The helpers in
+  ;; helper-code.lisp are machine code that loads this and adds to the word
+  ;; it points at, which is why nothing about this field may move without
+  ;; their bytes being reassembled -- +HELPER-CELL-OFFSET+ is the check.
+  (refcount-cell :pointer))
+
+;; Defined in helper-code.lisp, which is compiled after this file because it
+;; needs BLOCK-LITERAL's layout; this file needs only its answer, at run time.
+(declaim (ftype function machine-code-block-helpers))
 
 ;;; The descriptor is three published structures laid end to end, and which of
 ;;; them are present is read from the block's FLAGS rather than from anything in
@@ -252,25 +264,59 @@ callers describe the signature the way it reads in C."
 (defvar *block-copy-helper* nil)
 (defvar *block-dispose-helper* nil)
 
+(defvar *block-helpers-are-machine-code* nil
+  "True when the two helpers are the machine code from helper-code.lisp rather
+than Lisp callables.  Reported by BLOCK-HELPERS-ENTER-LISP-P, which the tests
+and the stress example ask, since which pair is installed decides whether
+Cocoa releasing a block can enter Lisp on a thread of its choosing.")
+
 (defun ensure-block-helpers ()
   "Build the copy and dispose helpers on first use; return them.
+
+Machine code where the platform allows it: a few instructions that add to the
+shared count and return, entering no Lisp and adopting no thread.  Where it
+does not -- an iOS app, a hardened binary with no JIT entitlement, an
+architecture these bytes were never written for -- Lisp callables doing the
+same arithmetic under the registry lock, which is what this always used.
+helper-code.lisp has the argument for the first and the list of ways it can
+fail; the fallback is slower by four orders of magnitude per call and, on a
+stock SBCL, is the one remaining way for Cocoa to enter Lisp on a libdispatch
+worker at a moment no caller chose.
 
 Rooted in these variables forever, for the reason *BLOCK-MACHINERY* is: SBCL
 recycles a callable's trampoline once the callable is garbage, and every
 descriptor in the process points at these two."
   (unless *block-copy-helper*
-    (setf *block-copy-helper*
-          (build-block-helper 2 (lambda (result-sap destination source)
-                                  (declare (ignore result-sap source))
-                                  ;; The id was memmove'd into the copy already;
-                                  ;; both ends carry it, and DESTINATION is the
-                                  ;; one that will outlive this call.
-                                  (retain-block-id (block-id-at destination))))
-          *block-dispose-helper*
-          (build-block-helper 1 (lambda (result-sap block)
-                                  (declare (ignore result-sap))
-                                  (release-block-id (block-id-at block))))))
+    (multiple-value-bind (copy dispose) (machine-code-block-helpers)
+      (cond
+        (copy
+         (setf *block-copy-helper* copy
+               *block-dispose-helper* dispose
+               *block-helpers-are-machine-code* t))
+        (t
+         (setf *block-copy-helper*
+               (pointer-of
+                (build-block-helper 2 (lambda (result-sap destination source)
+                                        (declare (ignore result-sap source))
+                                        ;; The cell pointer was memmove'd into
+                                        ;; the copy already; both ends carry
+                                        ;; it, and DESTINATION is the one that
+                                        ;; will outlive this call.
+                                        (%add-to-block-cell destination 1))))
+               *block-dispose-helper*
+               (pointer-of
+                (build-block-helper 1 (lambda (result-sap block)
+                                        (declare (ignore result-sap))
+                                        (%add-to-block-cell block -1))))
+               *block-helpers-are-machine-code* nil)))))
   (values *block-copy-helper* *block-dispose-helper*))
+
+(defun block-helpers-enter-lisp-p ()
+  "Whether releasing a block can enter Lisp on a thread Cocoa chose.  NIL
+where the helpers are machine code, which is every platform that will make a
+page executable."
+  (ensure-block-helpers)
+  (not *block-helpers-are-machine-code*))
 
 (defun make-block-descriptor (signature)
   "Allocate the descriptor for a signature.  Shared by every block of that shape.
@@ -289,9 +335,9 @@ than merely untested."
             (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'size)
             (block-literal-size)
             (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'copy)
-            (pointer-of copy)
+            copy
             (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'dispose)
-            (pointer-of dispose)
+            dispose
             (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'signature)
             (cffi:foreign-string-alloc signature :encoding :utf-8)
             (cffi:foreign-slot-value descriptor '(:struct block-descriptor) 'layout)
@@ -371,17 +417,26 @@ remember that a block that escapes must not then be freed.")
     (format stream "~A ~A" (objc-block-signature block)
             (if (objc-block-pointer block) "live" "freed"))))
 
-(defstruct (block-record (:constructor %make-block-record (block function)))
-  "One live block id: the wrapper, the Lisp closure, and how many holders there
-are.
+(defstruct (block-record (:constructor %make-block-record (block function cell)))
+  "One live block id: the wrapper, the Lisp closure, and the count of holders.
 
-The count starts at one, for the OBJC-BLOCK the caller was given.  _Block_copy
-adds one through the copy helper and libclosure's own free subtracts it again
-through the dispose helper, so the closure outlives FREE-OBJC-BLOCK exactly as
-long as something Cocoa holds still needs it."
+The count is CELL, a word of foreign memory the literal points at and every
+copy of the literal therefore shares.  It starts at one, for the OBJC-BLOCK
+the caller was given.  _Block_copy adds one through the copy helper and
+libclosure's own free subtracts it again through the dispose helper, so the
+closure outlives FREE-OBJC-BLOCK exactly as long as something Cocoa holds
+still needs it.
+
+Foreign rather than a Lisp slot because the helpers that maintain it are
+machine code and never enter Lisp; helper-code.lisp says why that matters."
   block
   function
-  (refcount 1))
+  cell)
+
+(defun block-record-refcount (record)
+  "How many holders RECORD's closure has, read from the shared cell."
+  (let ((cell (block-record-cell record)))
+    (and cell (cffi:mem-aref cell :uint64 0))))
 
 (defvar *block-records* (make-hash-table :test 'eql)
   "Block id -> BLOCK-RECORD.
@@ -420,30 +475,57 @@ in *BLOCK-RECORDS* stay the source of truth for refcounts.")
               *block-functions* grown)))
     (setf (svref vector id) function)))
 
-(defun block-id-at (pointer)
-  "The id embedded in the block literal at POINTER."
-  (cffi:mem-ref (pointer-of pointer) :uint64
-                (cffi:foreign-slot-offset '(:struct block-literal) 'block-id)))
+(defvar *released-blocks* '()
+  "Records whose OBJC-BLOCK has been freed but whose closure something Cocoa
+may still hold.  Swept by REAP-RELEASED-BLOCKS.  A record reaches this list
+exactly once, from FREE-OBJC-BLOCK, so the sweeping is amortised constant work
+per block created rather than a walk of every block alive.")
 
-(defun retain-block-id (id)
-  "Note that one more holder exists for ID.  Called by the copy helper."
+(defun %add-to-block-cell (literal delta)
+  "Add DELTA to the count LITERAL points at, under the registry lock.
+
+The Lisp fallback for the two helpers, and only that: where they are machine
+code this is never called, and the lock would be wrong for them anyway since
+they run on threads that must not wait on anything Lisp holds."
+  (let ((cell (cffi:mem-ref (pointer-of literal) :pointer
+                            (cffi:foreign-slot-offset '(:struct block-literal)
+                                                      'refcount-cell))))
+    (unless (cffi:null-pointer-p cell)
+      (bt:with-lock-held (*block-lock*)
+        (setf (cffi:mem-aref cell :uint64 0)
+              (+ (cffi:mem-aref cell :uint64 0) delta))))))
+
+(defun release-block-storage (literal)
+  "Drop one holder of the closure LITERAL belongs to, by calling the block's
+own dispose helper on it.
+
+Not arithmetic here, deliberately.  The helpers may be machine code doing a
+lock-free atomic add, and a plain read-modify-write from Lisp would race with
+a copy helper running on another thread at that moment.  Calling the helper is
+the same operation Cocoa performs, whichever pair is installed."
+  (cffi:foreign-funcall-pointer *block-dispose-helper* () :pointer literal :void))
+
+(defun reap-released-blocks ()
+  "Forget the closures of freed blocks that Cocoa has now finished with.
+
+Lazy on purpose.  The helpers do not enter Lisp, so nothing reports the moment
+a count reaches zero; instead every freed block waits on this list and is
+collected the next time a block is made or freed.  A closure therefore lives a
+little longer than it strictly must, never a moment less, and the list is
+bounded by the blocks Cocoa is still holding."
   (bt:with-lock-held (*block-lock*)
-    (let ((record (gethash id *block-records*)))
-      (when record (incf (block-record-refcount record))))))
-
-(defun release-block-id (id)
-  "Note that one holder of ID is gone, and forget the closure at the last one.
-
-Called by the dispose helper, and by FREE-OBJC-BLOCK for the creator's own
-reference.  The record is dropped only at zero, which is what lets an escaped
-block outlive the FREE-OBJC-BLOCK that would once have stranded it."
-  (bt:with-lock-held (*block-lock*)
-    (let ((record (gethash id *block-records*)))
-      (when (and record (<= (decf (block-record-refcount record)) 0))
-        (remhash id *block-records*)
-        (when (< id (length *block-functions*))
-          (setf (svref *block-functions* id) nil))
-        t))))
+    (setf *released-blocks*
+          (loop for record in *released-blocks*
+                for id = (objc-block-id (block-record-block record))
+                for cell = (block-record-cell record)
+                if (plusp (cffi:mem-aref cell :uint64 0))
+                  collect record
+                else
+                  do (remhash id *block-records*)
+                     (when (< id (length *block-functions*))
+                       (setf (svref *block-functions* id) nil))
+                     (setf (block-record-cell record) nil)
+                     (cffi:foreign-free cell)))))
 
 (defun block-function-for-sap (block-sap)
   "The Lisp closure a block invocation belongs to.
@@ -547,9 +629,15 @@ in x8 and no argument moves."
 OBJC-BLOCK.  What MAKE-OBJC-BLOCK does once the signature is known, and what a
 Lisp method does with the method machinery below.  RESULT-NODE, when given,
 decides the BLOCK_USE_STRET flag."
+  (reap-released-blocks)
   (let ((literal (cffi:foreign-alloc :uint8 :count (block-literal-size)
                                             :initial-element 0))
+        ;; One holder to start with: the OBJC-BLOCK this returns.  It outlives
+        ;; the literal, which FREE-OBJC-BLOCK hands back while copies may
+        ;; still exist, so it is freed by the reaper and not before.
+        (cell (cffi:foreign-alloc :uint64 :count 1))
         (record nil))
+    (setf (cffi:mem-aref cell :uint64 0) 1)
     (setf (cffi:foreign-slot-value literal '(:struct block-literal) 'isa)
           (stack-block-isa)
           (cffi:foreign-slot-value literal '(:struct block-literal) 'flags)
@@ -560,14 +648,14 @@ decides the BLOCK_USE_STRET flag."
           (cffi:foreign-slot-value literal '(:struct block-literal) 'invoke-ptr)
           (pointer-of (block-machinery-invoke-sap machinery))
           (cffi:foreign-slot-value literal '(:struct block-literal) 'descriptor)
-          (block-machinery-descriptor machinery))
+          (block-machinery-descriptor machinery)
+          (cffi:foreign-slot-value literal '(:struct block-literal) 'refcount-cell)
+          cell)
     (bt:with-lock-held (*block-lock*)
       (let ((id (incf *block-id-counter*)))
         (setf (cffi:foreign-slot-value literal '(:struct block-literal) 'block-id) id)
         (setf record (%make-objc-block :id id :pointer literal :signature signature))
-        ;; Refcount one: this OBJC-BLOCK.  Every copy libclosure makes adds
-        ;; another through the copy helper.
-        (setf (gethash id *block-records*) (%make-block-record record function))
+        (setf (gethash id *block-records*) (%make-block-record record function cell))
         (note-block-function id function)))
     record))
 
@@ -659,16 +747,24 @@ libclosure disposes of the last copy.
 The remaining way to be wrong is to hand a foreign API this exact pointer and
 have it keep the pointer rather than a copy.  Nothing in Cocoa does that."
   (check-type block objc-block)
-  (let ((pointer nil))
+  (let ((pointer nil)
+        (record nil))
     (bt:with-lock-held (*block-lock*)
       (when (objc-block-pointer block)
         (setf pointer (objc-block-pointer block)
-              (objc-block-pointer block) nil)))
+              (objc-block-pointer block) nil
+              record (gethash (objc-block-id block) *block-records*))
+        ;; Queued before the count is dropped, so that the reaper can never
+        ;; see a zero it has no record for.
+        (when record (push record *released-blocks*))))
     (when pointer
-      ;; Both outside the lock: RELEASE-BLOCK-ID takes it itself, and a free
-      ;; must not stall another thread's invocation.
-      (release-block-id (objc-block-id block))
-      (cffi:foreign-free pointer)))
+      ;; Outside the lock: the fallback helper takes it itself, and a free
+      ;; must not stall another thread's invocation.  The count first and the
+      ;; storage after -- reading the cell pointer needs the literal, and this
+      ;; is the last moment it is ours to read.
+      (release-block-storage pointer)
+      (cffi:foreign-free pointer)
+      (reap-released-blocks)))
   nil)
 
 (defun objc-block-live-p (block)
@@ -787,12 +883,18 @@ for the same reason they are not reused within a run."
     (clrhash *imp-machinery*)
     (setf *block-functions* (make-array 256 :initial-element nil)))
   (setf *block-copy-helper* nil
-        *block-dispose-helper* nil)
+        *block-dispose-helper* nil
+        *block-helpers-are-machine-code* nil)
   (bt:with-lock-held (*block-lock*)
     (maphash (lambda (id record)
                (declare (ignore id))
-               (setf (objc-block-pointer (block-record-block record)) nil))
+               (setf (objc-block-pointer (block-record-block record)) nil
+                     ;; Dropped rather than freed: a dumped image's foreign
+                     ;; allocations did not survive, so this pointer names
+                     ;; memory this process never obtained.
+                     (block-record-cell record) nil))
              *block-records*)
-    (clrhash *block-records*)))
+    (clrhash *block-records*)
+    (setf *released-blocks* '())))
 
 (add-image-restore-thunk 'clear-block-caches)

@@ -72,6 +72,10 @@ Lisp method can take and return C structs by value like any other."
                  (:file "cocoa")
                  (:file "runloop")
                  (:file "blocks")
+                 ;; After blocks.lisp: the machine code it installs as the
+                 ;; block copy and dispose helpers has BLOCK-LITERAL's layout
+                 ;; compiled into it, so it is written against that file.
+                 (:file "helper-code")
                  (:file "init"))))
   :in-order-to ((test-op (test-op #:objc/test))))
 

@@ -687,18 +687,24 @@ thread Lisp did not create is inside a callback, and `objc:wait-for-callbacks`,
 which spins without consing until none is; a woken thread calls the latter
 before it goes on. The four examples do (`wait-for-callback-signal` in
 `examples/gcd.lisp`); the other thirty-odd example tests survived that nursery
-as they were. That closes the tail and not the whole window: traced, what still
-kills the four under the shrunken nursery is the block's *dispose helper* — a
+as they were. That closed the tail but not the whole window: traced, what still
+killed the four under the shrunken nursery was the block's *dispose helper* — a
 Lisp callback that runs on whichever thread Cocoa releases its copy of the
 block on, after the block has returned and the main thread has moved on.
 Nothing on the waiting side can time that, and forcing a collection "while it
 is safe" is worse than nothing against it: a forced collection is a certain
 stop-the-world at a moment chosen blind, and the Intel CI leg died in exactly
-such a call. Helpers that never enter Lisp, a few instructions of machine code
-keeping an atomic count for Lisp to reap later, are the fix for that and are
-not written yet. They would pay for themselves on any build: the bench's
-`worker:` rows put a helper's entry at about 22 µs on SBCL and 50 µs on ECL,
-a second adoption of the worker for every block Cocoa copies and releases.
+such a call. So **the copy and dispose helpers are no longer Lisp**. Each is
+now half a dozen instructions that load a pointer out of the block and
+atomically add one to the count it names, assembled in
+[src/helper-code.lisp](src/helper-code.lisp) and mapped into a page of their
+own; Lisp reads that count later, at times it chooses, and forgets the closures
+whose count has reached zero. Cocoa releasing a block can no longer enter Lisp
+at all. It is faster by four orders of magnitude as a side effect — 3.6 ns
+against the 22 µs an adopted thread cost — which the bench's `worker:` rows
+measure. Where no page can be made executable, an iOS app or a hardened binary
+without the JIT entitlement, the Lisp callables are still there as the
+fallback, and `objc::block-helpers-enter-lisp-p` says which is installed.
 Serialising Lisp entry with a lock does not help — a worker parked on a Lisp
 lock still has to be signalled.
 
@@ -1963,13 +1969,16 @@ fasls.
 The three `worker:` rows measure what a block on a libdispatch thread costs
 beyond the hop itself.  A C-only no-op block through a queue and back is the
 floor, about 5 µs on SBCL and 10 µs on ECL.  A Lisp block held as a heap copy
-adds one entry into Lisp on the worker, which SBCL must adopt as a thread for
-the duration: about 22 µs, on the stock and the safepoint build alike, and
-about 50 µs on ECL.  A Lisp block handed over fresh adds a second adoption of
-the same size, because libdispatch's release of its copy runs the dispose
-helper on the worker, and the helper is a Lisp callback too.  That second
-adoption is what machine-code helpers, described under Blocks, would remove;
-it doubles the cost of every block Cocoa copies and releases, on every build.
+adds one entry into Lisp on the worker, which the Lisp must adopt as a thread
+for the duration: about 32 µs on either SBCL build, about 78 µs on ECL.  A
+Lisp block handed over fresh is copied and disposed of as well, and **costs
+the same** -- 34 µs and 69 µs on the same run -- which is the measurement
+worth having, because it says the copy and dispose helpers cost nothing a
+thread adoption would show.  They did not always: when they were Lisp
+callables this third row was about twice the second, a whole second adoption
+for every block Cocoa copies and releases.  Making them machine code is what
+removed it, and the Blocks section says why that mattered for more than
+speed.
 
 What the numbers say, measured 2026-09-16 on an M-series Mac, after the two
 changes the first run of this benchmark called for (a send cache keyed by

@@ -198,6 +198,27 @@ Each of these is a bug that actually happened here.
   entry is a reported miss rather than a call into whatever closure was
   allocated that id next.
 
+- **The copy and dispose helpers are machine code, and must stay that way.**
+  `src/helper-code.lisp` assembles two routines of half a dozen instructions:
+  load the cell pointer out of the block literal, atomically add one to the
+  word it names, return. They exist because Cocoa calls them on whichever
+  thread it is releasing on, at a moment no caller chose, and a Lisp callable
+  entered from a thread the Lisp did not create has to adopt it — 22 µs on
+  SBCL, and on a stock build a thread the collector cannot then stop. The
+  count lives outside the literal because `_Block_copy` copies the literal, so
+  a field inside it would give every copy a count of its own. Three rules
+  follow. The offset of `refcount-cell` is compiled into those bytes, so it
+  may not move without them being reassembled (`+helper-cell-offset+` and the
+  ABI layout test check it). Never map a page RWX with `MAP_JIT` and
+  `pthread_jit_write_protect_np` from inside a Lisp: that flag is per thread
+  and covers every MAP_JIT mapping, SBCL maps its own dynamic space that way
+  on arm64 Darwin, and setting it makes SBCL's heap read-only under it — a
+  fatal fault in the collector, measured. Map writable, fill, then `mprotect`
+  to executable. And reaping is necessarily lazy: nothing reports a count
+  reaching zero, so `reap-released-blocks` sweeps at the next block made or
+  freed, which means a closure outlives its last holder by a little and never
+  the other way round.
+
 - **The copy and dispose helpers count allocations, not retains.** `_Block_copy`
   on a block already on the heap bumps libclosure's own refcount and returns the
   *same pointer* without calling the copy helper, and the matching releases run
@@ -290,13 +311,12 @@ Each of these is a bug that actually happened here.
   `(setf (sb-ext:bytes-consed-between-gcs) (* 256 1024))` three times and
   read the `lose()` backtrace, which is the collecting thread's; the map,
   Spotlight, XPC and file-watcher examples died that way. With the waits they
-  still die there, and `sb-int:encapsulate` on `release-block-id` showed why:
-  the block's **dispose helper** runs on a worker when Cocoa releases its copy,
-  after everything else is over (`DISPOSE ... on callback foreign=T` after the
-  snapshot returned). The copy and dispose helpers are Lisp callables
-  (`ensure-block-helpers`); making them machine code that only bumps an atomic
-  count, with Lisp reaping records whose count reached zero, is the open fix.
-  The rest of the examples survived the probe as they were.
+  still died there, and `sb-int:encapsulate` on the old `release-block-id`
+  showed why: the block's **dispose helper** runs on a worker when Cocoa
+  releases its copy, after everything else is over (`DISPOSE ... on callback
+  foreign=T` after the snapshot returned). That is why the helpers are machine
+  code now (`src/helper-code.lisp`) and Lisp reaps afterwards; see the block
+  rule below. The rest of the examples survived the probe as they were.
 
   So a mutex serialising Lisp entry does **not** help: a worker parked on a Lisp
   lock has already been adopted and still has to be signalled. And note that

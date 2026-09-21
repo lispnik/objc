@@ -63,19 +63,21 @@
 ;;;; followed by OBJC:WAIT-FOR-CALLBACKS, which spins, consing nothing, until
 ;;;; no thread SBCL adopted for a callback is inside Lisp.
 ;;;;
-;;;; That closes the tail and not everything.  Traced, the four still die
-;;;; under the shrunken nursery, and the entry that kills them is the block's
-;;;; DISPOSE HELPER: a Lisp callback, run on whichever thread Cocoa releases
-;;;; its copy of the block on, long after the block returned and the main
-;;;; thread went on.  Nothing on the waiting side can time that; and a
-;;;; forced collection "to put the next one far away" is worse than nothing
-;;;; against it, because a forced collection is a certain stop-the-world at
-;;;; a moment chosen blind -- the first version of these examples did that
-;;;; before each hand-off, and the Intel CI leg died in exactly that call.
-;;;; Helpers that never enter Lisp -- a few instructions of machine code
-;;;; keeping an atomic count, with Lisp reaping afterwards -- are the fix,
-;;;; and are not written yet.  And none of this helps a thread that goes on
-;;;; working while a block runs; for that there is the safepoint build.
+;;;; That closed the tail and not everything.  The four went on dying under
+;;;; the shrunken nursery, and the entry that killed them was the block's
+;;;; DISPOSE HELPER: at the time a Lisp callback, run on whichever thread
+;;;; Cocoa releases its copy of the block on, long after the block returned
+;;;; and the main thread went on.  Nothing on the waiting side can time that;
+;;;; and a forced collection "to put the next one far away" is worse than
+;;;; nothing against it, because a forced collection is a certain
+;;;; stop-the-world at a moment chosen blind -- the first version of these
+;;;; examples did that before each hand-off, and the Intel CI leg died in
+;;;; exactly that call.  So the copy and dispose helpers stopped being Lisp:
+;;;; they are machine code now (src/helper-code.lisp), a few instructions
+;;;; adding to a shared count, and Lisp forgets the closure later at a moment
+;;;; of its own choosing.  Cocoa releasing a block enters no Lisp at all.
+;;;; None of that helps a thread that goes on working while a block RUNS;
+;;;; for that there is still the safepoint build.
 ;;;;
 ;;;; AND THE LIMIT LIFTS IF YOU BUILD SBCL --with-sb-safepoint, which stops the
 ;;;; world by polling rather than signalling.  Verified, not hoped for: the same

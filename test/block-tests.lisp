@@ -36,6 +36,69 @@ Objective-C object."
                           :void)
     queue))
 
+(test the-copy-and-dispose-helpers-are-machine-code
+  "The two helpers libclosure calls must not enter Lisp.
+
+Cocoa runs them on whichever thread it is releasing a block on, at a moment
+no caller chose, and on a stock SBCL a Lisp entry on a libdispatch worker is
+a thread the collector cannot stop.  They are a few instructions that add to
+a shared count instead, and this asserts the machine code was installed
+rather than the Lisp callables it falls back to -- on macOS it always can be,
+so a NIL here is a regression and not a platform.
+
+BLOCK-HELPERS-ENTER-LISP-P builds them if they are not built, and building
+them runs them: helper-code.lisp will not install code it could not make
+count correctly."
+  (with-runtime
+    (is-false (objc::block-helpers-enter-lisp-p))))
+
+(test a-freed-block-is-reaped-once-cocoa-lets-go
+  "The closure of a freed block outlives the free for exactly as long as
+something Cocoa holds a copy, and no longer.
+
+Nothing reports the moment the last copy goes -- the dispose helper is
+machine code and tells Lisp nothing -- so the record waits on a list and is
+collected at the next MAKE-OBJC-BLOCK or FREE-OBJC-BLOCK.  Later than the
+release, never earlier, and this is the difference that matters: at the point
+marked below the count is zero and the record is still there."
+  (with-runtime
+    (let* ((block (objc:make-objc-block '(:void ()) (lambda () nil)))
+           (id (objc::objc-block-id block))
+           (copy (objc::%block-copy (objc:objc-block-pointer block))))
+      (flet ((record () (gethash id objc::*block-records*)))
+        (is (= 2 (objc::block-record-refcount (record))) "the block and Cocoa's copy")
+        (objc:free-objc-block block)
+        (is (= 1 (objc::block-record-refcount (record)))
+            "the copy still holds the closure after the free")
+        (is-true (objc::block-function-for-sap copy)
+                 "and the copy can still be invoked")
+        (objc::%block-release copy)
+        (is (= 0 (objc::block-record-refcount (record)))
+            "the last copy dropped the count, with nothing entering Lisp to say so")
+        (is-true (record) "so the record is still there, awaiting the reaper")
+        (objc:free-objc-block (objc:make-objc-block '(:void ()) (lambda () nil)))
+        (is-false (record) "and the next block made and freed collected it")))))
+
+(test an-escaped-block-survives-its-free-on-a-queue
+  "The property the whole scheme exists for, end to end: a block freed here
+while a libdispatch queue holds a copy still runs, with its closure intact.
+
+WITH-OBJC-BLOCK frees on the way out, and dispatch_async copied the block
+before that -- the copy took its own hold through the copy helper, and the
+closure goes when libclosure disposes of the last copy and not before."
+  (with-runtime
+    (let ((done (bt:make-semaphore))
+          (ran nil))
+      (objc:with-objc-block (block '(:void ())
+                                   (lambda () (setf ran t) (bt:signal-semaphore done)))
+        (cffi:foreign-funcall "dispatch_async"
+                              :pointer (global-queue)
+                              :pointer (objc:objc-block-pointer block)
+                              :void))
+      (is-true (bt:wait-on-semaphore done :timeout 10) "the escaped block ran")
+      (objc:wait-for-callbacks)
+      (is-true ran))))
+
 (test wait-for-callbacks-sees-a-blocks-tail-out
   "A block on a libdispatch worker signals a semaphore and then stays inside
 Lisp a while longer, as every block does for at least the length of its own
@@ -75,13 +138,24 @@ an instant check had already answered."
 trusted.  The Block ABI has been stable since 2009 and the fields are not
 reorderable: libclosure reads INVOKE and DESCRIPTOR out of memory it did not
 allocate."
-  (is (= 40 (objc::block-literal-size)))
+  ;; Forty-eight, not the forty of the published Block_literal_1: this
+  ;; library appends two fields of its own, the id its invoke function
+  ;; dispatches on and the pointer to the shared holder count its copy and
+  ;; dispose helpers add to.  _Block_copy copies SIZE bytes from the
+  ;; descriptor, which is where that number comes from, so both travel.
+  (is (= 48 (objc::block-literal-size)))
   (is (= 0  (cffi:foreign-slot-offset '(:struct objc::block-literal) 'objc::isa)))
   (is (= 8  (cffi:foreign-slot-offset '(:struct objc::block-literal) 'objc::flags)))
   (is (= 12 (cffi:foreign-slot-offset '(:struct objc::block-literal) 'objc::reserved)))
   (is (= 16 (cffi:foreign-slot-offset '(:struct objc::block-literal) 'objc::invoke-ptr)))
   (is (= 24 (cffi:foreign-slot-offset '(:struct objc::block-literal) 'objc::descriptor)))
   (is (= 32 (cffi:foreign-slot-offset '(:struct objc::block-literal) 'objc::block-id)))
+  ;; helper-code.lisp assembles this offset into the helpers; if it moves and
+  ;; they are not reassembled they add to whatever the new field holds.
+  (is (= 40 (cffi:foreign-slot-offset '(:struct objc::block-literal) 'objc::refcount-cell)))
+  (is (= objc::+helper-cell-offset+
+         (cffi:foreign-slot-offset '(:struct objc::block-literal) 'objc::refcount-cell))
+      "the machine-code helpers were assembled for a different layout")
   ;; The descriptor is allocated in full whatever the flags say, so that
   ;; declaring BLOCK_HAS_SIGNATURE can never make _Block_signature read past it.
   ;; Its size and the signature's offset both depend on BLOCK_HAS_COPY_DISPOSE:
@@ -445,16 +519,28 @@ getting it wrong leaks every escaped closure, silently and forever."
           (objc:free-objc-block b)
           (is (= 1 (refcount)) "freeing the original dropped only its own")
           (objc::%block-release copy)
-          (is (null (refcount)) "and the last release retired the entry"))))))
+          ;; Zero, and still registered.  The dispose helper is machine code
+          ;; and reports nothing, so the entry goes at the next reap and not
+          ;; at the moment the count fell -- see the reaping test above.
+          (is (= 0 (refcount)) "and the last release dropped the last hold")
+          (objc::reap-released-blocks)
+          (is (null (refcount)) "which the reaper then retired"))))))
 
 (test the-registry-does-not-leak-and-does-not-reuse-ids
+  "Asked of these five blocks by id rather than of the registry's size.
+
+The size is the wrong question now that reaping is lazy: a block another test
+left for Cocoa to release can be collected in the middle of this one, and the
+count would fall while nothing here leaked."
   (with-runtime
-    (let ((before-records (hash-table-count objc::*block-records*))
-          (before-counter objc::*block-id-counter*))
+    (let ((before-counter objc::*block-id-counter*)
+          (ids '()))
       (dotimes (i 5)
         (objc:with-objc-block (b '(:void ()) (lambda () nil))
+          (push (objc::objc-block-id b) ids)
           (is-true (objc:objc-block-live-p b))))
-      (is (= before-records (hash-table-count objc::*block-records*))
+      (objc::reap-released-blocks)
+      (is (null (remove-if-not (lambda (id) (gethash id objc::*block-records*)) ids))
           "every block was unregistered")
       (is (= (+ 5 before-counter) objc::*block-id-counter*)
           "and each got its own id, none reused"))))

@@ -1,23 +1,23 @@
-# SBCL 2.6.8 (safepoint) ARM64 Darwin 25.6.0 2026-09-18 13:21 n=200000 rounds=5
+# SBCL 2.6.8 (safepoint) ARM64 Darwin 25.6.0 2026-09-20 21:35 n=200000 rounds=5
 lisp: (length "hello world")	5
 ffi: objc_msgSend -length, no bridge	8
-invoke: -length (method on the receiver's class)	120
-invoke: -self (inherited from NSObject)	116
-invoke: +class on "NSString" (class receiver)	117
-invoke: -objectAtIndex: (id in, id out)	134
-invoke: -rangeOfString: (NSRange out)	293
-invoke: -UTF8String -> Lisp string	207
-invoke: -isEqualToString: (Lisp string in)	329
-invoke: (invoke (invoke s uppercaseString) length)	390
+invoke: -length (method on the receiver's class)	125
+invoke: -self (inherited from NSObject)	125
+invoke: +class on "NSString" (class receiver)	121
+invoke: -objectAtIndex: (id in, id out)	137
+invoke: -rangeOfString: (NSRange out)	308
+invoke: -UTF8String -> Lisp string	238
+invoke: -isEqualToString: (Lisp string in)	379
+invoke: (invoke (invoke s uppercaseString) length)	414
 invoke: -setPosition: float2 as double (list form)	132
-invoke: -position -> double (list form)	134
-invoke: -setPosition: #(1.0 2.0) (declared float2)	178
+invoke: -position -> double (list form)	130
+invoke: -setPosition: #(1.0 2.0) (declared float2)	180
 invoke: -position -> #(x y) (declared float2)	174
-invoke: -setPosition: #(1.0 2.0 3.0) (declared float3)	237
-invoke: -position -> #(x y z) (declared float3)	192
-block: called back per element by NSArray	84
-method: Lisp -twice: via invoke	253
+invoke: -setPosition: #(1.0 2.0 3.0) (declared float3)	242
+invoke: -position -> #(x y z) (declared float3)	191
+block: called back per element by NSArray	87
+method: Lisp -twice: via invoke	264
 method: Lisp -tick per element, makeObjectsPerformSelector:	102
-worker: a C no-op block through a queue and back (the hop)	4983
-worker: a Lisp block held here (one adoption, the invoke)	27390
-worker: a Lisp block copied fresh (two: invoke and dispose helper)	49434
+worker: a C no-op block through a queue and back (the hop)	4878
+worker: a Lisp block held here (the hop plus one Lisp entry)	31428
+worker: a Lisp block copied fresh (the same, plus copy and dispose)	31446

@@ -229,10 +229,13 @@ libdispatch worker thread and back."
     ;; A block on a libdispatch worker: what adopting the thread costs.  The
     ;; first row is the hop itself, with nothing of ours in it.  The second
     ;; adds one Lisp entry on the worker, the invoke: the block is held as a
-    ;; heap copy here, so libdispatch's copy is a count and its release is a
-    ;; count, and no helper runs.  The third hands over the original literal,
-    ;; so libdispatch's copy runs the copy helper on this thread and its
-    ;; release runs the dispose helper on the worker: a second adoption.
+    ;; heap copy here, so libdispatch's copy and release only move a count.
+    ;; The third hands over the original literal, so libdispatch copies it on
+    ;; the way in and disposes of that copy on the worker -- and the third row
+    ;; matching the second is the measurement that matters, because it says
+    ;; the copy and dispose helpers cost nothing a thread adoption would show.
+    ;; They did not always: when they were Lisp callables the third row was
+    ;; about twice the second, a whole second adoption per block.
     #-lispworks
     (let* ((hops (floor n 20))
            (queue (cffi:foreign-funcall "dispatch_queue_create"
@@ -245,9 +248,9 @@ libdispatch worker thread and back."
            (progn
              (report "worker: a C no-op block through a queue and back (the hop)"
                      (ns-per-call (lambda () (group-hop group queue c-block)) :n hops))
-             (report "worker: a Lisp block held here (one adoption, the invoke)"
+             (report "worker: a Lisp block held here (the hop plus one Lisp entry)"
                      (ns-per-call (lambda () (group-hop group queue held)) :n hops))
-             (report "worker: a Lisp block copied fresh (two: invoke and dispose helper)"
+             (report "worker: a Lisp block copied fresh (the same, plus copy and dispose)"
                      (ns-per-call (lambda () (group-hop group queue (objc:objc-block-pointer lisp-block)))
                                   :n hops)))
         (objc::%block-release held)

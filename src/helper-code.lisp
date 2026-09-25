@@ -32,8 +32,15 @@
 ;;;; against the structure definition, and checks the code by running it, and
 ;;;; answers NIL rather than guessing if either is wrong.  Then blocks.lisp
 ;;;; falls back to the Lisp callables, which is also what happens where no
-;;;; page can be made executable at all -- an iOS app, or a hardened macOS
-;;;; binary without the JIT entitlement.
+;;;; page can be made executable at all -- a hardened macOS binary without the
+;;;; JIT entitlement refuses the mprotect, and says so.
+;;;;
+;;;; An iOS app is not asked.  There the mprotect succeeds and the first jump
+;;;; into the page is a SIGKILL from code signing ("Invalid Page") -- in any
+;;;; build without get-task-allow, which is to say every TestFlight and App
+;;;; Store build and none of the development ones.  Nothing survives to answer
+;;;; NIL, so a UIKit process takes the fallback without trying, simulator
+;;;; included, so that what runs there is what runs on the phone.
 
 (in-package #:objc)
 
@@ -142,6 +149,12 @@ so a page apiece, allocated once, is the whole of the accounting."
 
 ;;; The pair, checked ----------------------------------------------------------
 
+(defun %uikit-process-p ()
+  "Whether this is an iOS-family app, where running a page we wrote is not
+refused but fatal.  Asked of the runtime, not *FEATURES*: an iOS build is
+cross-compiled, and the features at compile time are the Mac's."
+  (not (cffi:null-pointer-p (%objc-get-class "UIApplication"))))
+
 (defun %helpers-work-p (copy dispose)
   "Run COPY and DISPOSE against a literal made for the purpose and say whether
 they counted.  The only honest test of a page of bytes this file believes it
@@ -167,11 +180,13 @@ where it started minus one."
 (defun machine-code-block-helpers ()
   "The copy and dispose helpers as machine code, as (VALUES COPY DISPOSE), or
 NIL where they cannot be had -- no code written for this architecture, a
-literal whose layout no longer matches the code, or a platform that will not
-make a page executable.  The caller falls back to Lisp callables."
+literal whose layout no longer matches the code, a platform that will not
+make a page executable, or an iOS app, where it will and then kills the
+process for running it.  The caller falls back to Lisp callables."
   (let ((copy-bytes (helper-code-bytes :copy))
         (dispose-bytes (helper-code-bytes :dispose)))
-    (when (and copy-bytes
+    (when (and (not (%uikit-process-p))
+               copy-bytes
                dispose-bytes
                (eql +helper-cell-offset+
                     (cffi:foreign-slot-offset '(:struct block-literal) 'refcount-cell)))

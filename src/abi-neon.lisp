@@ -369,9 +369,13 @@ matrix result takes: 256, 384 or 512 bits, two to four registers."
   (fdefinition 'sb-alien-internals:alien-callback-assembler-wrapper)
   "SBCL's own wrapper, kept: every signature without a vector goes to it.")
 
+;;; Replacing SBCL's function is the point, so SBCL's note that it is being
+;;; redefined -- printed every time this file is loaded -- is muffled, and
+;;; only for this one DEFUN.
 (sb-ext:without-package-locks
-  (defun sb-alien-internals:alien-callback-assembler-wrapper (index result-type argument-types)
-    (if (or (objc-wide-alien-type-p result-type)
-            (some #'objc-wide-alien-type-p argument-types))
-        (objc-wide-callback-wrapper index result-type argument-types)
-        (funcall *sbcl-callback-wrapper* index result-type argument-types))))
+  (handler-bind ((sb-kernel:redefinition-with-defun #'muffle-warning))
+    (defun sb-alien-internals:alien-callback-assembler-wrapper (index result-type argument-types)
+      (if (or (objc-wide-alien-type-p result-type)
+              (some #'objc-wide-alien-type-p argument-types))
+          (objc-wide-callback-wrapper index result-type argument-types)
+          (funcall *sbcl-callback-wrapper* index result-type argument-types)))))

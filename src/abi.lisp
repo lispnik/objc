@@ -681,6 +681,16 @@ register, so the receiver is read as garbage."
 
 ;;; Trampolines --------------------------------------------------------------
 
+;;; A trampoline is compiled at (SPEED 3) the first time its signature is
+;;; used, which is at run time, in the application.  SBCL would print an
+;;; efficiency note for each one -- "doing SAP to pointer coercion" and the
+;;; like, the cost of the call itself and nothing a caller can change -- and an
+;;; application run from a terminal would show them all.  So they are muffled.
+;;; Warnings still get through.  (abi-ecl.lisp does the same for ECL.)
+(defun compile-wrapper (form)
+  (handler-bind ((sb-ext:compiler-note #'muffle-warning))
+    (compile nil form)))
+
 (defun build-trampoline (kind result-node arg-nodes &optional n-fixed)
   "Compile a function that sends one exact call signature.
 
@@ -741,8 +751,7 @@ while a fixed signature passes them in registers."
                                 (list '&optional)
                                 (subseq atypes (min n-fixed-types (length atypes))))
                         atypes))))
-    (compile
-     nil
+    (compile-wrapper
      `(lambda (,out ,@syms)
         (declare (optimize (speed 3) (safety 0))
                  (ignorable ,out)
@@ -806,8 +815,7 @@ Cocoa handed us."
                                    (loop for i below (third node) collect `(svref ,sym ,i)))
                                   (t (list sym)))))
          (ftype `(sb-alien:function ,rtype ,@atypes)))
-    (compile
-     nil
+    (compile-wrapper
      `(lambda (,out ,@syms)
         (declare (optimize (speed 3) (safety 0))
                  (ignorable ,out)

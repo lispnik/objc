@@ -7,7 +7,7 @@
 
 (in-package #:objc)
 
-(defvar *traced-selectors* (make-hash-table :test 'equal)
+(defvar *traced-selectors* (make-hash-table :test 'equal :synchronized t)
   "Selector names being traced by TRACE-INVOKE.")
 
 (defun trace-invoke (method)
@@ -46,7 +46,7 @@ point and must not read as \"use the runtime's view\"."
          method
        (values name arg-types result-type variadic-num-of-fixed t)))))
 
-(defvar *warned-variadic* (make-hash-table :test 'equal))
+(defvar *warned-variadic* (make-hash-table :test 'equal :synchronized t))
 
 (defun maybe-warn-variadic (selector-name n-fixed)
   (when (and (null n-fixed)

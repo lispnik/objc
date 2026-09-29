@@ -17,7 +17,7 @@
 
 (in-package #:objc)
 
-(defvar *pointer-objc-objects* (make-hash-table :test 'eql)
+(defvar *pointer-objc-objects* (make-hash-table :test 'eql :synchronized t)
   "Pointer address -> the Lisp object standing for it.
 A strong reference, deliberately: see the file header.")
 
@@ -68,10 +68,10 @@ This is the inverse of OBJC-OBJECT-POINTER."
 
 ;;; Lisp class <-> Objective-C class ----------------------------------------
 
-(defvar *lisp-class-by-objc-name* (make-hash-table :test 'equal)
+(defvar *lisp-class-by-objc-name* (make-hash-table :test 'equal :synchronized t)
   "Objective-C class name -> the Lisp class implementing it.")
 
-(defvar *objc-name-by-lisp-class* (make-hash-table :test 'eq)
+(defvar *objc-name-by-lisp-class* (make-hash-table :test 'eq :synchronized t)
   "Lisp class -> the name of the Objective-C class it implements.")
 
 (defun lisp-class-for-objc-name (name)

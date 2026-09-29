@@ -478,7 +478,7 @@ what *DISPATCH-ADDRESS-HOOK* is documented to supply."
 
 ;;; IMP liveness -------------------------------------------------------------
 
-(defvar *imp-registry* (make-hash-table :test 'equal)
+(defvar *imp-registry* (make-hash-table :test 'equal :synchronized t)
   "(objc-class-name selector class-method-p) -> the callable's name.
 
 The counterpart of the table in abi.lisp, and required rather than optional:

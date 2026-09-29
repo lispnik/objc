@@ -101,7 +101,7 @@ Writing 'c' there broke the round trip of 'B'.")
 ;;; test/types-tests.lisp asserts every entry against it.
 
 (defparameter *struct-layout-overrides*
-  (let ((table (make-hash-table :test 'equal)))
+  (let ((table (make-hash-table :test 'equal :synchronized t)))
     (flet ((add (encoding &rest names)
              (dolist (name names) (setf (gethash name table) encoding))))
       ;; CGFloat is a double on 64-bit, so every geometry struct is doubles.
@@ -134,7 +134,7 @@ Keyed by struct name; see the file header for why guessing is not an option.")
     ("_NSRange" . cocoa:ns-range) ("NSRange" . cocoa:ns-range))
   "Struct names that map onto the COCOA package's documented type descriptors.")
 
-(defvar *struct-symbols* (make-hash-table :test 'equal)
+(defvar *struct-symbols* (make-hash-table :test 'equal :synchronized t)
   "Struct name -> the symbol naming its type, for both the Cocoa structs and
 anything DEFINE-OBJC-STRUCT registers.")
 
@@ -160,7 +160,7 @@ unknown, because the alternative is silently miscompiling the call."
 
 ;;; Struct symbol -> encoding ------------------------------------------------
 
-(defvar *struct-encodings* (make-hash-table :test 'eq)
+(defvar *struct-encodings* (make-hash-table :test 'eq :synchronized t)
   "Symbol naming a struct type -> its full encoding string.
 Populated for the Cocoa structs here and by DEFINE-OBJC-STRUCT later.")
 
@@ -175,7 +175,7 @@ Populated for the Cocoa structs here and by DEFINE-OBJC-STRUCT later.")
       (struct-encoding-for-symbol 'cocoa:ns-rect)  "{CGRect={CGPoint=dd}{CGSize=dd}}"
       (struct-encoding-for-symbol 'cocoa:ns-range) "{_NSRange=QQ}")
 
-(defvar *typedef-nodes* (make-hash-table :test 'eq)
+(defvar *typedef-nodes* (make-hash-table :test 'eq :synchronized t)
   "Typedef symbol -> the node it stands for, as registered by
 DEFINE-OBJC-TYPEDEF.  Consulted by NODE-FOR-FLI-TYPE.")
 

@@ -172,7 +172,7 @@ introspecting consumer see what the block takes."
 (defstruct (block-machinery (:constructor %make-block-machinery))
   invoke-sap callable-name dispatcher descriptor signature-string caller)
 
-(defvar *block-machinery* (make-hash-table :test 'equal)
+(defvar *block-machinery* (make-hash-table :test 'equal :synchronized t)
   "Canonical signature -> BLOCK-MACHINERY.  Never cleared except on image restore.
 
 This table is the GC root for every block invoke callable, exactly as
@@ -349,7 +349,7 @@ than merely untested."
 (defstruct (block-type (:constructor %make-block-type))
   name result-node arg-nodes)
 
-(defvar *block-types* (make-hash-table :test 'eq)
+(defvar *block-types* (make-hash-table :test 'eq :synchronized t)
   "Name -> BLOCK-TYPE.  Pure Lisp; survives a dump intact.")
 
 (defun parse-block-designator (designator)
@@ -438,7 +438,7 @@ machine code and never enter Lisp; helper-code.lisp says why that matters."
   (let ((cell (block-record-cell record)))
     (and cell (cffi:mem-aref cell :uint64 0))))
 
-(defvar *block-records* (make-hash-table :test 'eql)
+(defvar *block-records* (make-hash-table :test 'eql :synchronized t)
   "Block id -> BLOCK-RECORD.
 
 A strong reference to the Lisp closure, deliberately.  There are no finalizers
@@ -675,7 +675,7 @@ decides the BLOCK_USE_STRET flag."
 ;;; place.  A block IMP is not passed _cmd; the body gets the selector it was
 ;;; installed for, which is the only one it could have been called with.
 
-(defvar *imp-machinery* (make-hash-table :test 'equal)
+(defvar *imp-machinery* (make-hash-table :test 'equal :synchronized t)
   "Canonical signature -> BLOCK-MACHINERY for a method of that signature.
 Rooted forever, as *BLOCK-MACHINERY* is, and for the same reason.")
 

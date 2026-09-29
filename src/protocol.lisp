@@ -31,7 +31,7 @@
 
 (in-package #:objc)
 
-(defvar *declared-protocols* (make-hash-table :test 'equal)
+(defvar *declared-protocols* (make-hash-table :test 'equal :synchronized t)
   "Protocol name -> its declaration, for documentation and error checking.")
 
 (defstruct (objc-protocol (:constructor make-objc-protocol

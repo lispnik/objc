@@ -24,7 +24,7 @@ is the inverse of OBJC-OBJECT-FROM-POINTER."))
         ((cffi:pointerp receiver) receiver)
         (t (objc-object-pointer receiver))))
 
-(defvar *class-cache* (make-hash-table :test 'equal)
+(defvar *class-cache* (make-hash-table :test 'equal :synchronized t)
   "Class name -> Class pointer.")
 
 (defun objc-class-pointer-p (pointer)

@@ -2,7 +2,12 @@
 
 (in-package #:objc)
 
-(defvar *selector-cache* (make-hash-table :test 'equal)
+;;; This table, like every table the library keeps, is :SYNCHRONIZED.  An
+;;; application calls in from more than one thread -- AppKit's main thread
+;;; and its own -- and an unsynchronized table written from two at once is
+;;; corrupted for good: SBCL signals "Unsafe concurrent operations" on every
+;;; later access.  Both SBCL and ECL take :SYNCHRONIZED.
+(defvar *selector-cache* (make-hash-table :test 'equal :synchronized t)
   "Selector name -> registered SEL.  sel_registerName is cheap but not free,
 and dispatch looks a selector up on every send.")
 

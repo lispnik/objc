@@ -44,7 +44,7 @@ Objective-C treats a message to nil as a no-op returning zero, so this exists
 for code that relies on that; it is off by default because the usual cause is a
 mistake.  LispWorks has the same switch, also undocumented.")
 
-(defvar *trampoline-by-signature* (make-hash-table :test 'equal)
+(defvar *trampoline-by-signature* (make-hash-table :test 'equal :synchronized t)
   "(kind canonical-signature n-fixed) -> trampoline.  The sharing path.")
 
 (defparameter +known-variadic-selectors+
@@ -70,13 +70,13 @@ and the parsed signature itself, so a hit marshals without re-parsing."
 SITES maps a class address to its SEND-SITE for a plain send; SUPER-SITES the
 same for a super send, whose trampolines enter objc_msgSendSuper instead."
   name sel variadic-p
-  (sites (make-hash-table :test 'eql))
-  (super-sites (make-hash-table :test 'eql)))
+  (sites (make-hash-table :test 'eql :synchronized t))
+  (super-sites (make-hash-table :test 'eql :synchronized t)))
 
-(defvar *selector-entries* (make-hash-table :test 'equal)
+(defvar *selector-entries* (make-hash-table :test 'equal :synchronized t)
   "Selector name -> SELECTOR-ENTRY.  The fast path.")
 
-(defvar *explicit-sites* (make-hash-table :test 'eq)
+(defvar *explicit-sites* (make-hash-table :test 'eq :synchronized t)
   "List-form method designator -> SEND-SITE, keyed on the list itself.  A
 quoted literal is the same object on every send and hits; a freshly consed
 designator misses and is parsed, which is correct and merely slower.")
@@ -167,7 +167,7 @@ trampoline is otherwise identical."
 ;;; is consulted only when the runtime's own signature has a hole: a method the
 ;;; runtime describes completely is never second-guessed.
 
-(defvar *signature-overrides* (make-hash-table :test 'equal)
+(defvar *signature-overrides* (make-hash-table :test 'equal :synchronized t)
   "Selector name -> (RESULT-NODE . ARG-NODES), the declared arguments only.")
 
 (defun signature-override (selector-name)

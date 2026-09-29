@@ -22,7 +22,7 @@
 
 (defvar *objc-initialized* nil)
 
-(defvar *mixin-methods* (make-hash-table :test 'eq)
+(defvar *mixin-methods* (make-hash-table :test 'eq :synchronized t)
   "Lisp class -> method definitions recorded on it.
 
 A class with no :OBJC-CLASS-NAME anywhere in its precedence list has no
@@ -31,7 +31,7 @@ Keeping them here is what lets DEFINE-OBJC-METHOD and DEFINE-OBJC-CLASS work in
 either order, which manual.lisp requires: it defines the mixin, then the mixin's
 method, then two subclasses.")
 
-(defvar *class-options* (make-hash-table :test 'eq)
+(defvar *class-options* (make-hash-table :test 'eq :synchronized t)
   "Lisp class -> the plist of Objective-C options it was defined with.")
 
 (defmacro define-objc-class (name superclasses slots &rest options)

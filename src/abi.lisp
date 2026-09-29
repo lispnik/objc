@@ -55,7 +55,7 @@ method.  See the commentary above -- this is load bearing, not defensive."
 
 ;;; Encoding node -> alien type ---------------------------------------------
 
-(defvar *alien-struct-types* (make-hash-table :test 'equal)
+(defvar *alien-struct-types* (make-hash-table :test 'equal :synchronized t)
   "Canonical struct encoding -> the symbol naming its alien type.
 Defining an alien type calls the compiler, so they are memoized; the table is
 cleared on image restore because the types do not survive a dump.")
@@ -857,7 +857,7 @@ Cocoa handed us."
 ;;; below is this same machinery with one hidden argument instead of two -- but
 ;;; a method is not where they earn anything.
 
-(defvar *imp-registry* (make-hash-table :test 'equal)
+(defvar *imp-registry* (make-hash-table :test 'equal :synchronized t)
   "(objc-class-name selector class-method-p) -> the alien callable's name.
 
 Every IMP lives here forever.  SBCL recycles a callback's trampoline once the

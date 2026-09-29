@@ -193,7 +193,9 @@ declared." selector expected-args (length argspecs)))
            (lambda (,super)
              (declare (ignorable ,super))
              (lambda (,self ,cmd ,result-sap ,@raws)
-               (declare (ignorable ,self ,cmd ,result-sap))
+               ;; The raw arguments too: an argument the body ignores has its
+               ;; conversion dropped, and ECL then reports the raw one unused.
+               (declare (ignorable ,self ,cmd ,result-sap ,@raws))
                (macrolet ((current-super ()
                             ;; A local macro, so it is simply unbound outside
                             ;; these two macros' bodies -- exactly the extent

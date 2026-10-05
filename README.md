@@ -3,7 +3,7 @@
 [![macOS/SBCL](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-macos.yml)
 [![macOS/iOS/ECL](https://github.com/lispnik/objc/actions/workflows/ci-ecl.yml/badge.svg)](https://github.com/lispnik/objc/actions/workflows/ci-ecl.yml)
 
-<img width=200 src="https://github.com/lispnik/upc-logger/raw/main/screenshot.png" alt="A device screenshot of a Common Lisp iOS app"> <img width=600 src="https://github.com/lispnik/cathode-ray-tube/raw/main/screenshot.png" alt="A screenshot of a macOS app port of cool-retro-term to Common Lisp"> <img width="275" src="https://github.com/lispnik/utc-status-app/raw/master/screenshot.png" alt="A screenshot of the UTC status bar app"> <img width=600 src="https://raw.githubusercontent.com/lispnik/ftp-server-app/refs/heads/master/doc/screenshots/01-main-stopped.png" alt="A screenshot of FTP Server App">
+<img width=200 src="https://github.com/lispnik/upc-logger/raw/main/screenshot.png" alt="A device screenshot of a Common Lisp iOS app"> <img width=600 src="https://github.com/lispnik/cathode-ray-tube/raw/main/screenshot.png" alt="A screenshot of a macOS app port of cool-retro-term to Common Lisp"> <img width="275" src="https://github.com/lispnik/utc-status-app/raw/master/screenshot.png" alt="A screenshot of the UTC status bar app"> <img width=600 src="https://raw.githubusercontent.com/lispnik/ftp-server-app/refs/heads/master/doc/screenshots/01-main-stopped.png" alt="A screenshot of FTP Server App"> <img src="https://raw.githubusercontent.com/lispnik/lisp-listener-app/refs/heads/main/doc/inspector-more.png" width=600>
 
 ## AI;DR
 
@@ -31,6 +31,7 @@ anything at runtime](https://github.com/lispnik/asdf-ios-app/blob/master/doc/vid
 - https://github.com/lispnik/utc-status-app (also see the time in UTC for macOS)
 - https://github.com/lispnik/upc-logger (no bullshit UPC scanner for inventoring)
 - https://github.com/lispnik/ftp-server-app (users, Lisp VFS, access controls, FTP/FTPS)
+- https://github.com/lispnik/lisp-listener-app (macOS, iOS, iPad, with extendable graphical inspector and editors)
 
 The packages are literally named `OBJC` and `COCOA`, the exported symbols have
 the LispWorks names and lambda lists, and code written against the *LispWorks

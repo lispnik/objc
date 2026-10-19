@@ -554,8 +554,8 @@ short and byte lanes, must agree with it bit for bit."
                         ((:vector :double 2) #(1d0 -2d0))
                         ((:vector :long-long 2) #(-5 6))))
           (destructuring-bind (node value) case
-            (is (equalp (multiple-value-list (sb-ext:%simd-pack-ub64s (objc::%pack-wide-vector node value)))
-                        (multiple-value-list (sb-ext:%simd-pack-ub64s (objc::%pack-wide-vector-through-memory node value))))
+            (is (equalp (multiple-value-list (objc::%pack-words (objc::%pack-wide-vector node value)))
+                        (multiple-value-list (objc::%pack-words (objc::%pack-wide-vector-through-memory node value))))
                 "~a packs the same in registers as through memory" node)
             (is (equalp value (objc::unpack-vector node (objc::pack-vector node value))))))
         (objc:declare-objc-signature "setPosition:" '((:vector :float 2)))

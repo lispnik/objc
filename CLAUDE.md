@@ -101,6 +101,15 @@ Each of these is a bug that actually happened here.
   appeared. Mask per entry point, never globally — masking globally would change
   Lisp's own arithmetic so `(/ 1d0 0d0)` returned infinity instead of signalling.
 
+- **Read a simd-pack's lanes from its words, never SBCL's typed accessors.**
+  `%simd-pack-ub64s`, `-ub32s`, `-singles`, `-doubles` and the rest were
+  deleted in SBCL 2.6.9 (commit 71c43e5aa0, to save 1.1 MB of core), and a
+  file naming them does not even read there: `Symbol "%SIMD-PACK-UB64S" not
+  found in the SB-EXT package`. Found by a downstream CI run the week Homebrew
+  moved to 2.6.9, when 2.6.8 here and 2.6.7 on the Intel runner were both fine.
+  `%pack-words`, `%pack-ub32s`, `%pack-singles` and `%pack-doubles` in
+  abi.lisp read from `%simd-pack-low`/`-high`, which survived; reach for those.
+
 - **`sb-alien:void`, not the keyword `:void`.** The keyword compiles fine and
   fails at the call site with `COMPILED-PROGRAM-ERROR`, so every void-returning
   method — `-release` among them — breaks at once and the error names nothing

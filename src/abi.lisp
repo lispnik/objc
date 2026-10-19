@@ -335,13 +335,13 @@ wider siblings for matrix results.  Once per image."
         (%override-alien-method class deposit-gen (sap offset value)
           (let ((n (wide-alien-type-registers type)))
             (if (= n 1)
-                `(multiple-value-bind (lo hi) (sb-ext:%simd-pack-ub64s ,value)
+                `(multiple-value-bind (lo hi) (%pack-words ,value)
                    (setf (sb-sys:sap-ref-64 ,sap (/ ,offset 8)) lo
                          (sb-sys:sap-ref-64 ,sap (+ (/ ,offset 8) 8)) hi))
                 `(let ((base (/ ,offset 8)) (columns ,value))
                    ,@(loop for i below n
                            collect `(multiple-value-bind (lo hi)
-                                        (sb-ext:%simd-pack-ub64s (svref columns ,i))
+                                        (%pack-words (svref columns ,i))
                                       (setf (sb-sys:sap-ref-64 ,sap (+ base ,(* 16 i))) lo
                                             (sb-sys:sap-ref-64 ,sap (+ base ,(+ 8 (* 16 i)))) hi)))))))
         (%override-alien-method class arg-tn (state)
@@ -548,6 +548,43 @@ extent of the call: the octets are pinned, not copied."
   "PACK's bits under TAG: the same register, read differently."
   (sb-kernel:%make-simd-pack tag (sb-kernel:%simd-pack-low pack) (sb-kernel:%simd-pack-high pack)))
 
+;;; Reading lanes out of the carrier --------------------------------------------
+;;;
+;;; From the pack's two 64-bit words, never from SBCL's typed accessors.  Those
+;;; -- %SIMD-PACK-UB64S, -UB32S, -SINGLES, -DOUBLES and the rest -- were
+;;; DELETED in SBCL 2.6.9 (commit 71c43e5aa0, "Don't define very large
+;;; simd-pack functions for printing", to save 1.1MB of core), so a file that
+;;; names them does not even read there: `Symbol "%SIMD-PACK-UB64S" not found
+;;; in the SB-EXT package'.  %SIMD-PACK-LOW and -HIGH survived and are the
+;;; same registers read the same way; and they ignore the tag, so nothing has
+;;; to be retagged to be read.  Lanes are little-endian: lane 0 is the low end
+;;; of the low word.
+
+(declaim (inline %pack-words))
+(defun %pack-words (pack)
+  "PACK's low and high 64-bit words, as two values."
+  (values (sb-kernel:%simd-pack-low pack) (sb-kernel:%simd-pack-high pack)))
+
+(defun %pack-ub32s (pack)
+  "PACK's four 32-bit lanes, unsigned, as four values."
+  (multiple-value-bind (lo hi) (%pack-words pack)
+    (values (ldb (byte 32 0) lo) (ldb (byte 32 32) lo)
+            (ldb (byte 32 0) hi) (ldb (byte 32 32) hi))))
+
+(defun %pack-singles (pack)
+  "PACK's four single-float lanes, as four values."
+  (multiple-value-call
+      (lambda (a b c d)
+        (values (%single-float-from-bits a) (%single-float-from-bits b)
+                (%single-float-from-bits c) (%single-float-from-bits d)))
+    (%pack-ub32s pack)))
+
+(defun %pack-doubles (pack)
+  "PACK's two double-float lanes, as two values."
+  (multiple-value-bind (lo hi) (%pack-words pack)
+    (values (%double-float-from-words (ldb (byte 32 32) lo) (ldb (byte 32 0) lo))
+            (%double-float-from-words (ldb (byte 32 32) hi) (ldb (byte 32 0) hi)))))
+
 (defun %pack-wide-vector-through-memory (node value)
   (cffi:with-foreign-object (p :uint64 2)
     (setf (cffi:mem-aref p :uint64 0) 0 (cffi:mem-aref p :uint64 1) 0)
@@ -557,7 +594,7 @@ extent of the call: the octets are pinned, not copied."
 
 (defun %unpack-wide-vector-through-memory (node pack)
   (cffi:with-foreign-object (p :uint64 2)
-    (multiple-value-bind (lo hi) (sb-ext:%simd-pack-ub64s pack)
+    (multiple-value-bind (lo hi) (%pack-words pack)
       (setf (cffi:mem-aref p :uint64 0) lo (cffi:mem-aref p :uint64 1) hi))
     (read-vector-elements p node)))
 
@@ -600,24 +637,14 @@ VALUE is a sequence with one element per lane, or a simd-pack already."
     (flet ((take (values) (coerce (subseq values 0 count) 'vector))
            (signed (x bits) (if (logbitp (1- bits) x) (- x (ash 1 bits)) x)))
       (case element
-        (:float
-         (take (multiple-value-list
-                (sb-kernel:%simd-pack-singles (%retag-pack pack (getf *pack-tags* :single))))))
-        (:double
-         (take (multiple-value-list
-                (sb-kernel:%simd-pack-doubles (%retag-pack pack (getf *pack-tags* :double))))))
-        (:uint
-         (take (multiple-value-list
-                (sb-kernel:%simd-pack-ub32s (%retag-pack pack (getf *pack-tags* :ub32))))))
+        (:float (take (multiple-value-list (%pack-singles pack))))
+        (:double (take (multiple-value-list (%pack-doubles pack))))
+        (:uint (take (multiple-value-list (%pack-ub32s pack))))
         (:int
-         (take (mapcar (lambda (x) (signed x 32))
-                       (multiple-value-list
-                        (sb-kernel:%simd-pack-ub32s (%retag-pack pack (getf *pack-tags* :ub32)))))))
-        (:ulong-long
-         (take (multiple-value-list (sb-ext:%simd-pack-ub64s (%retag-pack pack (getf *pack-tags* :ub64))))))
+         (take (mapcar (lambda (x) (signed x 32)) (multiple-value-list (%pack-ub32s pack)))))
+        (:ulong-long (take (multiple-value-list (%pack-words pack))))
         (:long-long
-         (take (mapcar (lambda (x) (signed x 64))
-                       (multiple-value-list (sb-ext:%simd-pack-ub64s (%retag-pack pack (getf *pack-tags* :ub64)))))))
+         (take (mapcar (lambda (x) (signed x 64)) (multiple-value-list (%pack-words pack)))))
         (t (%unpack-wide-vector-through-memory node pack))))))
 
 ;;; Dispatch entry points ----------------------------------------------------

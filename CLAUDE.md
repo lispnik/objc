@@ -549,7 +549,7 @@ Each of these is a bug that actually happened here.
 
 ## The examples
 
-`examples/` is thirty-seven files and half the repository. Each headless one has a
+`examples/` is thirty-eight files and half the repository. Each headless one has a
 `test-<thing>` entry point returning a plist of what happened, asserted by the
 `examples` suite in `test/example-tests.lisp`; the windowed ones are in
 `gui-tests.lisp` and skip without a window server.
@@ -593,6 +593,7 @@ those are the ones not to rewrite casually:
 | `strings` | `NSString` search and conversion | UTF-16 offsets into a string Lisp is not holding |
 | `task` | `NSTask` and `NSPipe` | read the pipe BEFORE you wait, or deadlock |
 | `plugin` | protocols and typedefs | declaring a protocol is not creating one |
+| `contacts` | the address book, a contact at a time | a block's `BOOL *stop`: write the byte 1 |
 
 The examples were measured against the library's exported operators, and the
 gap they left was the CLOS half: `objc-object-copied`, `objc-object-destroyed`,

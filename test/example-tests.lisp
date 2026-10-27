@@ -379,6 +379,30 @@ and its windows have roles."
             (is (stringp (getf result :application)))
             (is (every #'stringp (getf result :roles))))))))
 
+(test the-contacts-example-stops-when-told
+  "examples/contacts.lisp exists for the BOOL *stop a Contacts enumeration block
+is given.  The vCard half needs no permission and always runs: the same
+CONTACT-VISITOR block the store would call is driven over three parsed
+contacts, and one that writes 1 through STOP on the second is called exactly
+twice -- which is what would notice a STOP written as T, or as a word.
+
+The store half runs only where this process may already read Contacts, and then
+asserts only that a visitor limited to three collected no more than that.
+Nothing here ever asks for access: a consent dialog would hang the suite on
+whoever is at the keyboard, and on CI there is no one."
+  (with-runtime
+    (let ((result (objc/examples:test-contacts)))
+      (is (equal '("Ada Lovelace" "Grace Hopper" "Alan Turing") (getf result :names)))
+      (let ((ada (getf result :ada)))
+        (is (string= "Analytical Engines" (getf ada :organization)))
+        (is (equal '("ada@example.com") (getf ada :emails)))
+        (is (equal '("+44 20 7946 0001") (getf ada :phones))))
+      (is (= 3 (getf result :visited)) "a visitor that never stops sees everything")
+      (is (= 2 (getf result :stopped-after)) "setting *stop ends the enumeration")
+      (is (= 2 (getf result :collected-before-stop)))
+      (when (getf result :store)
+        (is (<= (getf result :store) 3) "the real store honoured the stop too")))))
+
 (test the-scripting-example-runs-applescript
   "examples/scripting.lisp runs AppleScript through NSAppleScript.  A script
 that targets no application runs anywhere and is asserted; one that asks

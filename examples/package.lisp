@@ -195,7 +195,11 @@
            ;; NSUndoManager (examples/undo.lisp).
            #:counter #:counter-value #:make-counter #:set-counter #:make-undo-manager
            #:with-undo-group #:undo #:redo #:undo-state
-           #:test-undo #:report-undo))
+           #:test-undo #:report-undo
+           ;; The address book (examples/contacts.lisp).
+           #:contacts-authorization #:request-contacts-access #:contacts
+           #:map-contacts #:stop-visiting #:parse-vcards #:visit-contacts
+           #:contact-plist #:test-contacts #:report-contacts))
 
 (in-package #:fli)
 

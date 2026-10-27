@@ -841,6 +841,10 @@ unchanged:
   form alongside the plain text, and an `NSView` in Lisp that accepts drops.
 - `examples/spotlight.lisp` — Core Spotlight: the app's own items indexed
   under a domain and found by title through `CSSearchQuery`'s blocks.
+- `examples/contacts.lisp` — the address book through
+  `enumerateContactsWithFetchRequest:error:usingBlock:`, and a block's
+  `BOOL *stop` set from Lisp. vCards stand in for the store where this process
+  has no permission to read it, which is everywhere until someone grants it.
 - `examples/workspace.lisp` — `NSWorkspace`: what is running, what opens what,
   and the smallest example here.
 - `examples/metal.lisp` — GPU compute: a shader compiled at run time from a

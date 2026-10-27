@@ -154,6 +154,7 @@ Lisp method can take and return C structs by value like any other."
                  (:file "scripting")
                  (:file "pasteboard")
                  (:file "spotlight")
+                 (:file "contacts")
                  (:file "standalone")))))
 
 (asdf:defsystem #:objc/test

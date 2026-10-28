@@ -78,16 +78,26 @@ jobs:
         run: brew install sbcl
 
       - name: Install and configure ocicl
+        # The backstop.  The attempts below add up to 17 minutes at worst;
+        # a normal install takes 1.5 to 3.5.
+        timeout-minutes: 18
         run: |
           # The clone and the setup each get a watchdog and three attempts.
           # Measured: one Intel run sat in this step for the whole job budget
           # and was cancelled at thirty minutes having reached none of the
           # tests, so a hang here has to fail fast and try again rather than
           # eat the run.  macOS ships no timeout(1), hence the watchdog.
+          #
+          # The watchdog kills the attempt's whole process GROUP (set -m gives
+          # it one).  Killing only the subshell, as the first version did,
+          # left a hung git or sbcl running and holding the step's output
+          # open, and the step hung anyway (2026-10-27, c0b8553).  The
+          # watchdog's own output goes to /dev/null for the same reason: its
+          # orphaned sleep must not hold the pipe either.
           attempt_with_timeout() {
             local secs=$1; shift
-            ( "$@" ) & local pid=$!
-            ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) & local watchdog=$!
+            set -m; "$@" & local pid=$!; set +m
+            ( sleep "$secs"; kill -9 -- "-$pid" 2>/dev/null ) >/dev/null 2>&1 & local watchdog=$!
             local rc=0; wait "$pid" || rc=$?
             kill -9 "$watchdog" 2>/dev/null || true
             return $rc
@@ -102,7 +112,7 @@ jobs:
             ( cd "$HOME/ocicl-src" && sbcl --non-interactive --load setup.lisp )
           }
           for attempt in 1 2 3; do
-            if attempt_with_timeout 300 clone_ocicl && attempt_with_timeout 300 setup_ocicl; then
+            if attempt_with_timeout 90 clone_ocicl && attempt_with_timeout 240 setup_ocicl; then
               break
             fi
             if [ "$attempt" = 3 ]; then
